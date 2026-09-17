@@ -48,7 +48,9 @@
 # define DAF_UI_USES_SCHEDULED_REPAINTS 0
 #endif
 
-#if defined(DAF_PLUGIN_TARGET_CLAP) || defined(DAF_PLUGIN_TARGET_VST3)
+// A static-target UI is embedded by a host that links the plugin into its own process, and like
+// CLAP and VST3 that host owns the editor's size.
+#if defined(DAF_PLUGIN_TARGET_CLAP) || defined(DAF_PLUGIN_TARGET_VST3) || defined(DAF_PLUGIN_TARGET_STATIC)
 # define DAF_UI_USES_SIZE_REQUEST 1
 #else
 # define DAF_UI_USES_SIZE_REQUEST 0

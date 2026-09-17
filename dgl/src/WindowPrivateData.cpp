@@ -827,12 +827,15 @@ void Window::PrivateData::onPuglFocus(const bool focus, const CrossingMode mode)
 #endif
 }
 
-void Window::PrivateData::onPuglKey(const Widget::KeyboardEvent& ev)
+bool Window::PrivateData::onPuglKey(const Widget::KeyboardEvent& ev)
 {
     DGL_DBGp("onPuglKey : %i %u %u\n", ev.press, ev.key, ev.keycode);
 
     if (modal.child != nullptr)
-        return modal.child->focus();
+    {
+        modal.child->focus();
+        return true;
+    }
 
 #ifndef DAF_TEST_WINDOW_CPP
     FOR_EACH_TOP_LEVEL_WIDGET_INV(rit)
@@ -840,9 +843,11 @@ void Window::PrivateData::onPuglKey(const Widget::KeyboardEvent& ev)
         TopLevelWidget* const widget(*rit);
 
         if (widget->isVisible() && widget->onKeyboard(ev))
-            break;
+            return true;
     }
 #endif
+
+    return false;
 }
 
 void Window::PrivateData::onPuglText(const Widget::CharacterInputEvent& ev)
@@ -1129,7 +1134,17 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
             ev.mod |= kModifierShift;
         }
 
-        pData->onPuglKey(ev);
+        // An embedded UI that has no use for a key hands it to the host, so host shortcuts
+        // keep working while the UI has the keyboard or, on X11, sits under the pointer.
+        if (! pData->onPuglKey(ev) && pData->isEmbed)
+        {
+           #if defined(DGL_USING_X11)
+            puglX11ForwardKeyToParent(view, ev.press, event->key.keycode, event->key.state, ev.time);
+           #elif defined(DAF_OS_MAC)
+            // The Cocoa view passes the NSEvent up its responder chain on this status.
+            return PUGL_UNSUPPORTED;
+           #endif
+        }
         break;
     }
 

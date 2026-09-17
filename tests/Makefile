@@ -31,6 +31,11 @@ endif
 MANUAL_TESTS  =
 UNIT_TESTS    = AudioUnitBufferList Color Point
 
+# Build-time checks: the object compiling is the test, so it is never linked or run.
+# StaticTarget is compiled as a plugin, so it needs a DafPluginInfo.h of its own.
+BUILD_CHECKS  = StaticTarget
+../build/tests/StaticTarget.cpp.o: BUILD_CXX_FLAGS += -Istatic-target
+
 ifeq ($(HAVE_CAIRO),true)
 MANUAL_TESTS += Demo.cairo
 endif
@@ -64,13 +69,15 @@ endif
 
 MANUAL_TARGETS = $(MANUAL_TESTS:%=../build/tests/%$(APP_EXT))
 UNIT_TARGET    = $(UNIT_TESTS:%=../build/tests/%$(APP_EXT))
+CHECK_TARGETS  = $(BUILD_CHECKS:%=../build/tests/%.cpp.o)
 
 ALL_OBJS  = $(MANUAL_TESTS:%=../build/tests/%.cpp.o)
 ALL_OBJS += $(UNIT_TESTS:%=../build/tests/%.cpp.o)
+ALL_OBJS += $(CHECK_TARGETS)
 
 # ---------------------------------------------------------------------------------------------------------------------
 
-all: $(MANUAL_TARGETS) $(UNIT_TARGET)
+all: $(MANUAL_TARGETS) $(UNIT_TARGET) $(CHECK_TARGETS)
 
 # ---------------------------------------------------------------------------------------------------------------------
 
@@ -88,8 +95,8 @@ endef
 
 # 	valgrind --leak-check=full $@
 
-run: $(UNIT_TARGET)
-	$(foreach TEST,$^,$(call RUN_TEST,$(TEST)))
+run: $(UNIT_TARGET) $(CHECK_TARGETS)
+	$(foreach TEST,$(UNIT_TARGET),$(call RUN_TEST,$(TEST)))
 
 # ---------------------------------------------------------------------------------------------------------------------
 

@@ -289,6 +289,13 @@ public:
         uiData->window->setOffset(x, y);
     }
 
+    // setWindowOffset only moves a top-level window. An embedded editor is positioned inside its
+    // host parent through this instead, e.g. to centre it in a parent larger than the editor.
+    bool setWindowEmbeddedOffset(const int x, const int y)
+    {
+        return uiData->window->setEmbeddedOffset(x, y);
+    }
+
     // NOTE: AU has no size request/negotiation, but hosts do resize the parent view on their own
    #if DAF_UI_USES_SIZE_REQUEST || defined(DAF_PLUGIN_TARGET_AU)
     void setWindowSizeFromHost(const uint width, const uint height)

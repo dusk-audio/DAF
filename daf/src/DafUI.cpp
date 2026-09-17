@@ -596,7 +596,7 @@ void UI::onResize(const ResizeEvent& ev)
    #endif
 }
 
-// NOTE: only used for CLAP and VST3
+// NOTE: only used for CLAP, VST3 and the static target
 void UI::requestSizeChange(const uint width, const uint height)
 {
    #if DAF_UI_USES_SIZE_REQUEST
