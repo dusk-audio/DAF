@@ -698,7 +698,11 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 
   PuglEvent pressEvent;
   pressEvent.key = ev;
-  puglDispatchEvent(puglview, &pressEvent);
+  if (puglDispatchEvent(puglview, &pressEvent) == PUGL_UNSUPPORTED &&
+      puglview->parent) {
+    [[self nextResponder] keyDown:event];
+    return;
+  }
 
   if (!spec) {
     [self interpretKeyEvents:@[event]];
@@ -729,7 +733,10 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 
   PuglEvent releaseEvent;
   releaseEvent.key = ev;
-  puglDispatchEvent(puglview, &releaseEvent);
+  if (puglDispatchEvent(puglview, &releaseEvent) == PUGL_UNSUPPORTED &&
+      puglview->parent) {
+    [[self nextResponder] keyUp:event];
+  }
 }
 
 - (BOOL)hasMarkedText

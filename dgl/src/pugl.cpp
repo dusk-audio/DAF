@@ -744,6 +744,36 @@ PuglStatus puglX11UpdateWithoutExposures(PuglWorld* const world)
 }
 
 // --------------------------------------------------------------------------------------------------------------------
+// X11 specific, hand a key event no widget used to the window this view is embedded in
+
+void puglX11ForwardKeyToParent(const PuglView* const view,
+                               const bool press, const uint keycode, const uint mods, const uint time)
+{
+    if (view->parent == 0 || keycode == 0)
+        return;
+
+    Display* const display = view->world->impl->display;
+
+    XEvent xevent = {};
+    XKeyEvent& xkey(xevent.xkey);
+    xkey.type        = press ? KeyPress : KeyRelease;
+    xkey.display     = display;
+    xkey.window      = static_cast<::Window>(view->parent);
+    xkey.root        = RootWindow(display, view->impl->screen);
+    xkey.subwindow   = None;
+    xkey.time        = time;
+    xkey.same_screen = True;
+    xkey.keycode     = keycode;
+    xkey.state       = ((mods & kModifierShift)   ? ShiftMask   : 0U)
+                     | ((mods & kModifierControl) ? ControlMask : 0U)
+                     | ((mods & kModifierAlt)     ? Mod1Mask    : 0U)
+                     | ((mods & kModifierSuper)   ? Mod4Mask    : 0U);
+
+    XSendEvent(display, xkey.window, True, press ? KeyPressMask : KeyReleaseMask, &xevent);
+    XFlush(display);
+}
+
+// --------------------------------------------------------------------------------------------------------------------
 // X11 specific, set dialog window type
 
 void puglX11SetWindowType(const PuglView* const view, const bool isStandalone)

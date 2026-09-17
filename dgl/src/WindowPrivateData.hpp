@@ -223,7 +223,8 @@ struct Window::PrivateData : IdleCallback {
     void onPuglExpose();
     void onPuglClose();
     void onPuglFocus(bool focus, CrossingMode mode);
-    void onPuglKey(const Widget::KeyboardEvent& ev);
+    // True when the modal child or a widget took the key.
+    bool onPuglKey(const Widget::KeyboardEvent& ev);
     void onPuglText(const Widget::CharacterInputEvent& ev);
     void onPuglMouse(const Widget::MouseEvent& ev);
     void onPuglMotion(const Widget::MotionEvent& ev);

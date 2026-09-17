@@ -147,6 +147,11 @@ PuglStatus puglX11UpdateWithoutExposures(PuglWorld* world);
 // X11 specific, set dialog window type
 void puglX11SetWindowType(const PuglView* view, bool isStandalone);
 
+// X11 specific, hand a key event no widget used to the window this view is embedded in
+// Core X11 delivers a key to the child under the pointer, so without this an embedded UI
+// swallows host shortcuts whenever the pointer rests on it.
+void puglX11ForwardKeyToParent(const PuglView* view, bool press, uint keycode, uint mods, uint time);
+
 #elif defined(HAVE_WAYLAND)
 
 #define DGL_USING_WAYLAND

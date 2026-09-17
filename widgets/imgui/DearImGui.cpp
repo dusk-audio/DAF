@@ -420,11 +420,12 @@ bool ImGuiWidget<BaseWidget>::onKeyboard(const Widget::KeyboardEvent& event)
     case kKeyPadDecimal: key = ImGuiKey_KeypadDecimal; break;
     case kKeyPadDivide: key = ImGuiKey_KeypadDivide; break;
     /* FIXME missing ImGuiKey_KeypadEnter */
-    default: return false;
+    // A key ImGui has no name for (space, for one) still belongs to a text field being edited.
+    default: return io.WantTextInput;
     }
 
     io.AddKeyEvent(key, event.press);
-    return io.WantCaptureKeyboard;
+    return io.WantTextInput;
 }
 
 template <class BaseWidget>
