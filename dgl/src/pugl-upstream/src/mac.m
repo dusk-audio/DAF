@@ -113,12 +113,29 @@ rectFromScreen(const NSScreen* screen, NSRect rect)
 }
 
 static NSScreen*
+parentScreen(const PuglView* view)
+{
+  NSView* const parent = (NSView*)view->parent;
+
+  return parent ? [[parent window] screen] : NULL;
+}
+
+static NSScreen*
 viewScreen(const PuglView* view)
 {
-  return view->impl->window ? [view->impl->window screen]
-         : [view->impl->wrapperView window]
-           ? [[view->impl->wrapperView window] screen]
-           : [NSScreen mainScreen];
+  if (view->impl->window) {
+    return [view->impl->window screen];
+  }
+
+  if ([view->impl->wrapperView window]) {
+    return [[view->impl->wrapperView window] screen];
+  }
+
+  // An embedded view that is not attached yet still belongs to whatever screen
+  // its parent is on, which need not be the one carrying the menu bar.
+  NSScreen* const parent = parentScreen(view);
+
+  return parent ? parent : [NSScreen mainScreen];
 }
 
 static NSRect
@@ -1189,7 +1206,10 @@ puglRealize(PuglView* view)
     return st;
   }
 
-  const NSScreen* const screen      = [NSScreen mainScreen];
+  // An embedded view is sized in the backing pixels of its parent's screen, so
+  // the conversion to points has to use that screen and not the main one.
+  NSScreen* const       embedScreen = parentScreen(view);
+  const NSScreen* const screen      = embedScreen ? embedScreen : [NSScreen mainScreen];
   const double          scaleFactor = [screen backingScaleFactor];
 
   // Getting depth from the display mode seems tedious, just set usual values
