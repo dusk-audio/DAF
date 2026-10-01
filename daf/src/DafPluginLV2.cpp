@@ -688,8 +688,12 @@ public:
 
                     if (fLastPositionData.barBeat >= 0.0f)
                     {
-                        fLastPositionData.barBeat = std::fmod(fLastPositionData.barBeat+addedBarBeats,
-                                                              (double)fLastPositionData.beatsPerBar);
+                        // advance once, then split into whole bars and the beat within the bar
+                        const double beatsPerBar = fLastPositionData.beatsPerBar;
+                        const double newBarBeat  = fLastPositionData.barBeat + addedBarBeats;
+                        const double addedBars   = std::floor(newBarBeat / beatsPerBar);
+
+                        fLastPositionData.barBeat = newBarBeat - addedBars * beatsPerBar;
 
                         const double rest = std::fmod(fLastPositionData.barBeat, 1.0f);
                         fTimePosition.bbt.beat = std::round(fLastPositionData.barBeat - rest + 1.0);
@@ -697,8 +701,7 @@ public:
 
                         if (fLastPositionData.bar >= 0)
                         {
-                            fLastPositionData.bar += std::floor((fLastPositionData.barBeat+addedBarBeats)/
-                                                             fLastPositionData.beatsPerBar);
+                            fLastPositionData.bar += addedBars;
 
                             if (fLastPositionData.bar < 0)
                                 fLastPositionData.bar = 0;

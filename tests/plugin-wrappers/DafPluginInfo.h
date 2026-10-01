@@ -33,4 +33,9 @@
 #define DAF_PLUGIN_NUM_OUTPUTS  1
 #define DAF_PLUGIN_WANT_TIMEPOS 1
 
+// LV2 state is tested through the worker
+#if defined(DAF_PLUGIN_TARGET_LV2)
+# define DAF_PLUGIN_WANT_STATE 1
+#endif
+
 #endif // DAF_PLUGIN_INFO_H_INCLUDED
