@@ -50,6 +50,11 @@ public:
         return pData->setScaleFactor(scaleFactor);
     }
 
+    bool followsPuglScaleFactor() const
+    {
+        return pData->followsPuglScaleFactor;
+    }
+
 protected:
     void onScaleFactorChanged(const double scaleFactor) override
     {
@@ -153,6 +158,18 @@ int main()
         DAF_ASSERT_EQUAL(win.getWidth(), 500u, "auto-scaling window grows to the new factor");
         DAF_ASSERT_EQUAL(win.getHeight(), 500u, "auto-scaling window grows to the new factor");
         DAF_ASSERT_EQUAL(win.scaleFactorChanges, 2u, "each change is notified once");
+    }
+
+    // a window that follows pugl's scale factor stops doing so once the host sets one, so a later
+    // configure event (Wayland) does not put pugl's factor back
+    {
+        Application app(true);
+
+        DAF_NAMESPACE::PluginWindow win(app, 200, 200, 0.0);
+        DAF_ASSERT_EQUAL(win.followsPuglScaleFactor(), true, "window without a scale factor follows pugl");
+
+        win.setScaleFactorFromHost(win.getScaleFactor() * 2.0);
+        DAF_ASSERT_EQUAL(win.followsPuglScaleFactor(), false, "host scale factor stops following pugl");
     }
 
     // TODO

@@ -74,8 +74,9 @@ struct Window::PrivateData : IdleCallback {
     /** Whether this Window is embed into another (usually not DGL-controlled) Window. */
     const bool isEmbed;
 
-    /** Whether the reported scale factor should follow the backing Pugl view. */
-    const bool followsPuglScaleFactor;
+    /** Whether the reported scale factor should follow the backing Pugl view.
+        Cleared once the host sets the scale factor explicitly through setScaleFactor. */
+    bool followsPuglScaleFactor;
 
     /** Whether to schedule repaints on the next idle call, used for AU */
     const bool usesScheduledRepaints;

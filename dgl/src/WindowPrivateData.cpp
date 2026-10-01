@@ -478,6 +478,12 @@ bool Window::PrivateData::setScaleFactor(const double newScaleFactor)
 {
     DAF_SAFE_ASSERT_RETURN(newScaleFactor > 0.0, false);
 
+    /* The host now owns the scale factor. Stop following pugl's, or the next configure event
+       (Wayland) would put pugl's factor back and report a second change while the window keeps
+       the host-scaled size. This applies even when the factor is unchanged: it is still the
+       host's choice from here on. */
+    followsPuglScaleFactor = false;
+
     if (d_isEqual(scaleFactor, newScaleFactor))
         return false;
 
