@@ -2531,6 +2531,12 @@ public:
     // ----------------------------------------------------------------------------------------------------------------
 
 private:
+   #if DAF_PLUGIN_WANT_STATE
+    // Plugin::updateStateValue() lands here: constructed before the plugin and destroyed after it,
+    // so it exists whenever the plugin (or a UI created along with it) can call that
+    PluginStateUpdates fStateUpdates;
+   #endif
+
     // Plugin and UI
     PluginExporter fPlugin;
    #if DAF_PLUGIN_HAS_UI
@@ -2581,10 +2587,6 @@ private:
    #if DAF_PLUGIN_WANT_TIMEPOS
     TimePosition fTimePosition;
    #endif
-   #if DAF_PLUGIN_WANT_STATE
-    PluginStateUpdates fStateUpdates;
-   #endif
-
     struct HostExtensions {
         const clap_host_t* const host;
         const clap_host_params_t* params;

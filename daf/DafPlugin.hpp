@@ -193,7 +193,9 @@ public:
       `setState()` is called right away, while the UI and the host's "modified" flag are updated
       later on the host's main thread. A state the host saves in the meantime has the new value.
       VST2 and VST3 get there on the editor's idle, so with the editor closed the host is not told before it
-      opens; a VST3 plugin without a UI tells the host on its next setActive instead.
+      opens; a VST3 plugin without a UI tells the host on its next setActive instead.@n
+      Until the plugin is fully constructed, that is from its constructor and from initState() and the other
+      init functions, there is no host to tell yet: the call does nothing and returns false.
       @note this function does nothing on DSSI plugin format, as DSSI only supports UI->DSP messages.
 
       TODO API under construction

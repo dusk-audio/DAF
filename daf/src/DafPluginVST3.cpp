@@ -2834,6 +2834,16 @@ public:
     // ----------------------------------------------------------------------------------------------------------------
 
 private:
+   #if DAF_PLUGIN_WANT_STATE
+    // Plugin::updateStateValue() lands here: constructed before the plugin and destroyed after it,
+    // so it exists whenever the plugin can call that
+    PluginStateUpdates fStateUpdates;
+   #if DAF_VST3_USES_SEPARATE_CONTROLLER
+    // component: raised with every update, see Vst3StateUpdateFlags; created in the constructor body
+    Vst3StateUpdateFlags::Flag fStateUpdatesPending;
+   #endif
+   #endif
+
     // Plugin
     PluginExporter fPlugin;
 
@@ -2885,10 +2895,7 @@ private:
    #endif
    #if DAF_PLUGIN_WANT_STATE
     StringMap fStateMap;
-    PluginStateUpdates fStateUpdates;
    #if DAF_VST3_USES_SEPARATE_CONTROLLER
-    // component: its own flag, set with every update, and the ID it is registered with; see Vst3StateUpdateFlags
-    Vst3StateUpdateFlags::Flag fStateUpdatesPending;
     int64_t fStateUpdatesPendingId;
     bool fStateUpdatesPendingIdSent;
     // edit controller: the component's flag, once it sent the ID and lives in this process

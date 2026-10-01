@@ -609,6 +609,13 @@ protected:
     // -------------------------------------------------------------------
 
 private:
+#if DAF_PLUGIN_WANT_STATE
+    // Plugin::updateStateValue() lands here, and from here only goes to the UI: there is no host to keep state for.
+    // Constructed before the plugin and destroyed after it, so it exists whenever the plugin, or the UI
+    // created right after it (which may reach the plugin directly), can call that.
+    PluginStateUpdates fStateUpdates;
+#endif
+
     PluginExporter fPlugin;
 #if DAF_PLUGIN_HAS_UI
     UIExporter     fUI;
@@ -633,11 +640,6 @@ private:
 
     // Temporary data
     float* fLastOutputValues;
-
-#if DAF_PLUGIN_WANT_STATE
-    // There is no host to keep state for, these only go to the UI
-    PluginStateUpdates fStateUpdates;
-#endif
 
 #if DAF_PLUGIN_HAS_UI
     // Store DSP changes to send to UI
