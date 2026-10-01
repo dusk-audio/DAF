@@ -364,6 +364,11 @@ public:
        2. This timer frequency is not guaranteed to have a resolution better than 10ms
           (the maximum timer resolution on Windows) and may be rounded up if it is too short.
           On X11 and MacOS, a resolution of about 1ms can usually be relied on.
+
+      The callback is not owned or tracked beyond this, so it MUST be removed with removeIdleCallback()
+      before the callback object is destroyed, and while this window still exists.
+      A callback without a timer frequency is registered on the Application rather than on this window,
+      and destroying the window does not remove it, so a forgotten one is called through a dangling pointer.
     */
     bool addIdleCallback(IdleCallback* callback, uint timerFrequencyInMs = 0);
 
