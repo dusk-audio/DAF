@@ -956,6 +956,31 @@ public:
     */
     ~NanoBaseWidget() override {}
 
+   /**
+      Whether children sharing this widget's NanoVG context are clipped to the scissor it sets.
+      @see setClipChildren
+    */
+    bool getClipChildren() const noexcept;
+
+   /**
+      Clip the children that share this widget's NanoVG context to the scissor it sets.
+
+      A NanoSubWidget created with a NanoSubWidget or NanoTopLevelWidget parent draws into its
+      parent's context. Its onNanoDisplay() runs inside a save()/restore() pair, and by default its
+      children are drawn after that restore(), so a scissor set in onNanoDisplay() does not reach
+      them: they start from the state this widget was given.
+
+      With this enabled, the scissor this widget leaves at the end of onNanoDisplay() is carried
+      into its children (the rest of the state still starts from what this widget was given),
+      which lets a scroll area, panel or tab page keep its children inside its own bounds.
+      Children that must draw outside it, such as popups or tooltips, should then reset the
+      scissor themselves or not be children of this widget.
+
+      Disabled by default. It has no effect on a widget with its own NanoVG context, whose
+      children already draw in the same state as its onNanoDisplay() left behind.
+    */
+    void setClipChildren(bool clipChildren = true) noexcept;
+
 protected:
    /**
       New virtual onDisplay function.
@@ -979,6 +1004,7 @@ private:
 
    /** @internal */
     const bool fUsingParentContext;
+    bool fClipChildren;
     void displayChildren();
     friend class NanoBaseWidget<TopLevelWidget>;
     friend class NanoBaseWidget<StandaloneWindow>;

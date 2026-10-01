@@ -59,13 +59,15 @@ private:
 class NanoClipContainer : public NanoTopLevelWidget
 {
 public:
-    explicit NanoClipContainer(Window& win)
+    NanoClipContainer(Window& win, const bool clipChildren)
         : NanoTopLevelWidget(win),
           panel(this, Color(0, 0, 255), true),
           child(&panel, Color(255, 0, 0), false)
     {
-        // the panel covers the middle of the window and clips to its own bounds,
-        // its child covers the whole window and must only show inside the panel
+        // the panel covers the middle of the window and sets a scissor to its own bounds,
+        // its child covers the whole window and must only show inside the panel when the panel
+        // clips its children, and everywhere when it does not (the default)
+        panel.setClipChildren(clipChildren);
         panel.setAbsolutePos(50, 50);
         panel.setSize(100, 100);
         child.setAbsolutePos(0, 0);
@@ -116,7 +118,8 @@ static bool readPixel(const char* const filename, const double relX, const doubl
     return ok;
 }
 
-int main()
+// render the panel and its child, then sample the picture inside and outside the panel
+static int renderAndCheck(const bool clipChildren)
 {
     using DGL_NAMESPACE::Application;
     using DGL_NAMESPACE::NanoClipContainer;
@@ -133,7 +136,7 @@ int main()
 
     {
         const ScopedGraphicsContext sgc(win);
-        container = new NanoClipContainer(win);
+        container = new NanoClipContainer(win, clipChildren);
     }
 
     win.show();
@@ -162,13 +165,30 @@ int main()
 
     DAF_ASSERT_EQUAL(readPixel(filename, 0.1, 0.1, rgb), true, "picture can be read");
     const bool grey = rgb[0] > 100 && rgb[0] < 160 && rgb[1] > 100 && rgb[1] < 160 && rgb[2] > 100 && rgb[2] < 160;
-    DAF_ASSERT_EQUAL(grey, true, "child is clipped to the scissor of its parent");
+    const bool redOutside = rgb[0] > 200 && rgb[1] < 50 && rgb[2] < 50;
+
+    if (clipChildren)
+    {
+        DAF_ASSERT_EQUAL(grey, true, "child is clipped to the scissor of its parent");
+    }
+    else
+    {
+        DAF_ASSERT_EQUAL(redOutside, true, "child is not clipped by default");
+    }
 
     container = nullptr;
     win.close();
     app.quit();
     std::remove(filename);
     return 0;
+}
+
+int main()
+{
+    if (const int ret = renderAndCheck(false))
+        return ret;
+
+    return renderAndCheck(true);
 }
 
 // --------------------------------------------------------------------------------------------------------------------

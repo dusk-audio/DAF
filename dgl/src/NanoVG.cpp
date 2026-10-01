@@ -1097,6 +1097,18 @@ void NanoBaseWidget<BaseWidget>::displayChildren()
     }
 }
 
+template <class BaseWidget>
+bool NanoBaseWidget<BaseWidget>::getClipChildren() const noexcept
+{
+    return fClipChildren;
+}
+
+template <class BaseWidget>
+void NanoBaseWidget<BaseWidget>::setClipChildren(const bool clipChildren) noexcept
+{
+    fClipChildren = clipChildren;
+}
+
 // -----------------------------------------------------------------------
 // NanoSubWidget
 
@@ -1104,7 +1116,8 @@ template <>
 NanoBaseWidget<SubWidget>::NanoBaseWidget(Widget* const parentWidget, int flags)
     : SubWidget(parentWidget),
       NanoVG(flags),
-      fUsingParentContext(false)
+      fUsingParentContext(false),
+      fClipChildren(false)
 {
     setNeedsViewportScaling();
 }
@@ -1113,7 +1126,8 @@ template <>
 NanoBaseWidget<SubWidget>::NanoBaseWidget(NanoSubWidget* const parentWidget)
     : SubWidget(parentWidget),
       NanoVG(parentWidget->getContext()),
-      fUsingParentContext(true)
+      fUsingParentContext(true),
+      fClipChildren(false)
 {
     setSkipDrawing();
 }
@@ -1122,7 +1136,8 @@ template <>
 NanoBaseWidget<SubWidget>::NanoBaseWidget(NanoTopLevelWidget* const parentWidget)
     : SubWidget(parentWidget),
       NanoVG(parentWidget->getContext()),
-      fUsingParentContext(true)
+      fUsingParentContext(true),
+      fClipChildren(false)
 {
     setSkipDrawing();
 }
@@ -1136,15 +1151,23 @@ inline void NanoBaseWidget<SubWidget>::onDisplay()
 {
     if (fUsingParentContext)
     {
-        NVGcontext* const context = getContext();
-        NVGscissor scissor = NVGscissor();
-
         NanoVG::save();
         translate(SubWidget::getAbsoluteX(), SubWidget::getAbsoluteY());
         onNanoDisplay();
 
+        if (! fClipChildren)
+        {
+            // children start from the state we were given, scissor included
+            NanoVG::restore();
+            displayChildren();
+            return;
+        }
+
         // children start from the state we were given, but stay clipped to any scissor we set.
         // nanovg stores the scissor already transformed, so it does not depend on our translation.
+        NVGcontext* const context = getContext();
+        NVGscissor scissor = NVGscissor();
+
         if (context != nullptr)
             scissor = getNanoVGScissor(context);
 
@@ -1175,7 +1198,8 @@ template <>
 NanoBaseWidget<TopLevelWidget>::NanoBaseWidget(Window& windowToMapTo, int flags)
     : TopLevelWidget(windowToMapTo),
       NanoVG(flags),
-      fUsingParentContext(false) {}
+      fUsingParentContext(false),
+      fClipChildren(false) {}
 
 template <>
 inline void NanoBaseWidget<TopLevelWidget>::onDisplay()
@@ -1195,13 +1219,15 @@ template <>
 NanoBaseWidget<StandaloneWindow>::NanoBaseWidget(Application& app, int flags)
     : StandaloneWindow(app),
       NanoVG(flags),
-      fUsingParentContext(false) {}
+      fUsingParentContext(false),
+      fClipChildren(false) {}
 
 template <>
 NanoBaseWidget<StandaloneWindow>::NanoBaseWidget(Application& app, Window& parentWindow, int flags)
     : StandaloneWindow(app, parentWindow),
       NanoVG(flags),
-      fUsingParentContext(false) {}
+      fUsingParentContext(false),
+      fClipChildren(false) {}
 
 template <>
 inline void NanoBaseWidget<StandaloneWindow>::onDisplay()
