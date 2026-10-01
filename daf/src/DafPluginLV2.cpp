@@ -1203,7 +1203,9 @@ public:
             if (!setState(key, filename))
                 return LV2_WORKER_ERR_UNKNOWN;
 
-            /* FIXME host should be responsible for updating UI side, not us
+            // hosts do not generally forward a patch:Set to the UI, so echo the new value back.
+            // setState has already stored it in fStateMap under fStateMapMutex; the flag is atomic,
+            // and the run loop sends it from the map under the same mutex.
             for (uint32_t i=0, count=fPlugin.getStateCount(); i < count; ++i)
             {
                 if (fPlugin.getStateKey(i) == key)
@@ -1213,7 +1215,6 @@ public:
                     break;
                 }
             }
-            */
 
             return LV2_WORKER_SUCCESS;
         }
