@@ -27,8 +27,8 @@ START_NAMESPACE_DGL
 
 struct Widget::PrivateData {
     Widget* const self;
-    TopLevelWidget* const topLevelWidget;
-    Widget* const parentWidget;
+    TopLevelWidget* topLevelWidget; // nulled if the top-level widget is destroyed first
+    Widget* parentWidget; // nulled if the parent widget is destroyed first
     uint id;
     char* name;
     bool needsScaling;
@@ -52,6 +52,7 @@ struct Widget::PrivateData {
     void giveFocusChangedEventForSubWidgets(const FocusEvent& ev);
 
     static TopLevelWidget* findTopLevelWidget(Widget* const w);
+    static void clearTopLevelWidget(Widget* const w);
 
     DAF_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PrivateData)
 };

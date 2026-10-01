@@ -148,6 +148,10 @@ void SubWidget::repaint() noexcept
 
 void SubWidget::toBottom()
 {
+    // nothing to reorder if the parent widget is already gone
+    if (pData->parentWidget == nullptr)
+        return;
+
     std::list<SubWidget*>& subwidgets(pData->parentWidget->pData->subWidgets);
 
     subwidgets.remove(this);
@@ -156,6 +160,10 @@ void SubWidget::toBottom()
 
 void SubWidget::toFront()
 {
+    // nothing to reorder if the parent widget is already gone
+    if (pData->parentWidget == nullptr)
+        return;
+
     std::list<SubWidget*>& subwidgets(pData->parentWidget->pData->subWidgets);
 
     subwidgets.remove(this);
