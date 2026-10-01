@@ -10,6 +10,11 @@ enum ImGuiKnobFlags_ {
     ImGuiKnobFlags_NoInput = 1 << 1,
     ImGuiKnobFlags_ValueTooltip = 1 << 2,
     ImGuiKnobFlags_DragHorizontal = 1 << 3,
+    // Clamp the value to [v_min, v_max] after dragging or typing, typed input included.
+    ImGuiKnobFlags_AlwaysClamp = 1 << 4,
+    // Drag in log space. The knob is drawn in log space too when v_min and v_max are both > 0,
+    // linearly otherwise.
+    ImGuiKnobFlags_Logarithmic = 1 << 5,
 };
 
 typedef int ImGuiKnobVariant;

@@ -29,7 +29,10 @@ endif
 # ---------------------------------------------------------------------------------------------------------------------
 
 MANUAL_TESTS  =
-UNIT_TESTS    = AudioUnitBufferList Color Point
+UNIT_TESTS    = AudioUnitBufferList Color ImGuiKnobs Point
+
+# ImGuiKnobs builds Dear ImGui itself, headless, and includes the knobs the way DearImGui.cpp does.
+../build/tests/ImGuiKnobs.cpp.o: BUILD_CXX_FLAGS += -I../widgets/imgui
 
 # Build-time checks: the object compiling is the test, so it is never linked or run.
 # StaticTarget is compiled as a plugin, so it needs a DafPluginInfo.h of its own.

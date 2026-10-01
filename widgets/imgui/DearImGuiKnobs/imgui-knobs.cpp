@@ -52,6 +52,61 @@ namespace ImGuiKnobs {
             draw_arc1(center, radius, mid_angle - overlap, end_angle, thickness, color, num_segments);
         }
 
+        // Position of the value along the knob's travel, in [0, 1] whatever the value,
+        // so that out-of-range values (typed in, or set by the caller) cannot over-rotate the drawing.
+        template<typename DataType>
+        float value_to_t(DataType value, DataType v_min, DataType v_max, ImGuiKnobFlags flags) {
+            if (v_min == v_max) {
+                return 0.0f;
+            }
+
+            float t;
+            if ((flags & ImGuiKnobFlags_Logarithmic) && v_min > 0 && v_max > 0) {
+                const float lo = (float) (v_min < v_max ? v_min : v_max);
+                const float hi = (float) (v_min < v_max ? v_max : v_min);
+                const float v = ImClamp((float) value, lo, hi);
+                t = logf(v / (float) v_min) / logf((float) v_max / (float) v_min);
+            } else {
+                t = ((float) value - (float) v_min) / ((float) v_max - (float) v_min);
+            }
+
+            // written so that NaN ends up at 0
+            if (!(t > 0.0f)) {
+                return 0.0f;
+            }
+            return t < 1.0f ? t : 1.0f;
+        }
+
+        // returns true if the value had to be clamped
+        template<typename DataType>
+        bool clamp_value(DataType *p_value, DataType v_min, DataType v_max) {
+            const DataType lo = v_min < v_max ? v_min : v_max;
+            const DataType hi = v_min < v_max ? v_max : v_min;
+            if (*p_value < lo) {
+                *p_value = lo;
+                return true;
+            }
+            if (*p_value > hi) {
+                *p_value = hi;
+                return true;
+            }
+            return false;
+        }
+
+        inline ImGuiSliderFlags slider_flags(ImGuiKnobFlags flags) {
+            ImGuiSliderFlags drag_flags = 0;
+            if (!(flags & ImGuiKnobFlags_DragHorizontal)) {
+                drag_flags |= ImGuiSliderFlags_Vertical;
+            }
+            if (flags & ImGuiKnobFlags_AlwaysClamp) {
+                drag_flags |= ImGuiSliderFlags_AlwaysClamp;
+            }
+            if (flags & ImGuiKnobFlags_Logarithmic) {
+                drag_flags |= ImGuiSliderFlags_Logarithmic;
+            }
+            return drag_flags;
+        }
+
         template<typename DataType>
         struct knob {
             float radius;
@@ -68,23 +123,23 @@ namespace ImGuiKnobs {
 
             knob(const char *_label, ImGuiDataType data_type, DataType *p_value, DataType v_min, DataType v_max, float speed, float _radius, const char *format, ImGuiKnobFlags flags) {
                 radius = _radius;
-                t = ((float) *p_value - v_min) / (v_max - v_min);
                 auto screen_pos = ImGui::GetCursorScreenPos();
 
                 // Handle dragging
                 ImGui::InvisibleButton(_label, {radius * 2.0f, radius * 2.0f});
                 auto gid = ImGui::GetID(_label);
-                ImGuiSliderFlags drag_flags = 0;
-                if (!(flags & ImGuiKnobFlags_DragHorizontal)) {
-                    drag_flags |= ImGuiSliderFlags_Vertical;
-                }
-                value_changed = ImGui::DragBehavior(gid, data_type, p_value, speed, &v_min, &v_max, format, drag_flags);
+                value_changed = ImGui::DragBehavior(gid, data_type, p_value, speed, &v_min, &v_max, format, slider_flags(flags));
 
                 angle_min = IMGUIKNOBS_PI * 0.75f;
                 angle_max = IMGUIKNOBS_PI * 2.25f;
                 center = {screen_pos[0] + radius, screen_pos[1] + radius};
                 is_active = ImGui::IsItemActive();
                 is_hovered = ImGui::IsItemHovered();
+                set_value(*p_value, v_min, v_max, flags);
+            }
+
+            void set_value(DataType value, DataType v_min, DataType v_max, ImGuiKnobFlags flags) {
+                t = value_to_t(value, v_min, v_max, flags);
                 angle = angle_min + (angle_max - angle_min) * t;
                 angle_cos = cosf(angle);
                 angle_sin = sinf(angle);
@@ -174,15 +229,18 @@ namespace ImGuiKnobs {
 
             // Draw input
             if (!(flags & ImGuiKnobFlags_NoInput)) {
-                ImGuiSliderFlags drag_flags = 0;
-                if (!(flags & ImGuiKnobFlags_DragHorizontal)) {
-                    drag_flags |= ImGuiSliderFlags_Vertical;
-                }
-                auto changed = ImGui::DragScalar("###knob_drag", data_type, p_value, speed, &v_min, &v_max, format, drag_flags);
+                auto changed = ImGui::DragScalar("###knob_drag", data_type, p_value, speed, &v_min, &v_max, format, slider_flags(flags));
                 if (changed) {
                     k.value_changed = true;
                 }
             }
+
+            if ((flags & ImGuiKnobFlags_AlwaysClamp) && clamp_value(p_value, v_min, v_max)) {
+                k.value_changed = true;
+            }
+
+            // the input box may have changed the value after the knob took its position
+            k.set_value(*p_value, v_min, v_max, flags);
 
             ImGui::EndGroup();
             ImGui::PopItemWidth();
