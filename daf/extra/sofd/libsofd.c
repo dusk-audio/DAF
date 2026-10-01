@@ -47,6 +47,23 @@
 #include <sys/stat.h>
 #include <assert.h>
 
+/* Large files. Without _FILE_OFFSET_BITS=64, 32-bit glibc has a 32-bit off_t:
+ * stat() fails with EOVERFLOW for files of 2 GiB or more, and readdir() for
+ * 64-bit inode numbers, so such entries would silently vanish from the list.
+ * This file is compiled as part of other translation units, after system
+ * headers, so it cannot pick _FILE_OFFSET_BITS itself. It uses the explicit
+ * 64-bit interfaces instead, which glibc provides with _LARGEFILE64_SOURCE
+ * (implied by _GNU_SOURCE, which g++ always defines). Other C libraries
+ * either have a 64-bit off_t throughout or follow the build's own choice. */
+#if defined(__GLIBC__) && defined(_LARGEFILE64_SOURCE)
+# define SOFD_LFS64
+typedef struct stat64 sofd_stat_t;
+static inline int sofd_stat (const char *path, sofd_stat_t *st) { return stat64 (path, st); }
+#else
+typedef struct stat sofd_stat_t;
+static inline int sofd_stat (const char *path, sofd_stat_t *st) { return stat (path, st); }
+#endif
+
 #if defined(__clang__)
 # pragma clang diagnostic push
 # pragma clang diagnostic ignored "-Wnarrowing"
@@ -168,12 +185,12 @@ static int cmp_recent (const void *p1, const void *p2) {
 
 int x_fib_add_recent (const char *path, time_t atime) {
 	unsigned int i;
-	struct stat fs;
+	sofd_stat_t fs;
 	if (_recentlock) { return -1; }
 	if (access (path, R_OK)) {
 		return -1;
 	}
-	if (stat (path, &fs)) {
+	if (sofd_stat (path, &fs)) {
 		return -1;
 	}
 	if (!S_ISREG (fs.st_mode)) {
@@ -340,6 +357,14 @@ const char *x_fib_recent_file(const char *appname) {
 #ifdef HAVE_X11
 #include <dirent.h>
 
+#ifdef SOFD_LFS64
+typedef struct dirent64 sofd_dirent_t;
+static inline sofd_dirent_t* sofd_readdir (DIR *dir) { return readdir64 (dir); }
+#else
+typedef struct dirent sofd_dirent_t;
+static inline sofd_dirent_t* sofd_readdir (DIR *dir) { return readdir (dir); }
+#endif
+
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
@@ -422,7 +447,7 @@ typedef struct {
 	char strtime[32];
 	char strsize[32];
 	int ssizew;
-	off_t size;
+	uint64_t size;
 	time_t mtime;
 	uint8_t flags; // 2: selected, 4: isdir 8: recent-entry
 	FibRecentFile *rfp;
@@ -1065,13 +1090,13 @@ static int cmp_s_down (const void *p1, const void *p2) {
 }
 
 static void fmt_size (Display *dpy, FibFileEntry *f) {
-	if (f->size > 10995116277760) {
+	if (f->size > 10995116277760ULL) {
 		sprintf (f->strsize, "%.0f TB", f->size / 1099511627776.f);
 	}
-	if (f->size > 1099511627776) {
+	else if (f->size > 1099511627776ULL) {
 		sprintf (f->strsize, "%.1f TB", f->size / 1099511627776.f);
 	}
-	else if (f->size > 10737418240) {
+	else if (f->size > 10737418240ULL) {
 		sprintf (f->strsize, "%.0f GB", f->size / 1073741824.f);
 	}
 	else if (f->size > 1073741824) {
@@ -1195,7 +1220,7 @@ static void fib_post_opendir (Display *dpy, const char *sel) {
 
 static int fib_dirlistadd (Display *dpy, const int i, const char* path, const char *name, time_t mtime) {
 	char tp[1024];
-	struct stat fs;
+	sofd_stat_t fs;
 	if (!_fib_hidden_fn && name[0] == '.') return -1;
 	if (!strcmp (name, ".")) return -1;
 	if (!strcmp (name, "..")) return -1;
@@ -1204,7 +1229,7 @@ static int fib_dirlistadd (Display *dpy, const int i, const char* path, const ch
 	if (access (tp, R_OK)) {
 		return -1;
 	}
-	if (stat (tp, &fs)) {
+	if (sofd_stat (tp, &fs)) {
 		return -1;
 	}
 	assert (i < _dircount); // could happen if dir changes while we're reading.
@@ -1225,7 +1250,7 @@ static int fib_dirlistadd (Display *dpy, const int i, const char* path, const ch
 	}
 	strcpy (_dirlist[i].name, name);
 	_dirlist[i].mtime = mtime > 0 ? mtime : fs.st_mtime;
-	_dirlist[i].size = fs.st_size;
+	_dirlist[i].size = (uint64_t) fs.st_size;
 	if (!(_dirlist[i].flags & 4))
 		fmt_size (dpy, &_dirlist[i]);
 	fmt_time (dpy, &_dirlist[i]);
@@ -1282,14 +1307,14 @@ static int fib_opendir (Display *dpy, const char* path, const char *sel) {
 		strcpy (_cur_path, "/");
 	} else {
 		int i;
-		struct dirent *de;
+		sofd_dirent_t *de;
 		if (path != _cur_path)
 			strcpy (_cur_path, path);
 
 		if (_cur_path[strlen (_cur_path) -1] != '/')
 			strcat (_cur_path, "/");
 
-		while ((de = readdir (dir))) {
+		while ((de = sofd_readdir (dir))) {
 			if (!_fib_hidden_fn && de->d_name[0] == '.') continue;
 			++_dircount;
 		}
@@ -1300,7 +1325,7 @@ static int fib_opendir (Display *dpy, const char* path, const char *sel) {
 		rewinddir (dir);
 
 		i = 0;
-		while ((de = readdir (dir))) {
+		while ((de = sofd_readdir (dir))) {
 			if (!fib_dirlistadd (dpy, i, _cur_path, de->d_name, 0))
 				++i;
 		}
@@ -1704,7 +1729,7 @@ static void add_place_raw (Display *dpy, const char *name, const char *path) {
 
 static int add_place_places (Display *dpy, const char *name, const char *url) {
 	char const * path;
-	struct stat fs;
+	sofd_stat_t fs;
 	int i;
 	if (!url || strlen (url) < 1) return -1;
 	if (!name || strlen (name) < 1) return -1;
@@ -1721,7 +1746,7 @@ static int add_place_places (Display *dpy, const char *name, const char *url) {
 	if (access (path, R_OK)) {
 		return -1;
 	}
-	if (stat (path, &fs)) {
+	if (sofd_stat (path, &fs)) {
 		return -1;
 	}
 	if (!S_ISDIR (fs.st_mode)) {
