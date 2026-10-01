@@ -153,6 +153,12 @@ public:
         if (pData->view == nullptr)
             return;
 
+       #if defined(DAF_PLUGIN_TARGET_CLAP) || defined(DAF_PLUGIN_TARGET_VST2)
+        // These formats have no way for the host to hand the editor the keyboard focus, so on
+        // Windows the window takes it itself on a click. Other formats leave it to the host.
+        pData->grabsFocusOnClick = true;
+       #endif
+
         // this is called just before creating UI, ensuring proper context to it
         if (pData->initPost())
         {

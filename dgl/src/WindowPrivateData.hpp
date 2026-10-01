@@ -83,6 +83,11 @@ struct Window::PrivateData : IdleCallback {
     /** Whether to ignore resize requests and feed them into the host instead, used for CLAP and VST3 */
     const bool usesSizeRequest;
 
+    /** Whether an embedded window takes the keyboard focus when clicked, on Windows only.
+        Set by the plugin wrappers of formats with no focus API (CLAP and VST2), where nothing
+        else would give an embedded Win32 child the keyboard. Defaults to false. */
+    bool grabsFocusOnClick;
+
     /** Scale factor to report to widgets on request, purely informational. */
     double scaleFactor;
 

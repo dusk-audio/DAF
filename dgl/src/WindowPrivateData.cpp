@@ -116,6 +116,7 @@ Window::PrivateData::PrivateData(Application& a, Window* const s)
       followsPuglScaleFactor(true),
       usesScheduledRepaints(false),
       usesSizeRequest(false),
+      grabsFocusOnClick(false),
       scaleFactor(DGL_NAMESPACE::getScaleFactor(view)),
       autoScaling(false),
       autoScaleFactor(1.0),
@@ -153,6 +154,7 @@ Window::PrivateData::PrivateData(Application& a, Window* const s, PrivateData* c
       followsPuglScaleFactor(ppData->followsPuglScaleFactor),
       usesScheduledRepaints(false),
       usesSizeRequest(false),
+      grabsFocusOnClick(false),
       scaleFactor(ppData->scaleFactor),
       autoScaling(false),
       autoScaleFactor(1.0),
@@ -192,6 +194,7 @@ Window::PrivateData::PrivateData(Application& a, Window* const s,
       followsPuglScaleFactor(d_isZero(scale)),
       usesScheduledRepaints(false),
       usesSizeRequest(false),
+      grabsFocusOnClick(false),
       scaleFactor(scale != 0.0 ? scale : DGL_NAMESPACE::getScaleFactor(view)),
       autoScaling(false),
       autoScaleFactor(1.0),
@@ -234,6 +237,7 @@ Window::PrivateData::PrivateData(Application& a, Window* const s,
       followsPuglScaleFactor(d_isZero(scale)),
       usesScheduledRepaints(_usesScheduledRepaints),
       usesSizeRequest(_usesSizeRequest),
+      grabsFocusOnClick(false),
       scaleFactor(scale != 0.0 ? scale : DGL_NAMESPACE::getScaleFactor(view)),
       autoScaling(false),
       autoScaleFactor(1.0),
@@ -1232,11 +1236,14 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
 
        #ifdef DAF_OS_WINDOWS
         // Win32 never gives a child window the keyboard on a click, and a CLAP or VST2 host has no
-        // focus callback to do it either, so an embedded UI would never see a key. Take the focus
-        // on a primary click, as a native control would; keys the UI does not use still go to the
-        // host, see PUGL_KEY_PRESS above. Done before dispatching, so a modal child that claims
-        // the focus back in onPuglMouse keeps it.
-        if (ev.press && event->button.button == 0 && pData->isEmbed && ! puglHasFocus(view))
+        // focus API to do it either, so an embedded UI would never see a key. Where the plugin
+        // wrapper asked for it (grabsFocusOnClick), take the focus on a primary click, as a native
+        // control would; keys the UI does not use still go to the host, see PUGL_KEY_PRESS above.
+        // Elsewhere the focus stays the host's to give, VST3 having IPlugView::onFocus for it.
+        // Done before dispatching, so a modal child that claims the focus back in onPuglMouse
+        // keeps it.
+        if (ev.press && event->button.button == 0 && pData->isEmbed && pData->grabsFocusOnClick
+            && ! puglHasFocus(view))
             puglGrabFocus(view);
        #endif
 
