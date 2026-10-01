@@ -16,7 +16,10 @@
 
 /* The VST3 wrapper compiled into this test, with main() as the host. Built with
  * DAF_VST3_CROSS_PLATFORM_UID: the class ID string must be the one Linux and macOS have always shown,
- * on every platform, and the factory and component must accept and return those same IDs. */
+ * on every platform, and the factory and component must accept and return those same IDs.
+ *
+ * Plugin::updateStateValue() from activate() must be in the state the component saves, and, as this plugin
+ * has no UI, mark the project modified through IComponentHandler2 from setActive. */
 
 #define DAF_PLUGIN_TARGET_VST3
 #define DAF_TEST_NO_DGL
@@ -76,6 +79,93 @@ static std::string expectedClassIdString(const uint32_t kind)
     return str;
 }
 
+// --------------------------------------------------------------------------------------------------------------------
+// a component handler that counts IComponentHandler2::setDirty calls, and a stream that collects what is written
+
+static int gSetDirtyCalls = 0;
+static std::string gStreamData;
+
+static v3_component_handler_cpp gHandler;
+static v3_component_handler2_cpp gHandler2;
+static v3_component_handler_cpp* gHandlerPtr = &gHandler;
+static v3_component_handler2_cpp* gHandler2Ptr = &gHandler2;
+static v3_bstream_cpp gStream;
+static v3_bstream_cpp* gStreamPtr = &gStream;
+
+static v3_result V3_API handler_query_interface(void*, const v3_tuid iid, void** const obj)
+{
+    if (v3_tuid_match(iid, v3_component_handler2_iid))
+    {
+        *obj = &gHandler2Ptr;
+        return V3_OK;
+    }
+    if (v3_tuid_match(iid, v3_funknown_iid) || v3_tuid_match(iid, v3_component_handler_iid))
+    {
+        *obj = &gHandlerPtr;
+        return V3_OK;
+    }
+    *obj = nullptr;
+    return V3_NO_INTERFACE;
+}
+
+static v3_result V3_API no_interface(void*, const v3_tuid, void** const obj) { *obj = nullptr; return V3_NO_INTERFACE; }
+static uint32_t V3_API static_ref(void*) { return 1; }
+static v3_result V3_API handler_edit(void*, v3_param_id) { return V3_OK; }
+static v3_result V3_API handler_perform_edit(void*, v3_param_id, double) { return V3_OK; }
+static v3_result V3_API handler_restart(void*, int32_t) { return V3_OK; }
+static v3_result V3_API handler2_set_dirty(void*, const v3_bool state) { if (state) ++gSetDirtyCalls; return V3_OK; }
+static v3_result V3_API handler2_open_editor(void*, const char*) { return V3_OK; }
+static v3_result V3_API handler2_group_edit(void*) { return V3_OK; }
+
+static v3_result V3_API stream_read(void*, void*, int32_t, int32_t* const read)
+{
+    if (read != nullptr) *read = 0;
+    return V3_OK;
+}
+
+static v3_result V3_API stream_write(void*, void* const buffer, const int32_t size, int32_t* const written)
+{
+    gStreamData.append(static_cast<const char*>(buffer), static_cast<std::size_t>(size));
+    if (written != nullptr) *written = size;
+    return V3_OK;
+}
+
+static v3_result V3_API stream_seek(void*, int64_t, int32_t, int64_t*) { return V3_NOT_IMPLEMENTED; }
+static v3_result V3_API stream_tell(void*, int64_t*) { return V3_NOT_IMPLEMENTED; }
+
+static void initTestObjects()
+{
+    gHandler.query_interface = handler_query_interface;
+    gHandler.ref = gHandler.unref = static_ref;
+    gHandler.comp.begin_edit = gHandler.comp.end_edit = handler_edit;
+    gHandler.comp.perform_edit = handler_perform_edit;
+    gHandler.comp.restart_component = handler_restart;
+
+    gHandler2.query_interface = handler_query_interface;
+    gHandler2.ref = gHandler2.unref = static_ref;
+    gHandler2.comp2.set_dirty = handler2_set_dirty;
+    gHandler2.comp2.request_open_editor = handler2_open_editor;
+    gHandler2.comp2.start_group_edit = gHandler2.comp2.finish_group_edit = handler2_group_edit;
+
+    gStream.query_interface = no_interface;
+    gStream.ref = gStream.unref = static_ref;
+    gStream.stream.read = stream_read;
+    gStream.stream.write = stream_write;
+    gStream.stream.seek = stream_seek;
+    gStream.stream.tell = stream_tell;
+}
+
+// whether the state the component saves has the status state at this value
+static bool savedStateHasStatus(v3_component_cpp** const component, const char* const value)
+{
+    gStreamData.clear();
+    if ((*component)->comp.get_state(component, (v3_bstream**)&gStreamPtr) != V3_OK)
+        return false;
+    return gStreamData.find(std::string(kWrapperTestStatusKey) + '\0' + value + '\0') != std::string::npos;
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+
 int main()
 {
     USE_NAMESPACE_DAF;
@@ -119,6 +209,36 @@ int main()
         DAF_ASSERT_EQUAL(std::memcmp(ctrlInfo.class_id, controllerId, sizeof(v3_tuid)), 0,
                          "the factory must list the controller ID the component names");
     }
+
+    // Plugin::updateStateValue() from activate()
+    initTestObjects();
+    DAF_ASSERT_EQUAL(v3_cpp_obj_initialize(component, nullptr), V3_OK, "component initialize must succeed");
+
+    v3_edit_controller_cpp** controller = nullptr;
+    DAF_ASSERT_EQUAL(v3_cpp_obj_query_interface(component, v3_edit_controller_iid, &controller), V3_OK,
+                     "the component must also be the edit controller");
+    DAF_ASSERT_EQUAL((*controller)->ctrl.set_component_handler(controller, (v3_component_handler**)&gHandlerPtr),
+                     V3_OK, "set_component_handler must succeed");
+
+    DAF_ASSERT_EQUAL(gUpdateStateFromConstructor, false, "updateStateValue must fail from the plugin constructor");
+    DAF_ASSERT_EQUAL(gUpdateStateFromInitState, false, "updateStateValue must fail from initState");
+
+    DAF_ASSERT_EQUAL((*component)->comp.set_active(component, true), V3_OK, "set_active must succeed");
+    DAF_ASSERT_EQUAL(gUpdateStateFromActivate, true, "updateStateValue must succeed from activate");
+    DAF_ASSERT_EQUAL(gUpdateStateUnknownKey, false, "updateStateValue must fail for an unknown key");
+    DAF_ASSERT_EQUAL(gSetDirtyCalls, 1, "an update must mark the project modified");
+    DAF_ASSERT_EQUAL(savedStateHasStatus(component, "active-1"), true, "a saved state must have the update");
+
+    DAF_ASSERT_EQUAL((*component)->comp.set_active(component, false), V3_OK, "set_active must succeed");
+    DAF_ASSERT_EQUAL(gSetDirtyCalls, 1, "nothing new must not mark the project modified");
+    DAF_ASSERT_EQUAL((*component)->comp.set_active(component, true), V3_OK, "set_active must succeed");
+    DAF_ASSERT_EQUAL(gSetDirtyCalls, 2, "an update must mark the project modified");
+    DAF_ASSERT_EQUAL(savedStateHasStatus(component, "active-2"), true, "a saved state must have the update");
+    DAF_ASSERT_EQUAL((*component)->comp.set_active(component, false), V3_OK, "set_active must succeed");
+
+    (*controller)->ctrl.set_component_handler(controller, nullptr);
+    v3_cpp_obj_unref(controller);
+    (*component)->base.terminate(component);
 
     (*component)->unref(component);
     (*factory)->unref(factory);

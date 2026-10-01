@@ -49,16 +49,39 @@ enum WrapperTestParameters {
 static constexpr const char* const kWrapperTestStateKey = "file";
 #endif
 
+#ifdef DAF_WRAPPER_TEST_UPDATE_STATE
+/* A second state, which the plugin sets itself through updateStateValue() on every activate(),
+ * to "active-1", "active-2" and so on. */
+static constexpr const char* const kWrapperTestStatusKey = "status";
+
+// what updateStateValue() returned where it was last called from
+static bool gUpdateStateFromConstructor = true; // too early, must be false
+static bool gUpdateStateFromInitState = true;   // too early, must be false
+static bool gUpdateStateFromActivate = false;   // must be true
+static bool gUpdateStateUnknownKey = true;      // must be false
+
+static constexpr const uint32_t kWrapperTestStateCount = 2;
+#elif DAF_PLUGIN_WANT_STATE
+static constexpr const uint32_t kWrapperTestStateCount = 1;
+#else
+static constexpr const uint32_t kWrapperTestStateCount = 0;
+#endif
+
 class WrapperTestPlugin : public Plugin
 {
 public:
     WrapperTestPlugin()
-        : Plugin(kParamCount, 0, DAF_PLUGIN_WANT_STATE ? 1 : 0)
+        : Plugin(kParamCount, 0, kWrapperTestStateCount)
     {
         std::memset(fParameters, 0, sizeof(fParameters));
         fParameters[kParamLogHigh] = 4096.0f;
         fParameters[kParamLogMiddle] = 632.0f;
         fParameters[kParamLinearLow] = 3.0f;
+
+       #ifdef DAF_WRAPPER_TEST_UPDATE_STATE
+        fActivations = 0;
+        gUpdateStateFromConstructor = updateStateValue(kWrapperTestStatusKey, "constructor");
+       #endif
     }
 
 protected:
@@ -130,14 +153,36 @@ protected:
     }
 
    #if DAF_PLUGIN_WANT_STATE
-    void initState(uint32_t, State& state) override
+    void initState(const uint32_t index, State& state) override
     {
+       #ifdef DAF_WRAPPER_TEST_UPDATE_STATE
+        if (index == 1)
+        {
+            state.key = kWrapperTestStatusKey;
+            state.label = "Status";
+            state.hints = kStateIsHostReadable;
+            gUpdateStateFromInitState = updateStateValue(kWrapperTestStatusKey, "initState");
+            return;
+        }
+       #endif
+
         state.key = kWrapperTestStateKey;
         state.label = "File";
         state.hints = kStateIsFilenamePath;
+        return; (void)index;
     }
 
     void setState(const char*, const char*) override {}
+   #endif
+
+   #ifdef DAF_WRAPPER_TEST_UPDATE_STATE
+    void activate() override
+    {
+        char status[32];
+        std::snprintf(status, sizeof(status), "active-%u", ++fActivations);
+        gUpdateStateFromActivate = updateStateValue(kWrapperTestStatusKey, status);
+        gUpdateStateUnknownKey = updateStateValue("unknown", status);
+    }
    #endif
 
     float getParameterValue(const uint32_t index) const override
@@ -167,6 +212,9 @@ protected:
 
 private:
     float fParameters[kParamCount];
+   #ifdef DAF_WRAPPER_TEST_UPDATE_STATE
+    uint32_t fActivations;
+   #endif
 
     DAF_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(WrapperTestPlugin)
 };

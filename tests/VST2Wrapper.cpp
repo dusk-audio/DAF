@@ -15,7 +15,10 @@
  */
 
 /* The VST2 wrapper compiled into this test, with main() as the host. VST2 has no trigger parameters,
- * so the wrapper resets a fired trigger itself and must tell the host the value it reset it to. */
+ * so the wrapper resets a fired trigger itself and must tell the host the value it reset it to.
+ *
+ * Plugin::updateStateValue() from activate() must be in a chunk saved before any editor idle, and must not
+ * overwrite a chunk loaded after it. */
 
 #define DAF_PLUGIN_TARGET_VST2
 #define DAF_TEST_NO_DGL
@@ -30,6 +33,7 @@
 #include "plugin-wrappers/WrapperTestPlugin.hpp"
 #include "daf/DafPluginMain.cpp"
 
+#include <string>
 #include <vector>
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -58,6 +62,18 @@ static intptr_t hostCallback(vst_effect*, const VST_HOST_OPCODE opcode, const in
     default:
         return 0;
     }
+}
+
+// whether the chunk the plugin saves has the status state at this value
+static bool chunkHasStatus(vst_effect* const effect, const char* const value)
+{
+    void* chunk = nullptr;
+    const intptr_t size = effect->control(effect, VST_EFFECT_OPCODE_17, 0, 0, &chunk, 0.0f);
+    if (size <= 0 || chunk == nullptr)
+        return false;
+
+    const std::string data(static_cast<const char*>(chunk), static_cast<std::size_t>(size));
+    return data.find(std::string(kWrapperTestStatusKey) + '\0' + value + '\0') != std::string::npos;
 }
 
 int main()
@@ -100,6 +116,20 @@ int main()
 
     for (const Automation& a : gAutomations)
         DAF_ASSERT_NOT_EQUAL(a.index, static_cast<int32_t>(kParamTrigger), "an idle trigger must not be reported");
+
+    // the plugin updated its state in activate(); with no editor idle yet, a chunk must still have it
+    DAF_ASSERT_EQUAL(gUpdateStateFromConstructor, false, "updateStateValue must fail from the plugin constructor");
+    DAF_ASSERT_EQUAL(gUpdateStateFromInitState, false, "updateStateValue must fail from initState");
+    DAF_ASSERT_EQUAL(gUpdateStateFromActivate, true, "updateStateValue must succeed from activate");
+    DAF_ASSERT_EQUAL(gUpdateStateUnknownKey, false, "updateStateValue must fail for an unknown key");
+    DAF_ASSERT_EQUAL(chunkHasStatus(effect, "active-1"), true, "a saved chunk must have the update");
+
+    // an update made before a chunk load must not overwrite the loaded state
+    effect->control(effect, VST_EFFECT_OPCODE_SUSPEND, 0, 0, nullptr, 0.0f);
+    effect->control(effect, VST_EFFECT_OPCODE_SUSPEND, 0, 1, nullptr, 0.0f);
+    static const char loadedChunk[] = "status\0loaded\0";
+    effect->control(effect, VST_EFFECT_OPCODE_18, 0, sizeof(loadedChunk), const_cast<char*>(loadedChunk), 0.0f);
+    DAF_ASSERT_EQUAL(chunkHasStatus(effect, "loaded"), true, "an update before a load must not overwrite it");
 
     effect->control(effect, VST_EFFECT_OPCODE_SUSPEND, 0, 0, nullptr, 0.0f);
     effect->control(effect, VST_EFFECT_OPCODE_DESTROY, 0, 0, nullptr, 0.0f);

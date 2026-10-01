@@ -15,7 +15,11 @@
  */
 
 /* The CLAP wrapper compiled into this test, with main() as the host. TimePosition::frame is the
- * transport position: it must follow the transport timeline, not the free-running steady_time. */
+ * transport position: it must follow the transport timeline, not the free-running steady_time.
+ *
+ * Plugin::updateStateValue() from activate() must ask for a main-thread callback, be in a state saved
+ * before that callback, mark the state dirty from the callback unless a save or load got there first,
+ * and never overwrite a state loaded after it. */
 
 #define DAF_PLUGIN_TARGET_CLAP
 #define DAF_TEST_NO_DGL
@@ -24,10 +28,68 @@
 #include "plugin-wrappers/WrapperTestPlugin.hpp"
 #include "daf/DafPluginMain.cpp"
 
+#include <algorithm>
+#include <string>
+
 // --------------------------------------------------------------------------------------------------------------------
 
-static const void* CLAP_ABI host_get_extension(const clap_host_t*, const char*) { return nullptr; }
+static int gCallbackRequests = 0;
+static int gMarkDirtyCalls = 0;
+
+static void CLAP_ABI host_mark_dirty(const clap_host_t*) { ++gMarkDirtyCalls; }
+static const clap_host_state_t gHostState = { host_mark_dirty };
+
+static const void* CLAP_ABI host_get_extension(const clap_host_t*, const char* const id)
+{
+    if (std::strcmp(id, CLAP_EXT_STATE) == 0)
+        return &gHostState;
+    return nullptr;
+}
+
 static void CLAP_ABI host_request(const clap_host_t*) {}
+static void CLAP_ABI host_request_callback(const clap_host_t*) { ++gCallbackRequests; }
+
+static int64_t CLAP_ABI ostream_write(const clap_ostream_t* const stream, const void* const buffer, const uint64_t size)
+{
+    static_cast<std::string*>(stream->ctx)->append(static_cast<const char*>(buffer), size);
+    return static_cast<int64_t>(size);
+}
+
+struct IStream {
+    const std::string* data;
+    std::size_t pos;
+};
+
+static int64_t CLAP_ABI istream_read(const clap_istream_t* const stream, void* const buffer, const uint64_t size)
+{
+    IStream* const in = static_cast<IStream*>(stream->ctx);
+    const std::size_t count = std::min<std::size_t>(size, in->data->size() - in->pos);
+    std::memcpy(buffer, in->data->data() + in->pos, count);
+    in->pos += count;
+    return static_cast<int64_t>(count);
+}
+
+// the saved state, which holds keys and values as null-terminated strings
+static std::string saveState(const clap_plugin_t* const plugin, const clap_plugin_state_t* const state)
+{
+    std::string data;
+    const clap_ostream_t stream = { &data, ostream_write };
+    if (! state->save(plugin, &stream))
+        return std::string();
+    return data;
+}
+
+static bool loadState(const clap_plugin_t* const plugin, const clap_plugin_state_t* const state, const std::string& data)
+{
+    IStream in = { &data, 0 };
+    const clap_istream_t stream = { &in, istream_read };
+    return state->load(plugin, &stream);
+}
+
+static bool hasStatus(const std::string& data, const char* const value)
+{
+    return data.find(std::string(kWrapperTestStatusKey) + '\0' + value + '\0') != std::string::npos;
+}
 
 static uint32_t CLAP_ABI in_events_size(const clap_input_events_t*) { return 0; }
 static const clap_event_header_t* CLAP_ABI in_events_get(const clap_input_events_t*, uint32_t) { return nullptr; }
@@ -92,7 +154,7 @@ int main()
 
     const clap_host_t host = {
         CLAP_VERSION, nullptr, "DAF tests", "DAF", "", "1.0",
-        host_get_extension, host_request, host_request, host_request
+        host_get_extension, host_request, host_request, host_request_callback
     };
 
     DAF_ASSERT_EQUAL(clap_entry.init(""), true, "clap_entry.init must succeed");
@@ -109,7 +171,24 @@ int main()
     h.params = static_cast<const clap_plugin_params_t*>(h.plugin->get_extension(h.plugin, CLAP_EXT_PARAMS));
     DAF_ASSERT_NOT_EQUAL(h.params, nullptr, "the params extension must be available");
 
+    const clap_plugin_state_t* const state =
+        static_cast<const clap_plugin_state_t*>(h.plugin->get_extension(h.plugin, CLAP_EXT_STATE));
+    DAF_ASSERT_NOT_EQUAL(state, nullptr, "the state extension must be available");
+
+    DAF_ASSERT_EQUAL(gUpdateStateFromConstructor, false, "updateStateValue must fail from the plugin constructor");
+    DAF_ASSERT_EQUAL(gUpdateStateFromInitState, false, "updateStateValue must fail from initState");
+
+    // the plugin updates its state in activate(), the wrapper asks for the main thread to finish
     DAF_ASSERT_EQUAL(h.plugin->activate(h.plugin, kSampleRate, 1, kFrames), true, "activate must succeed");
+    DAF_ASSERT_EQUAL(gUpdateStateFromActivate, true, "updateStateValue must succeed from activate");
+    DAF_ASSERT_EQUAL(gUpdateStateUnknownKey, false, "updateStateValue must fail for an unknown key");
+    DAF_ASSERT_NOT_EQUAL(gCallbackRequests, 0, "updateStateValue must request a main-thread callback");
+
+    // a save before that callback already has the value, and leaves nothing to mark dirty
+    DAF_ASSERT_EQUAL(hasStatus(saveState(h.plugin, state), "active-1"), true, "a saved state must have the update");
+    h.plugin->on_main_thread(h.plugin);
+    DAF_ASSERT_EQUAL(gMarkDirtyCalls, 0, "an update the host saved already must not mark the state dirty");
+
     DAF_ASSERT_EQUAL(h.plugin->start_processing(h.plugin), true, "start_processing must succeed");
 
     // steady_time has been counting for a while, and has nothing to do with the song position
@@ -145,6 +224,24 @@ int main()
 
     h.plugin->stop_processing(h.plugin);
     h.plugin->deactivate(h.plugin);
+
+    // the main-thread callback marks the state dirty, and a save has the value
+    DAF_ASSERT_EQUAL(h.plugin->activate(h.plugin, kSampleRate, 1, kFrames), true, "activate must succeed");
+    h.plugin->on_main_thread(h.plugin);
+    DAF_ASSERT_EQUAL(gMarkDirtyCalls, 1, "an update must mark the state dirty from the main-thread callback");
+    const std::string saved = saveState(h.plugin, state);
+    DAF_ASSERT_EQUAL(hasStatus(saved, "active-2"), true, "a saved state must have the update");
+    h.plugin->deactivate(h.plugin);
+
+    // an update made before a load must not overwrite the loaded state, nor mark it dirty
+    DAF_ASSERT_EQUAL(h.plugin->activate(h.plugin, kSampleRate, 1, kFrames), true, "activate must succeed");
+    DAF_ASSERT_EQUAL(loadState(h.plugin, state, saved), true, "state load must succeed");
+    h.plugin->on_main_thread(h.plugin);
+    DAF_ASSERT_EQUAL(gMarkDirtyCalls, 1, "an update before a load must not mark the state dirty");
+    DAF_ASSERT_EQUAL(hasStatus(saveState(h.plugin, state), "active-2"), true,
+                     "an update before a load must not overwrite the loaded state");
+    h.plugin->deactivate(h.plugin);
+
     h.plugin->destroy(h.plugin);
     clap_entry.deinit();
 

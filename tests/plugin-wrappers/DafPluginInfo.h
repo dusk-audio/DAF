@@ -44,6 +44,12 @@
 # define DAF_PLUGIN_WANT_STATE 1
 #endif
 
+// CLAP, VST2 and VST3 test Plugin::updateStateValue()
+#if defined(DAF_PLUGIN_TARGET_CLAP) || defined(DAF_PLUGIN_TARGET_VST2) || defined(DAF_PLUGIN_TARGET_VST3)
+# define DAF_PLUGIN_WANT_STATE 1
+# define DAF_WRAPPER_TEST_UPDATE_STATE 1
+#endif
+
 // VST3 class IDs are tested as they are with the cross-platform layout
 #if defined(DAF_PLUGIN_TARGET_VST3)
 # define DAF_VST3_CROSS_PLATFORM_UID
