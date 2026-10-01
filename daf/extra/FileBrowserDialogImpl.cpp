@@ -592,7 +592,7 @@ FileBrowserHandle fileBrowserCreate(const bool isEmbed,
             }
         }
 
-        // Any subsquent calls should have this DBus service active
+        // Any subsequent calls should have this DBus service active
         if (dbus_bus_name_has_owner(dbuscon, "org.freedesktop.portal.Desktop", nullptr))
         {
             if (DBusMessage* const msg = dbus_message_new_method_call("org.freedesktop.portal.Desktop",

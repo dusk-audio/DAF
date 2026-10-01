@@ -69,7 +69,7 @@ public:
 
         /** Constructor for default/null values */
         BaseEvent() noexcept : mod(0x0), flags(0x0), time(0) {}
-        /** Destuctor */
+        /** Destructor */
         virtual ~BaseEvent() noexcept {}
     };
 
@@ -361,7 +361,7 @@ public:
 
    /**
       Get the name associated with this widget.
-      This is complately optional, mostly useful for debugging purposes.
+      This is completely optional, mostly useful for debugging purposes.
       Returns an empty string by default.
       @see setName
     */
@@ -375,7 +375,7 @@ public:
 
    /**
       Set a name to be associated with this widget.
-      This is complately optional, only useful for debugging purposes.
+      This is completely optional, only useful for debugging purposes.
       @note name must not be null
       @see getName
     */

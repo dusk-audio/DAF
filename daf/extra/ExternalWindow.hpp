@@ -67,7 +67,7 @@ START_NAMESPACE_DAF
    The plugin window is only allowed to hide or close itself, a "show" action needs to come from the host.
 
    A few callbacks are provided so that implementations do not need to care about checking for state changes.
-   They are not called on construction, but will be everytime something changes either by the host or the window itself.
+   They are not called on construction, but will be every time something changes either by the host or the window itself.
  */
 class ExternalWindow
 {
@@ -95,7 +95,7 @@ public:
     }
 
    /* --------------------------------------------------------------------------------------------------------
-    * ExternalWindow specific calls - Host side calls that you can reimplement for fine-grained funtionality */
+    * ExternalWindow specific calls - Host side calls that you can reimplement for fine-grained functionality */
 
    /**
       Check if main-loop is running.
@@ -127,7 +127,7 @@ public:
 
    /**
       Get the "native" window handle.
-      This can be reimplemented in order to pass the native window to hosts that can use such informaton.
+      This can be reimplemented in order to pass the native window to hosts that can use such information.
 
       Returned value type depends on the platform:
        - HaikuOS: This is a pointer to a `BView`.

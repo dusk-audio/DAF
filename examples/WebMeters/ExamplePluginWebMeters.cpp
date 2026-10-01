@@ -184,11 +184,11 @@ protected:
     */
     void setParameterValue(uint32_t index, float value) override
     {
-        // this is only called for input paramters, and we only have one of those.
+        // this is only called for input parameters, and we only have one of those.
         if (index != 0) return;
 
         fColor = value;
-    }
+    }   
 
    /**
       Change an internal state.
