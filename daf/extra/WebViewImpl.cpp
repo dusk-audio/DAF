@@ -363,27 +363,40 @@ static int webview_x11_trap_handler(::Display* const display, XErrorEvent* const
     return webview_x11_trap_previous != nullptr ? webview_x11_trap_previous(display, event) : 0;
 }
 
-// Root position of a window, without letting a BadWindow (the host destroyed the window before
-// telling us) reach Xlib's default error handler, which would exit the host process.
+// Every X call on a window we do not own (the host's window, or the child process's) goes between
+// these two, so a BadWindow from a window destroyed behind our back does not reach Xlib's default
+// error handler, which would exit the host process. The end call syncs, so errors from requests
+// made in between are caught here and not left pending for some later, unguarded call.
+static void webview_x11_trap_begin(::Display* const display)
+{
+    webview_x11_trap_display = display;
+    webview_x11_trap_failed = false;
+    webview_x11_trap_previous = XSetErrorHandler(webview_x11_trap_handler);
+}
+
+// Returns true if an X error was raised on the display since the matching begin call.
+static bool webview_x11_trap_end(::Display* const display)
+{
+    XSync(display, False);
+    XSetErrorHandler(webview_x11_trap_previous);
+
+    const bool failed = webview_x11_trap_failed;
+    webview_x11_trap_display = nullptr;
+    webview_x11_trap_previous = nullptr;
+    return failed;
+}
+
+// Root position of a window.
 // Returns false if the position is unknown; xerror tells whether that was because of an X error.
 static bool webview_get_root_position(::Display* const display, const ::Window window,
                                       int& rootX, int& rootY, bool& xerror)
 {
     ::Window ignored = 0;
 
-    webview_x11_trap_display = display;
-    webview_x11_trap_failed = false;
-    webview_x11_trap_previous = XSetErrorHandler(webview_x11_trap_handler);
-
+    webview_x11_trap_begin(display);
     const Bool ok = XTranslateCoordinates(display, window, DefaultRootWindow(display),
                                           0, 0, &rootX, &rootY, &ignored);
-
-    XSync(display, False);
-    XSetErrorHandler(webview_x11_trap_previous);
-
-    xerror = webview_x11_trap_failed;
-    webview_x11_trap_display = nullptr;
-    webview_x11_trap_previous = nullptr;
+    xerror = webview_x11_trap_end(display);
 
     return ok && ! xerror;
 }
@@ -953,24 +966,33 @@ void webViewResize(const WebViewHandle handle, const uint width, const uint heig
    #elif WEB_VIEW_USING_MACOS_WEBKIT
     [handle->webview setFrameSize:NSMakeSize(width / scaleFactor, height / scaleFactor)];
    #elif WEB_VIEW_USING_X11_IPC
+    // Both our window (the host may have destroyed it) and the child process's window (the child
+    // may have exited) can be gone, so keep any X error away from Xlib's default handler.
+    webview_x11_trap_begin(handle->display);
+
     if (handle->childWindow == 0)
     {
-        ::Window rootWindow, parentWindow;
+        ::Window rootWindow = 0, parentWindow = 0;
         ::Window* childWindows = nullptr;
         uint numChildren = 0;
 
-        XFlush(handle->display);
-        XQueryTree(handle->display, handle->ourWindow, &rootWindow, &parentWindow, &childWindows, &numChildren);
+        const Status ok = XQueryTree(handle->display, handle->ourWindow,
+                                     &rootWindow, &parentWindow, &childWindows, &numChildren);
 
-        if (numChildren == 0 || childWindows == nullptr)
-            return;
+        if (ok != 0 && numChildren != 0 && childWindows != nullptr)
+            handle->childWindow = childWindows[0];
 
-        handle->childWindow = childWindows[0];
-        XFree(childWindows);
+        if (childWindows != nullptr)
+            XFree(childWindows);
     }
 
-    XResizeWindow(handle->display, handle->childWindow, width, height);
-    XFlush(handle->display);
+    if (handle->childWindow != 0)
+        XResizeWindow(handle->display, handle->childWindow, width, height);
+
+    // The resize is only known to have failed once synced, after which the child window is stale;
+    // forget it so the next resize looks it up again.
+    if (webview_x11_trap_end(handle->display))
+        handle->childWindow = 0;
    #endif
 
     // maybe unused
