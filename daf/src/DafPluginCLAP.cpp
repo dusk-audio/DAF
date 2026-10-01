@@ -23,6 +23,7 @@
  */
 
 #include "DafPluginInternal.hpp"
+#include "DafPluginStateParser.hpp"
 #include "extra/ScopedPointer.hpp"
 
 #ifndef DAF_PLUGIN_CLAP_ID
@@ -2237,26 +2238,15 @@ public:
        #if DAF_PLUGIN_HAS_UI
         ClapUI* const ui = fUI.get();
        #endif
-        struct PendingState { char type; String key, value; };
-        std::vector<PendingState> pending;
-        String key, value;
-        bool hasValue = false;
-        bool fillingKey = true; // if filling key or value
-        // parser state: 'i' initial (nothing read yet), 'n' between sections (program and/or states
-        // done), 's' inside the states section, 'p' inside the parameters section, 'x' parameters
-        // section closed. Only 'i', 'n' and 'x' are valid places for the stream to end.
-        char queryingType = 'i';
+        PluginStateParser parser;
 
-        char buffer[512];
+        // 64 KiB per host call, on the heap; tokens spanning reads are joined by the parser
+        std::vector<char> buffer(65536);
 
-        for (int32_t terminated = 0; terminated == 0;)
+        for (bool terminated = false; ! terminated;)
         {
-            const int32_t read = stream->read(stream, buffer, sizeof(buffer)-1);
-            DAF_SAFE_ASSERT_INT_RETURN(read >= 0 && read < static_cast<int32_t>(sizeof(buffer)), read, false);
-
-            // place null character right after the chunk, so the string scans below stay inside the data
-            // just read; at most sizeof(buffer)-1 bytes are requested, so this never writes past the buffer
-            buffer[read] = '\0';
+            const int64_t read = stream->read(stream, buffer.data(), buffer.size());
+            DAF_SAFE_ASSERT_INT_RETURN(read >= 0 && read <= static_cast<int64_t>(buffer.size()), static_cast<int>(read), false);
 
             if (read == 0)
             {
@@ -2267,135 +2257,39 @@ public:
                 // What matters is what the stream contains, not how many parameters or states
                 // this build has, so that state saved by a differently configured build of the
                 // same plugin still loads.
-                if (queryingType == 'i'
-                    && ! fillingKey
-                    && ! hasValue
-                    && key.isEmpty()
-                    && value.isEmpty())
+                if (parser.isLoneEmptyKey())
                     break;
 
                 return false;
             }
 
-            for (int32_t i = 0; i < read; ++i)
+            std::size_t consumed = 0;
+            switch (parser.parse(buffer.data(), static_cast<std::size_t>(read), consumed))
             {
-                // found terminator, stop here
-                if (buffer[i] == '\xfe')
+            case PluginStateParser::kStatusNeedMoreData:
+                break;
+            case PluginStateParser::kStatusTerminated:
+            {
+                // The writer may append one NUL after the terminator.
+                // Reject all other trailing bytes, including later chunks,
+                // before committing any staged state.
+                const std::size_t remaining = static_cast<std::size_t>(read) - consumed;
+                if (remaining > 1 || (remaining == 1 && buffer[consumed] != '\0'))
+                    return false;
+                char tail[2];
+                const int64_t tailRead = stream->read(stream, tail, sizeof(tail));
+                if (tailRead != 0)
                 {
-                    // Which sections the stream carries depends on the build that wrote it, not
-                    // on this build's parameter and state counts, so every state that closes all
-                    // the sections it opened is valid here: 'i' (nothing but the terminator),
-                    // 'n' (program and/or states done) and 'x' (parameters done).
-                    // A stream stopping mid-section ('s' or 'p') or mid key/value pair is not.
-                    const bool validTerminalState = queryingType == 'i'
-                                                 || queryingType == 'n'
-                                                 || queryingType == 'x';
-                    if (! validTerminalState
-                        || ! fillingKey
-                        || hasValue
-                        || ! key.isEmpty()
-                        || ! value.isEmpty())
+                    if (remaining != 0 || tailRead != 1 || tail[0] != '\0'
+                        || stream->read(stream, tail, 1) != 0)
                         return false;
-                    // The writer may append one NUL after the terminator.
-                    // Reject all other trailing bytes, including later chunks,
-                    // before committing any staged state.
-                    const int32_t remaining = read - i - 1;
-                    if (remaining > 1 || (remaining == 1 && buffer[i + 1] != '\0'))
-                        return false;
-                    char tail[2];
-                    const int64_t tailRead = stream->read(stream, tail, sizeof(tail));
-                    if (tailRead != 0)
-                    {
-                        if (remaining != 0 || tailRead != 1 || tail[0] != '\0'
-                            || stream->read(stream, tail, 1) != 0)
-                            return false;
-                    }
-                    terminated = 1;
-                    break;
                 }
-
-                // append to temporary vars
-                if (fillingKey)
-                {
-                    key += buffer + i;
-                }
-                else
-                {
-                    value += buffer + i;
-                    hasValue = true;
-                }
-
-                // increase buffer offset by length of string
-                i += std::strlen(buffer + i);
-
-                // The null character placed after the chunk bounds strlen(), so the offset now points either at a real
-                // null inside the chunk or exactly at `read`. The latter means the string is cut in half by
-                // the chunk boundary and continues in the next read, so do not look at buffer[read] itself:
-                // that byte is past the valid data and holds stale or uninitialized garbage.
-                if (i != read)
-                {
-                    // special keys
-                    if (key == "__daf_state_begin__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i' || queryingType == 'n',
-                                                       queryingType, false);
-                        queryingType = 's';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-                    if (key == "__daf_state_end__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 's', queryingType, false);
-                        queryingType = 'n';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-                    if (key == "__daf_parameters_begin__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i' || queryingType == 'n',
-                                                       queryingType, false);
-                        queryingType = 'p';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-                    if (key == "__daf_parameters_end__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'p', queryingType, false);
-                        queryingType = 'x';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-
-                    // no special key, swap between reading real key and value
-                    fillingKey = !fillingKey;
-
-                    // if there is no value yet keep reading until we have one
-                    if (! hasValue)
-                        continue;
-
-                    if (key == "__daf_program__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i', queryingType, false);
-                        pending.push_back({queryingType, key, value});
-                        queryingType = 'n';
-                    }
-                    else
-                    {
-                        pending.push_back({queryingType, key, value});
-                    }
-
-                    key.clear();
-                    value.clear();
-                    hasValue = false;
-                }
+                terminated = true;
+                break;
+            }
+            case PluginStateParser::kStatusInvalidTerminator:
+            case PluginStateParser::kStatusInvalidSection:
+                return false;
             }
         }
 
@@ -2403,31 +2297,29 @@ public:
         // parameter snapshot is authoritative over the redundant legacy program/parameter sections.
         bool parameterSnapshot = false;
        #if DAF_PLUGIN_WANT_STATE
-        for (const auto& item : pending)
+        for (const PluginStateParser::Entry& item : parser.entries)
         {
-            if (item.type != 's' || !fPlugin.wantStateKey(item.key))
+            if (item.type != 's' || !fPlugin.wantStateKey(item.key.c_str()))
                 continue;
-            if (!fPlugin.validateStateValue(item.key, item.value))
+            if (!fPlugin.validateStateValue(item.key.c_str(), item.value.c_str()))
                 return false;
-            parameterSnapshot = parameterSnapshot || fPlugin.isParameterSnapshotState(item.key);
+            parameterSnapshot = parameterSnapshot || fPlugin.isParameterSnapshotState(item.key.c_str());
         }
        #endif
-        for (const auto& item : pending)
+        for (const PluginStateParser::Entry& item : parser.entries)
         {
-            key = item.key;
-            value = item.value;
-            queryingType = item.type;
-            if (parameterSnapshot && (queryingType == 'p' || key == "__daf_program__"))
+            const char* const key = item.key.c_str();
+            const char* const value = item.value.c_str();
+            const char queryingType = item.type;
+            const bool isProgram = item.key == "__daf_program__";
+            if (parameterSnapshot && (queryingType == 'p' || isProgram))
                 continue;
-                    if (key == "__daf_program__")
+                    if (isProgram)
                     {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i', queryingType, false);
-                        queryingType = 'n';
-
-                        d_debug("found program '%s'", value.buffer());
+                        d_debug("found program '%s'", value);
 
                       #if DAF_PLUGIN_WANT_PROGRAMS
-                        const int program = std::atoi(value.buffer());
+                        const int program = std::atoi(value);
                         DAF_SAFE_ASSERT_CONTINUE(program >= 0);
 
                         fCurrentProgram = static_cast<uint32_t>(program);
@@ -2441,12 +2333,12 @@ public:
                     }
                     else if (queryingType == 's')
                     {
-                        d_debug("found state '%s' '%s'", key.buffer(), value.buffer());
+                        d_debug("found state '%s' '%s'", key, value);
 
                        #if DAF_PLUGIN_WANT_STATE
                         if (fPlugin.wantStateKey(key))
                         {
-                            fStateMap[key] = value;
+                            fStateMap[String(key)] = value;
                             fPlugin.setState(key, value);
 
                            #if DAF_PLUGIN_HAS_UI
@@ -2458,7 +2350,7 @@ public:
                     }
                     else if (queryingType == 'p')
                     {
-                        d_debug("found parameter '%s' '%s'", key.buffer(), value.buffer());
+                        d_debug("found parameter '%s' '%s'", key, value);
                         float fvalue;
 
                         // find parameter with this symbol, and set its value
@@ -2471,12 +2363,12 @@ public:
 
                             if (fPlugin.getParameterHints(j) & kParameterIsInteger)
                             {
-                                fvalue = std::atoi(value.buffer());
+                                fvalue = std::atoi(value);
                             }
                             else
                             {
                                 const ScopedSafeLocale ssl;
-                                fvalue = std::atof(value.buffer());
+                                fvalue = std::atof(value);
                             }
 
                             fCachedParameters.values[j] = fvalue;

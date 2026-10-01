@@ -37,6 +37,7 @@
  */
 
 #include "DafPluginInternal.hpp"
+#include "DafPluginStateParser.hpp"
 #include "../DafPluginUtils.hpp"
 #include "../extra/ScopedPointer.hpp"
 
@@ -1002,156 +1003,67 @@ public:
         const bool connectedToUI = fConnectionFromCtrlToView != nullptr && fConnectedToUI;
        #endif
         bool componentValuesChanged = false;
-        struct PendingState { char type; String key, value; };
-        std::vector<PendingState> pending;
-        String key, value;
-        bool empty = true;
-        bool hasValue = false;
-        bool fillingKey = true; // if filling key or value
-        char queryingType = 'i'; // can be 'n', 's' or 'p' (none, states, parameters)
+        PluginStateParser parser;
 
-        char buffer[512], orig;
-        buffer[sizeof(buffer)-1] = '\xff';
+        // 64 KiB per host call, on the heap; tokens spanning reads are joined by the parser
+        std::vector<char> buffer(65536);
         v3_result res;
 
-        for (int32_t terminated = 0, read; terminated == 0;)
+        for (bool terminated = false; ! terminated;)
         {
-            read = -1;
-            res = v3_cpp_obj(stream)->read(stream, buffer, sizeof(buffer)-1, &read);
+            int32_t read = -1;
+            res = v3_cpp_obj(stream)->read(stream, buffer.data(), static_cast<int32_t>(buffer.size()), &read);
             DAF_SAFE_ASSERT_INT_RETURN(res == V3_OK, res, res);
-            DAF_SAFE_ASSERT_INT_RETURN(read > 0, read, V3_INTERNAL_ERR);
+            DAF_SAFE_ASSERT_INT_RETURN(read >= 0 && read <= static_cast<int32_t>(buffer.size()), read, V3_INTERNAL_ERR);
 
             if (read == 0)
-                return empty ? V3_INVALID_ARG : V3_OK;
-
-            empty = false;
-            for (int32_t i = 0; i < read; ++i)
             {
-                // found terminator, stop here
-                if (buffer[i] == '\xfe')
-                {
-                    if ((queryingType != 'i' && queryingType != 'n' && queryingType != 'x')
-                        || !fillingKey || hasValue || !key.isEmpty() || !value.isEmpty())
-                        return V3_INVALID_ARG;
-                    terminated = 1;
+                // getState() has a fast path for plugins with no parameters and no states:
+                // it writes a single null byte and never emits the '\xfe' terminator.
+                // Accept exactly that stream here; an empty or genuinely truncated state still fails.
+                if (parser.isLoneEmptyKey())
                     break;
-                }
 
-                // store character at read position
-                orig = buffer[read];
+                return V3_INVALID_ARG;
+            }
 
-                // place null character to create valid string
-                buffer[read] = '\0';
-
-                // append to temporary vars
-                if (fillingKey)
-                {
-                    key += buffer + i;
-                }
-                else
-                {
-                    value += buffer + i;
-                    hasValue = true;
-                }
-
-                // increase buffer offset by length of string
-                i += std::strlen(buffer + i);
-
-                // restore read character
-                buffer[read] = orig;
-
-                // The null character placed above bounds strlen(), so the offset now points either at a real
-                // null inside the chunk or exactly at `read`. The latter means the string is cut in half by
-                // the chunk boundary and continues in the next read, so do not look at buffer[read] itself:
-                // that byte is past the valid data and holds stale or uninitialized garbage.
-                if (i != read)
-                {
-                    // special keys
-                    if (key == "__daf_state_begin__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i' || queryingType == 'n',
-                                                       queryingType, V3_INTERNAL_ERR);
-                        queryingType = 's';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-                    if (key == "__daf_state_end__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 's', queryingType, V3_INTERNAL_ERR);
-                        queryingType = 'n';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-                    if (key == "__daf_parameters_begin__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i' || queryingType == 'n',
-                                                       queryingType, V3_INTERNAL_ERR);
-                        queryingType = 'p';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-                    if (key == "__daf_parameters_end__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'p', queryingType, V3_INTERNAL_ERR);
-                        queryingType = 'x';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-
-                    // no special key, swap between reading real key and value
-                    fillingKey = !fillingKey;
-
-                    // if there is no value yet keep reading until we have one
-                    if (! hasValue)
-                        continue;
-
-                    if (key == "__daf_program__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i', queryingType, V3_INTERNAL_ERR);
-                        pending.push_back({queryingType, key, value});
-                        queryingType = 'n';
-                    }
-                    else pending.push_back({queryingType, key, value});
-
-                    key.clear();
-                    value.clear();
-                    hasValue = false;
-                }
+            std::size_t consumed = 0;
+            switch (parser.parse(buffer.data(), static_cast<std::size_t>(read), consumed))
+            {
+            case PluginStateParser::kStatusNeedMoreData:
+                break;
+            case PluginStateParser::kStatusTerminated:
+                terminated = true;
+                break;
+            case PluginStateParser::kStatusInvalidTerminator:
+                return V3_INVALID_ARG;
+            case PluginStateParser::kStatusInvalidSection:
+                return V3_INTERNAL_ERR;
             }
         }
 
         bool parameterSnapshot = false;
        #if DAF_PLUGIN_WANT_STATE
-        for (const auto& item : pending)
+        for (const PluginStateParser::Entry& item : parser.entries)
         {
-            if (item.type != 's' || !fPlugin.wantStateKey(item.key)) continue;
-            if (!fPlugin.validateStateValue(item.key, item.value)) return V3_INVALID_ARG;
-            parameterSnapshot = parameterSnapshot || fPlugin.isParameterSnapshotState(item.key);
+            if (item.type != 's' || !fPlugin.wantStateKey(item.key.c_str())) continue;
+            if (!fPlugin.validateStateValue(item.key.c_str(), item.value.c_str())) return V3_INVALID_ARG;
+            parameterSnapshot = parameterSnapshot || fPlugin.isParameterSnapshotState(item.key.c_str());
         }
        #endif
-        for (const auto& item : pending)
+        for (const PluginStateParser::Entry& item : parser.entries)
         {
-            key = item.key;
-            value = item.value;
-            queryingType = item.type;
-            if (parameterSnapshot && (queryingType == 'p' || key == "__daf_program__")) continue;
-                    if (key == "__daf_program__")
+            const char* const key = item.key.c_str();
+            const char* const value = item.value.c_str();
+            const char queryingType = item.type;
+            const bool isProgram = item.key == "__daf_program__";
+            if (parameterSnapshot && (queryingType == 'p' || isProgram)) continue;
+                    if (isProgram)
                     {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i', queryingType, V3_INTERNAL_ERR);
-                        queryingType = 'n';
-
-                        d_debug("found program '%s'", value.buffer());
+                        d_debug("found program '%s'", value);
 
                       #if DAF_PLUGIN_WANT_PROGRAMS
-                        const int program = std::atoi(value.buffer());
+                        const int program = std::atoi(value);
                         DAF_SAFE_ASSERT_CONTINUE(program >= 0);
 
                         fCurrentProgram = static_cast<uint32_t>(program);
@@ -1168,12 +1080,12 @@ public:
                     }
                     else if (queryingType == 's')
                     {
-                        d_debug("found state '%s' '%s'", key.buffer(), value.buffer());
+                        d_debug("found state '%s' '%s'", key, value);
 
                        #if DAF_PLUGIN_WANT_STATE
                         if (fPlugin.wantStateKey(key))
                         {
-                            fStateMap[key] = value;
+                            fStateMap[String(key)] = value;
                             fPlugin.setState(key, value);
 
                            #if DAF_PLUGIN_HAS_UI
@@ -1185,7 +1097,7 @@ public:
                     }
                     else if (queryingType == 'p')
                     {
-                        d_debug("found parameter '%s' '%s'", key.buffer(), value.buffer());
+                        d_debug("found parameter '%s' '%s'", key, value);
                         float fvalue;
 
                         // find parameter with this symbol, and set its value
@@ -1198,12 +1110,12 @@ public:
 
                             if (fPlugin.getParameterHints(j) & kParameterIsInteger)
                             {
-                                fvalue = std::atoi(value.buffer());
+                                fvalue = std::atoi(value);
                             }
                             else
                             {
                                 const ScopedSafeLocale ssl;
-                                fvalue = std::atof(value.buffer());
+                                fvalue = std::atof(value);
                             }
 
                             fCachedParameterValues[kVst3InternalParameterBaseCount + j] = fvalue;

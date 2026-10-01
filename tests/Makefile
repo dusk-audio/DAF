@@ -29,7 +29,7 @@ endif
 # ---------------------------------------------------------------------------------------------------------------------
 
 MANUAL_TESTS  =
-UNIT_TESTS    = AudioUnitBufferList Color ImGuiKnobs Point
+UNIT_TESTS    = AudioUnitBufferList Color ImGuiKnobs Point StateParser
 
 # ImGuiKnobs builds Dear ImGui itself, headless, and includes the knobs the way DearImGui.cpp does.
 ../build/tests/ImGuiKnobs.cpp.o: BUILD_CXX_FLAGS += -I../widgets/imgui
