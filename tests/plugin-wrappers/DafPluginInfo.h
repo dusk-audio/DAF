@@ -44,4 +44,9 @@
 # define DAF_PLUGIN_WANT_STATE 1
 #endif
 
+// VST3 class IDs are tested as they are with the cross-platform layout
+#if defined(DAF_PLUGIN_TARGET_VST3)
+# define DAF_VST3_CROSS_PLATFORM_UID
+#endif
+
 #endif // DAF_PLUGIN_INFO_H_INCLUDED

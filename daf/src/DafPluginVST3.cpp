@@ -125,11 +125,36 @@ static constexpr const uint32_t daf_id_brand = d_cconst(STRINGIFY(DAF_PLUGIN_BRA
 static constexpr const uint32_t daf_id_brand = 0;
 #endif
 
-static daf_tuid daf_tuid_class = { daf_id_entry, daf_id_clas, 0, daf_id_brand };
-static daf_tuid daf_tuid_component = { daf_id_entry, daf_id_comp, 0, daf_id_brand };
-static daf_tuid daf_tuid_controller = { daf_id_entry, daf_id_ctrl, 0, daf_id_brand };
-static daf_tuid daf_tuid_processor = { daf_id_entry, daf_id_proc, 0, daf_id_brand };
-static daf_tuid daf_tuid_view = { daf_id_entry, daf_id_view, 0, daf_id_brand };
+// The uids are stored as four native (little-endian) words, so their bytes are the same everywhere.
+// The VST3 SDK reads the first 8 bytes of a uid as a COM GUID on Windows (a 32-bit and two 16-bit
+// little-endian fields), so by default the same plugin shows a different class id string on Windows
+// than elsewhere. DAF_VST3_CROSS_PLATFORM_UID swaps those fields on Windows so the string matches the
+// one on Linux and macOS. Off by default: it changes the Windows ids of already-shipped plugins.
+#if defined(DAF_VST3_CROSS_PLATFORM_UID) && V3_COM_COMPAT
+static inline constexpr
+uint32_t daf_tuid_guid_data1(const uint32_t v) noexcept
+{
+    return ((v & 0x000000ffU) << 24) | ((v & 0x0000ff00U) << 8) | ((v & 0x00ff0000U) >> 8) | ((v & 0xff000000U) >> 24);
+}
+
+static inline constexpr
+uint32_t daf_tuid_guid_data23(const uint32_t v) noexcept
+{
+    return ((v & 0x00ff00ffU) << 8) | ((v & 0xff00ff00U) >> 8);
+}
+
+# define DAF_TUID(kind) { daf_tuid_guid_data1(daf_id_entry), daf_tuid_guid_data23(kind), 0, daf_id_brand }
+#else
+# define DAF_TUID(kind) { daf_id_entry, kind, 0, daf_id_brand }
+#endif
+
+static daf_tuid daf_tuid_class = DAF_TUID(daf_id_clas);
+static daf_tuid daf_tuid_component = DAF_TUID(daf_id_comp);
+static daf_tuid daf_tuid_controller = DAF_TUID(daf_id_ctrl);
+static daf_tuid daf_tuid_processor = DAF_TUID(daf_id_proc);
+static daf_tuid daf_tuid_view = DAF_TUID(daf_id_view);
+
+#undef DAF_TUID
 
 // --------------------------------------------------------------------------------------------------------------------
 // Utility functions
@@ -5380,6 +5405,7 @@ bool ENTRYFNNAME(ENTRYFNNAMEARGS)
         d_nextPluginIsDummy = false;
         d_nextCanRequestParameterValueChanges = false;
 
+        // word 2 lies outside the GUID fields, so DAF_VST3_CROSS_PLATFORM_UID leaves it as is
         daf_tuid_class[2] = daf_tuid_component[2] = daf_tuid_controller[2]
             = daf_tuid_processor[2] = daf_tuid_view[2] = sPlugin->getUniqueId();
     }

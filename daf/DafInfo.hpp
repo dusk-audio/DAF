@@ -935,6 +935,18 @@ START_NAMESPACE_DAF
 #define DAF_VST3_DONT_USE_BRAND_ID
 
 /**
+   Give a VST3 plugin the same class ID string on Windows as on Linux and macOS.@n
+   By default the class ID bytes are the same on every platform, but on Windows the VST3 SDK reads the
+   first 8 of them as the fields of a COM GUID, so the class ID string differs from the one on other
+   platforms and sessions do not find the plugin across them.
+   Defining this lays the Windows class IDs out so the strings match. Linux and macOS IDs do not change.
+   @note Recommended for new plugins only.
+         Enabling it changes the Windows class IDs of an already-released VST3 plugin,
+         and existing Windows sessions using that plugin will no longer find it.
+ */
+#define DAF_VST3_CROSS_PLATFORM_UID
+
+/**
    Disable resource files, like internally used fonts.@n
    Must be set as compiler macro when building DGL. (e.g. `CXXFLAGS="-DDGL_NO_SHARED_RESOURCES"`)
  */
