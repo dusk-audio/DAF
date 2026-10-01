@@ -53,6 +53,7 @@ ifeq ($(HAVE_CAIRO),true)
 UNIT_TESTS   += Window.cairo
 endif
 ifeq ($(HAVE_OPENGL),true)
+UNIT_TESTS   += NanoSubWidgetsClip
 UNIT_TESTS   += Window.opengl
 endif
 ifeq ($(HAVE_STUB),true)
@@ -186,6 +187,10 @@ clean:
 
 ../build/tests/NanoSubWidgets$(APP_EXT): ../build/tests/NanoSubWidgets.cpp.o ../build/libdgl-opengl.a
 	@echo "Linking NanoSubWidgets (OpenGL)"
+	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) $(OPENGL_LIBS) -o $@
+
+../build/tests/NanoSubWidgetsClip$(APP_EXT): ../build/tests/NanoSubWidgetsClip.cpp.o ../build/libdgl-opengl.a
+	@echo "Linking NanoSubWidgetsClip (OpenGL)"
 	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) $(OPENGL_LIBS) -o $@
 
 ../build/tests/KnobEventHandler.stub$(APP_EXT): ../build/tests/KnobEventHandler.cpp.stub.o ../build/libdgl-stub.a
