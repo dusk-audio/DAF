@@ -73,6 +73,7 @@
 # include "String.hpp"
 # include <clocale>
 # include <cstdio>
+# include <ctime>
 # include <dlfcn.h>
 # include <fcntl.h>
 # include <pthread.h>
@@ -345,6 +346,55 @@ static void getFilenameFromFunctionPtr(char filename[PATH_MAX], const void* cons
     }
 }
 
+// Xlib error handlers are process-global, so this one is only installed around a single query
+// and forwards anything not raised on the display being queried to the handler it replaced.
+static ::Display* webview_x11_trap_display = nullptr;
+static bool webview_x11_trap_failed = false;
+static int (*webview_x11_trap_previous)(::Display*, XErrorEvent*) = nullptr;
+
+static int webview_x11_trap_handler(::Display* const display, XErrorEvent* const event)
+{
+    if (display == webview_x11_trap_display)
+    {
+        webview_x11_trap_failed = true;
+        return 0;
+    }
+
+    return webview_x11_trap_previous != nullptr ? webview_x11_trap_previous(display, event) : 0;
+}
+
+// Root position of a window, without letting a BadWindow (the host destroyed the window before
+// telling us) reach Xlib's default error handler, which would exit the host process.
+// Returns false if the position is unknown; xerror tells whether that was because of an X error.
+static bool webview_get_root_position(::Display* const display, const ::Window window,
+                                      int& rootX, int& rootY, bool& xerror)
+{
+    ::Window ignored = 0;
+
+    webview_x11_trap_display = display;
+    webview_x11_trap_failed = false;
+    webview_x11_trap_previous = XSetErrorHandler(webview_x11_trap_handler);
+
+    const Bool ok = XTranslateCoordinates(display, window, DefaultRootWindow(display),
+                                          0, 0, &rootX, &rootY, &ignored);
+
+    XSync(display, False);
+    XSetErrorHandler(webview_x11_trap_previous);
+
+    xerror = webview_x11_trap_failed;
+    webview_x11_trap_display = nullptr;
+    webview_x11_trap_previous = nullptr;
+
+    return ok && ! xerror;
+}
+
+static uint64_t webview_monotonic_ms()
+{
+    struct timespec ts = {};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<uint64_t>(ts.tv_sec) * 1000 + static_cast<uint64_t>(ts.tv_nsec) / 1000000;
+}
+
 #endif // WEB_VIEW_USING_X11_IPC
 
 // -----------------------------------------------------------------------------------------------------------
@@ -371,6 +421,8 @@ struct WebViewData {
     ::Window ourWindow;
     int ourRootX, ourRootY;
     bool ourRootKnown;
+    bool ourRootQueryFailed;
+    uint64_t ourRootLastCheck;
    #endif
     WebViewData();
     DAF_DECLARE_NON_COPYABLE(WebViewData);
@@ -399,7 +451,9 @@ WebViewData::WebViewData()
       ourWindow(0),
       ourRootX(0),
       ourRootY(0),
-      ourRootKnown(false)
+      ourRootKnown(false),
+      ourRootQueryFailed(false),
+      ourRootLastCheck(0)
     #endif
 {
    #if WEB_VIEW_USING_X11_IPC
@@ -768,14 +822,24 @@ void webViewIdle(const WebViewHandle handle)
     // When the host moves its top-level window our window does not move relative to its parent, so
     // the embedded child gets no ConfigureNotify and keeps a stale idea of its root position.
     // Watch our own root position here and tell the child process when it changes.
+    // The query is a synchronous round trip, so only do it a few times per second; once it has
+    // failed (our window is gone) stop asking altogether.
+    if (! handle->ourRootQueryFailed)
     {
-        int rootX = 0, rootY = 0;
-        ::Window ignored = 0;
+        const uint64_t now = webview_monotonic_ms();
 
-        if (XTranslateCoordinates(handle->display, handle->ourWindow, DefaultRootWindow(handle->display),
-                                  0, 0, &rootX, &rootY, &ignored))
+        if (handle->ourRootLastCheck == 0 || now - handle->ourRootLastCheck >= 250)
         {
-            if (! handle->ourRootKnown)
+            handle->ourRootLastCheck = now != 0 ? now : 1;
+
+            int rootX = 0, rootY = 0;
+            bool xerror = false;
+
+            if (! webview_get_root_position(handle->display, handle->ourWindow, rootX, rootY, xerror))
+            {
+                handle->ourRootQueryFailed = xerror;
+            }
+            else if (! handle->ourRootKnown)
             {
                 handle->ourRootKnown = true;
                 handle->ourRootX = rootX;
