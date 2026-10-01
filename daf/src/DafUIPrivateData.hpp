@@ -81,6 +81,11 @@ START_NAMESPACE_DAF
 int daf_webview_start(int argc, char* argv[]);
 #endif
 
+/* Scale factor a UI window is created with when the host gave none (0), for the given parent window.
+   Defined in DafUI.cpp, or DafUI_macOS.mm on macOS. Plugin wrappers predicting the size of a UI that
+   does not exist yet must use the same factor. May return 0 where it cannot be known in advance. */
+double getDesktopScaleFactor(uintptr_t parentWindowHandle);
+
 // --------------------------------------------------------------------------------------------------------------------
 // Plugin Application, will set class name based on plugin details
 

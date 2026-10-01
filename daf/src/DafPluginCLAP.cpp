@@ -369,11 +369,19 @@ public:
             *width /= scaleFactor;
             *height /= scaleFactor;
            #endif
+            fReportedWidth = *width;
+            fReportedHeight = *height;
             return true;
         }
 
         double scaleFactor = fScaleFactor;
        #if defined(DAF_UI_DEFAULT_WIDTH) && defined(DAF_UI_DEFAULT_HEIGHT)
+       #ifndef DAF_OS_MAC
+        // A host that never called set_scale gets a window created at the desktop scale factor
+        // (see UI::PrivateData::createNextWindow), so predict the size with that same factor.
+        if (d_isZero(scaleFactor))
+            scaleFactor = getDesktopScaleFactor(fParentWindow);
+       #endif
         if (d_isZero(scaleFactor))
             scaleFactor = 1.0;
         *width = DAF_UI_DEFAULT_WIDTH * scaleFactor;
@@ -393,6 +401,8 @@ public:
         *height /= scaleFactor;
        #endif
 
+        fReportedWidth = *width;
+        fReportedHeight = *height;
         return true;
     }
 
@@ -522,6 +532,18 @@ public:
         {
             createUI();
             fHostGui->resize_hints_changed(fHost);
+
+            // Should the window have come out at another size than get_size predicted, a parent on
+            // a monitor with another scale factor being one way, ask the host to match it.
+            if (fReportedWidth != 0 && fReportedHeight != 0)
+            {
+                const uint32_t reportedWidth = fReportedWidth;
+                const uint32_t reportedHeight = fReportedHeight;
+                uint32_t width, height;
+
+                if (getSize(&width, &height) && (width != reportedWidth || height != reportedHeight))
+                    fHostGui->request_resize(fHost, width, height);
+            }
         }
 
         return true;
@@ -694,6 +716,11 @@ private:
     uint fNotifiedMinHeight = 0;
     bool fNotifiedKeepAspect = false;
     bool fNotifiedAny = false;
+
+    // Last size get_size answered with, 0 if never asked. Before the UI exists that answer is a
+    // prediction, which setParent checks against the window it then creates.
+    mutable uint32_t fReportedWidth = 0;
+    mutable uint32_t fReportedHeight = 0;
    #if DAF_CLAP_USING_HOST_TIMER
     clap_id fTimerId;
     const clap_host_timer_support_t* const fHostTimer;
