@@ -63,6 +63,11 @@
 #include <string>
 #include <vector>
 
+#if DAF_PLUGIN_WANT_STATE && DAF_VST3_USES_SEPARATE_CONTROLLER
+# include <ctime>
+# include <random>
+#endif
+
 START_NAMESPACE_DAF
 
 // Optional block-control policy for ports preserving JUCE-style automation.
@@ -91,6 +96,71 @@ static constexpr const updateStateValueFunc updateStateValueCallback = nullptr;
 #endif
 
 typedef std::map<const String, String> StringMap;
+
+#if DAF_PLUGIN_WANT_STATE && DAF_VST3_USES_SEPARATE_CONTROLLER
+// --------------------------------------------------------------------------------------------------------------------
+// "state updates pending" flags of the components in this process
+
+/* With a separate edit controller, Plugin::updateStateValue() values are queued on the component, which only gets
+ * to the main thread when the controller forwards it the view's idle. A component and its controller only talk
+ * through host messages and may even live in different processes, so the controller cannot simply look.
+ * Each component registers a flag here and sends its ID to the controller once, from the main thread. A controller
+ * in the same process finds the flag and forwards the idle only while it is set; one that cannot find it (another
+ * process) keeps forwarding every idle. Setting the flag is a lock-free atomic store, safe from any thread.
+ */
+class Vst3StateUpdateFlags
+{
+public:
+    typedef std::shared_ptr<std::atomic<bool>> Flag;
+
+    static int64_t add(const Flag& flag)
+    {
+        Registry& reg(registry());
+        const MutexLocker cml(reg.mutex);
+        // unique in this process, and random enough not to name a flag here when sent from another one
+        const int64_t id = static_cast<int64_t>(reg.salt + ++reg.counter);
+        reg.flags[id] = flag;
+        return id;
+    }
+
+    static void remove(const int64_t id)
+    {
+        Registry& reg(registry());
+        const MutexLocker cml(reg.mutex);
+        reg.flags.erase(id);
+    }
+
+    static Flag find(const int64_t id)
+    {
+        Registry& reg(registry());
+        const MutexLocker cml(reg.mutex);
+        const std::map<int64_t, Flag>::const_iterator it = reg.flags.find(id);
+        return it != reg.flags.end() ? it->second : Flag();
+    }
+
+private:
+    struct Registry {
+        Mutex mutex;
+        std::map<int64_t, Flag> flags;
+        uint64_t salt;
+        uint64_t counter;
+
+        Registry()
+            : salt(0),
+              counter(0)
+        {
+            std::random_device rd;
+            salt = (static_cast<uint64_t>(rd()) << 32) ^ rd() ^ static_cast<uint64_t>(std::time(nullptr));
+        }
+    };
+
+    static Registry& registry()
+    {
+        static Registry reg;
+        return reg;
+    }
+};
+#endif
 
 // --------------------------------------------------------------------------------------------------------------------
 // custom v3_tuid compatible type
@@ -744,6 +814,17 @@ public:
             const String& dkey(fPlugin.getStateKey(i));
             fStateMap[dkey] = fPlugin.getStateDefaultValue(i);
         }
+
+       #if DAF_VST3_USES_SEPARATE_CONTROLLER
+        fStateUpdatesPendingId = 0;
+        fStateUpdatesPendingIdSent = false;
+
+        if (isComponent)
+        {
+            fStateUpdatesPending = std::make_shared<std::atomic<bool>>(false);
+            fStateUpdatesPendingId = Vst3StateUpdateFlags::add(fStateUpdatesPending);
+        }
+       #endif
        #endif
 
        #if !DAF_PLUGIN_HAS_UI
@@ -754,6 +835,11 @@ public:
 
     ~PluginVst3()
     {
+       #if DAF_PLUGIN_WANT_STATE && DAF_VST3_USES_SEPARATE_CONTROLLER
+        if (fStateUpdatesPendingId != 0)
+            Vst3StateUpdateFlags::remove(fStateUpdatesPendingId);
+       #endif
+
         if (fCachedParameterValues != nullptr)
         {
             delete[] fCachedParameterValues;
@@ -2341,11 +2427,21 @@ public:
     void comp2ctrl_connect(v3_connection_point** const other)
     {
         fConnectionFromCompToCtrl = other;
+
+       #if DAF_PLUGIN_WANT_STATE
+        fStateUpdatesPendingIdSent = false;
+        fComponentStateUpdatesPending.reset();
+       #endif
     }
 
     void comp2ctrl_disconnect()
     {
         fConnectionFromCompToCtrl = nullptr;
+
+       #if DAF_PLUGIN_WANT_STATE
+        fStateUpdatesPendingIdSent = false;
+        fComponentStateUpdatesPending.reset();
+       #endif
     }
 
     v3_result comp2ctrl_notify(v3_message** const message)
@@ -2368,7 +2464,26 @@ public:
         // component side: a main-thread tick forwarded by the edit controller, see ctrl2view_notify
         if (std::strcmp(msgid, "idle") == 0)
         {
+            // from now on, a controller in this process only forwards the idle when there is something to do
+            if (! fStateUpdatesPendingIdSent && fConnectionFromCompToCtrl != nullptr)
+            {
+                fStateUpdatesPendingIdSent = true;
+                sendStateUpdatesPendingIdToController();
+            }
+
             applyStateUpdates();
+            return V3_OK;
+        }
+
+        // edit controller side: the ID of the component's flag, see Vst3StateUpdateFlags
+        if (std::strcmp(msgid, "state-pending-id") == 0)
+        {
+            int64_t id = 0;
+            const v3_result res = v3_cpp_obj(attrs)->get_int(attrs, "id", &id);
+            DAF_SAFE_ASSERT_INT_RETURN(res == V3_OK, res, res);
+
+            // stays empty for a component in another process, which then gets every idle
+            fComponentStateUpdatesPending = Vst3StateUpdateFlags::find(id);
             return V3_OK;
         }
 
@@ -2464,8 +2579,10 @@ public:
         {
            #if DAF_PLUGIN_WANT_STATE
            #if DAF_VST3_USES_SEPARATE_CONTROLLER
-            // state updates from the plugin are queued on the component, which has no main-thread tick of its own
-            if (fConnectionFromCompToCtrl != nullptr)
+            // state updates from the plugin are queued on the component, which has no main-thread tick of its own.
+            // Pass it this one if it has updates pending, or if there is no telling (see Vst3StateUpdateFlags).
+            if (fConnectionFromCompToCtrl != nullptr &&
+                (fComponentStateUpdatesPending == nullptr || fComponentStateUpdatesPending->exchange(false)))
                 v3_cpp_obj(fConnectionFromCompToCtrl)->notify(fConnectionFromCompToCtrl, message);
            #else
             applyStateUpdates();
@@ -2769,6 +2886,14 @@ private:
    #if DAF_PLUGIN_WANT_STATE
     StringMap fStateMap;
     PluginStateUpdates fStateUpdates;
+   #if DAF_VST3_USES_SEPARATE_CONTROLLER
+    // component: its own flag, set with every update, and the ID it is registered with; see Vst3StateUpdateFlags
+    Vst3StateUpdateFlags::Flag fStateUpdatesPending;
+    int64_t fStateUpdatesPendingId;
+    bool fStateUpdatesPendingIdSent;
+    // edit controller: the component's flag, once it sent the ID and lives in this process
+    Vst3StateUpdateFlags::Flag fComponentStateUpdatesPending;
+   #endif
    #endif
    #if DAF_PLUGIN_WANT_TIMEPOS
     TimePosition fTimePosition;
@@ -3363,7 +3488,7 @@ private:
         sendStateSet(fConnectionFromCtrlToView, 2, key, value);
     }
 
-   #if DAF_VST3_USES_SEPARATE_CONTROLLER
+   #if DAF_VST3_USES_SEPARATE_CONTROLLER && DAF_PLUGIN_WANT_STATE
     void sendStateDirtyToController() const
     {
         v3_message** const message = createMessage("state-dirty");
@@ -3373,6 +3498,21 @@ private:
         DAF_SAFE_ASSERT_RETURN(attrlist != nullptr,);
 
         v3_cpp_obj(attrlist)->set_int(attrlist, "__daf_msg_target__", 1);
+        v3_cpp_obj(fConnectionFromCompToCtrl)->notify(fConnectionFromCompToCtrl, message);
+
+        v3_cpp_obj_unref(message);
+    }
+
+    void sendStateUpdatesPendingIdToController() const
+    {
+        v3_message** const message = createMessage("state-pending-id");
+        DAF_SAFE_ASSERT_RETURN(message != nullptr,);
+
+        v3_attribute_list** const attrlist = v3_cpp_obj(message)->get_attributes(message);
+        DAF_SAFE_ASSERT_RETURN(attrlist != nullptr,);
+
+        v3_cpp_obj(attrlist)->set_int(attrlist, "__daf_msg_target__", 1);
+        v3_cpp_obj(attrlist)->set_int(attrlist, "id", fStateUpdatesPendingId);
         v3_cpp_obj(fConnectionFromCompToCtrl)->notify(fConnectionFromCompToCtrl, message);
 
         v3_cpp_obj_unref(message);
@@ -3401,7 +3541,16 @@ private:
     // any thread but the audio one; the rest happens in applyStateUpdates on the main thread
     bool updateState(const char* const key, const char* const value)
     {
-        return fStateUpdates.update(fPlugin, key, value);
+        if (! fStateUpdates.update(fPlugin, key, value))
+            return false;
+
+       #if DAF_VST3_USES_SEPARATE_CONTROLLER
+        // only an atomic store: no message from here, this thread may not be the main one
+        if (fStateUpdatesPending != nullptr)
+            fStateUpdatesPending->store(true);
+       #endif
+
+        return true;
     }
 
     static bool updateStateValueCallback(void* const ptr, const char* const key, const char* const value)
