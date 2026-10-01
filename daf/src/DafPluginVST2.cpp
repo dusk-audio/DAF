@@ -1214,11 +1214,16 @@ private:
                 if (d_isEqual(curValue, defValue))
                     continue;
 
+                curValue = defValue;
+
                #if DAF_PLUGIN_HAS_UI
                 if (fVstUI != nullptr)
-                    setParameterValueFromPlugin(i, defValue);
+                    setParameterValueFromPlugin(i, curValue);
+                else
                #endif
-                fPlugin.setParameterValue(i, defValue);
+                parameterValues[i] = curValue;
+
+                fPlugin.setParameterValue(i, curValue);
             }
             else
             {

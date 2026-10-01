@@ -39,6 +39,13 @@ UNIT_TESTS    = AudioUnitBufferList Color ImGuiKnobs Point StateParser
 BUILD_CHECKS  = StaticTarget
 ../build/tests/StaticTarget.cpp.o: BUILD_CXX_FLAGS += -Istatic-target
 
+# format wrappers compiled into the test, which then acts as the host (see plugin-wrappers/)
+WRAPPER_TESTS = VST2Wrapper
+../build/tests/%Wrapper.cpp.o: BUILD_CXX_FLAGS += -Iplugin-wrappers -I../daf
+ifeq ($(LINUX),true)
+../build/tests/%Wrapper$(APP_EXT): LINK_FLAGS += -ldl
+endif
+
 ifeq ($(HAVE_CAIRO),true)
 MANUAL_TESTS += Demo.cairo
 endif
@@ -52,6 +59,7 @@ endif
 
 ifneq ($(WASM),true)
 UNIT_TESTS   += Application Thread
+UNIT_TESTS   += $(WRAPPER_TESTS)
 ifeq ($(HAVE_CAIRO),true)
 UNIT_TESTS   += Window.cairo
 endif
