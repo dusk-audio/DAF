@@ -468,6 +468,43 @@ void Window::PrivateData::setResizable(const bool resizable)
     puglSetResizable(view, resizable);
 }
 
+// -----------------------------------------------------------------------
+
+bool Window::PrivateData::setScaleFactor(const double newScaleFactor)
+{
+    DAF_SAFE_ASSERT_RETURN(newScaleFactor > 0.0, false);
+
+    if (d_isEqual(scaleFactor, newScaleFactor))
+        return false;
+
+    const double oldScaleFactor = scaleFactor;
+    scaleFactor = newScaleFactor;
+
+    /* An auto-scaling window is sized as its unscaled minimum times the scale factor, and pugl was
+       handed that product as the minimum size. Both now carry the old factor: rescale them by the
+       ratio between the two factors, so it lands exactly once whatever size the user left the
+       window at. The configure event that follows derives autoScaleFactor from the new size.
+       Windows that do not auto-scale leave their size to the application, which is told about the
+       new factor through onScaleFactorChanged below. */
+    if (autoScaling && view != nullptr && minWidth != 0 && minHeight != 0 && d_isNotZero(oldScaleFactor))
+    {
+        puglSetGeometryConstraints(view,
+                                   d_roundToUnsignedInt(minWidth * newScaleFactor),
+                                   d_roundToUnsignedInt(minHeight * newScaleFactor),
+                                   keepAspectRatio);
+
+        const double ratio = newScaleFactor / oldScaleFactor;
+        const Size<uint> size(self->getSize());
+
+        if (size.isValid())
+            self->setSize(d_roundToUnsignedInt(size.getWidth() * ratio),
+                          d_roundToUnsignedInt(size.getHeight() * ratio));
+    }
+
+    self->onScaleFactorChanged(scaleFactor);
+    return true;
+}
+
 // --------------------------------------------------------------------------------------------------------------------
 
 const GraphicsContext& Window::PrivateData::getGraphicsContext() const noexcept

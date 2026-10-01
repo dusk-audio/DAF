@@ -230,6 +230,12 @@ public:
         puglBackendLeave(pData->view);
     }
 
+    // scale factor given by the host after creation, returns false if unchanged
+    bool setScaleFactorFromHost(const double scaleFactor)
+    {
+        return pData->setScaleFactor(scaleFactor);
+    }
+
     // used for temporary windows (VST/CLAP get size without active/visible view)
     void setIgnoreIdleCallbacks(const bool ignore = true)
     {

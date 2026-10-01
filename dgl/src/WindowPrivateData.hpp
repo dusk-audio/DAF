@@ -194,6 +194,11 @@ struct Window::PrivateData : IdleCallback {
 
     void setResizable(bool resizable);
 
+    /** Change the scale factor from outside the windowing system, as a plugin host does.
+        Rescales an auto-scaling window to match, then calls onScaleFactorChanged.
+        Returns false, doing nothing, if the factor is unchanged. */
+    bool setScaleFactor(double scaleFactor);
+
     const GraphicsContext& getGraphicsContext() const noexcept;
 
     // idle callback stuff

@@ -106,6 +106,9 @@ protected:
       the font atlas at a new size (io.Fonts->Clear() / AddFont... / Build(),
       then rebuildFontTexture()): inside onImGuiDisplay the draw lists and the
       font stack already hold ImFont pointers into the old atlas.
+      When the window's scale factor has changed since the last frame, the style sizes have
+      been reset to the defaults scaled to it (colours are kept) and the default font rebuilt
+      before this is called, so a subclass with custom sizes or fonts re-applies them here.
       The default implementation does nothing.
     */
     virtual void onImGuiPrepareFrame() {}

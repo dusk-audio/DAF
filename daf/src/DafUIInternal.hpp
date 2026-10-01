@@ -359,8 +359,14 @@ public:
     void notifyScaleFactorChanged(const double scaleFactor)
     {
         DAF_SAFE_ASSERT_RETURN(ui != nullptr,);
+        DAF_SAFE_ASSERT_RETURN(uiData != nullptr,);
 
-        ui->uiScaleFactorChanged(scaleFactor);
+        /* Go through the window, as a Wayland configure does, so getScaleFactor() reports the new
+           factor and an auto-scaling window is resized to it. A change reaches the UI through
+           PluginWindow::onScaleFactorChanged; call the UI directly only when the window already
+           had this factor, so it hears about every host notification exactly once. */
+        if (uiData->window == nullptr || ! uiData->window->setScaleFactorFromHost(scaleFactor))
+            ui->uiScaleFactorChanged(scaleFactor);
     }
 
     void notifyFocusChanged(const bool focus)
