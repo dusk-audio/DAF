@@ -19,13 +19,13 @@
 #include "daf/DafUtils.hpp"
 
 #define DAF_ASSERT_EQUAL(v1, v2, msg) \
-    if (v1 != v2) { d_stderr2("Test condition failed: %s; file:%s line:%i", msg, __FILE__, __LINE__); return 1; }
+    if ((v1) != (v2)) { d_stderr2("Test condition failed: %s; file:%s line:%i", msg, __FILE__, __LINE__); return 1; }
 
 #define DAF_ASSERT_NOT_EQUAL(v1, v2, msg) \
-    if (v1 == v2) { d_stderr2("Test condition failed: %s; file:%s line:%i", msg, __FILE__, __LINE__); return 1; }
+    if ((v1) == (v2)) { d_stderr2("Test condition failed: %s; file:%s line:%i", msg, __FILE__, __LINE__); return 1; }
 
 #define DAF_ASSERT_SAFE_EQUAL(v1, v2, msg) \
-    if (d_isNotEqual(v1, v2)) { d_stderr2("Test condition failed: %s; file:%s line:%i", msg, __FILE__, __LINE__); return 1; }
+    if (d_isNotEqual((v1), (v2))) { d_stderr2("Test condition failed: %s; file:%s line:%i", msg, __FILE__, __LINE__); return 1; }
 
 /* Tests that exercise the framework rather than the widget toolkit define DAF_TEST_NO_DGL and get
    only the assertion macros, so they do not have to satisfy the DGL build-config sentinels. */
