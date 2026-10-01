@@ -1300,9 +1300,23 @@ public:
             fTimePosition.playing = (transport->flags & CLAP_TRANSPORT_IS_PLAYING) != 0 &&
                                     (transport->flags & CLAP_TRANSPORT_IS_WITHIN_PRE_ROLL) == 0;
 
-            fTimePosition.frame = process->steady_time >= 0 ? process->steady_time : 0;
-
             fTimePosition.bpmValid = (transport->flags & CLAP_TRANSPORT_HAS_TEMPO) != 0 && transport->tempo > 0.0;
+
+            // frame is the transport position, not steady_time (which never stops or jumps).
+            // prefer the seconds timeline; failing that, derive it from beats at the current tempo.
+            {
+                double transportSeconds = 0.0;
+
+                if ((transport->flags & CLAP_TRANSPORT_HAS_SECONDS_TIMELINE) != 0)
+                    transportSeconds = static_cast<double>(transport->song_pos_seconds) / CLAP_SECTIME_FACTOR;
+                else if ((transport->flags & CLAP_TRANSPORT_HAS_BEATS_TIMELINE) != 0 && fTimePosition.bpmValid)
+                    transportSeconds = static_cast<double>(transport->song_pos_beats) / CLAP_BEATTIME_FACTOR
+                                     * 60.0 / transport->tempo;
+
+                fTimePosition.frame = transportSeconds > 0.0
+                                    ? static_cast<uint64_t>(transportSeconds * fPlugin.getSampleRate() + 0.5)
+                                    : 0;
+            }
             if (fTimePosition.bpmValid)
                 fTimePosition.bbt.beatsPerMinute = transport->tempo;
             else
