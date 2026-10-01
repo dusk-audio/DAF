@@ -69,6 +69,26 @@ int main()
         DAF_ASSERT_SAFE_EQUAL(knob.getNormalizedValue(), 1.0f, "log knob reaches its maximum");
     }
 
+    // scrolling a stepped knob must not round it out of its range
+    {
+        KnobEventHandler knob(&widget);
+        knob.setRange(0.5f, 1.9f);
+        knob.setStep(0.4f);
+        knob.setValue(0.6f);
+
+        Widget::ScrollEvent scroll;
+        scroll.pos = DGL_NAMESPACE::Point<double>(50, 50);
+
+        scroll.delta = DGL_NAMESPACE::Point<double>(0, -1);
+        DAF_ASSERT_EQUAL(knob.scrollEvent(scroll), true, "knob takes the scroll");
+        DAF_ASSERT_EQUAL(knob.getValue() < 0.5f, false, "scrolling down stays above the minimum");
+
+        knob.setValue(1.8f);
+        scroll.delta = DGL_NAMESPACE::Point<double>(0, 1);
+        DAF_ASSERT_EQUAL(knob.scrollEvent(scroll), true, "knob takes the scroll");
+        DAF_ASSERT_EQUAL(knob.getValue() > 1.9f, false, "scrolling up stays below the maximum");
+    }
+
     return 0;
 }
 

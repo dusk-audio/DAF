@@ -581,6 +581,12 @@ struct KnobEventHandler::PrivateData {
             {
                 const float rest = std::fmod(value2, step);
                 value2 = value2 - rest + (rest > step/2.0f ? step : 0.0f);
+
+                // rounding to the step can leave the range if its ends are not multiples of the step
+                if (value2 < minimum)
+                    value2 = minimum;
+                else if (value2 > maximum)
+                    value2 = maximum;
             }
         }
 
