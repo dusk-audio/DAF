@@ -504,6 +504,7 @@ function(daf__build_jack NAME HAS_UI FORCE_NATIVE_AUDIO_FALLBACK SKIP_NATIVE_AUD
   set_target_properties("${NAME}-jack" PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin/$<0:>"
     OUTPUT_NAME "${NAME}")
+  daf__set_msvc_debug_file_names("${NAME}-jack")
 
   if(EMSCRIPTEN)
     configure_file("${DAF_ROOT_DIR}/utils/emscripten.html.in"
@@ -859,6 +860,7 @@ function(daf__build_clap NAME HAS_UI EXTRA_UI_LINK_OPTS)
     OUTPUT_NAME "${NAME}"
     PREFIX ""
     SUFFIX ".clap")
+  daf__set_msvc_debug_file_names("${NAME}-clap")
 
   if(APPLE)
     set_target_properties("${NAME}-clap" PROPERTIES
@@ -1806,6 +1808,40 @@ function(daf__set_module_export_list NAME EXPORTS)
   else()
     set_property(TARGET "${NAME}" APPEND PROPERTY LINK_OPTIONS
       "-Xlinker" "--version-script=${DAF_ROOT_DIR}/utils/symbols/${EXPORTS}.version")
+  endif()
+endfunction()
+
+# daf__set_msvc_debug_file_names
+# ------------------------------------------------------------------------------
+#
+# Names the MSVC linker's .pdb and .ilk files after the target instead of the
+# output file.
+#
+# The JACK program and the Windows CLAP module both land in bin/ as `NAME`
+# (NAME.exe and NAME.clap). The linker derives the .pdb and the incremental-link
+# .ilk from the output base name, so both targets would write bin/NAME.pdb and
+# bin/NAME.ilk, and a parallel Debug or RelWithDebInfo build fails at random.
+# Naming them after the target (NAME-jack.pdb, NAME-clap.ilk, ...) leaves the
+# shipped binaries' names unchanged. Every other format already has a unique
+# output name or a directory of its own.
+#
+function(daf__set_msvc_debug_file_names TARGET)
+  if(NOT MSVC)
+    return()
+  endif()
+  set_target_properties("${TARGET}" PROPERTIES PDB_NAME "${TARGET}")
+  # Only link.exe writes .ilk files (lld-link does not link incrementally, and
+  # may not know the option), and only under /INCREMENTAL, which CMake's Debug
+  # and RelWithDebInfo flags enable. The file is not shipped; it goes next to
+  # the binary, where the output directory is known to exist.
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    get_target_property(_type "${TARGET}" TYPE)
+    if(_type STREQUAL "EXECUTABLE")
+      get_target_property(_dir "${TARGET}" RUNTIME_OUTPUT_DIRECTORY)
+    else()
+      get_target_property(_dir "${TARGET}" LIBRARY_OUTPUT_DIRECTORY)
+    endif()
+    target_link_options("${TARGET}" PRIVATE "/ILK:${_dir}${TARGET}.ilk")
   endif()
 endfunction()
 
