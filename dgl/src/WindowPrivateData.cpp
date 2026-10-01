@@ -1183,7 +1183,7 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
             puglX11ForwardKeyToParent(view, ev.press, event->key.keycode, event->key.state, ev.time);
            #elif defined(DAF_OS_MAC) || defined(DAF_OS_WINDOWS)
             // The Cocoa view passes the NSEvent up its responder chain on this status,
-            // and the Win32 view posts the key message to its parent window.
+            // and the Win32 view sends the key message on to the host's top-level window.
             return PUGL_UNSUPPORTED;
            #endif
         }
