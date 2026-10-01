@@ -1177,8 +1177,9 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
         {
            #if defined(DGL_USING_X11)
             puglX11ForwardKeyToParent(view, ev.press, event->key.keycode, event->key.state, ev.time);
-           #elif defined(DAF_OS_MAC)
-            // The Cocoa view passes the NSEvent up its responder chain on this status.
+           #elif defined(DAF_OS_MAC) || defined(DAF_OS_WINDOWS)
+            // The Cocoa view passes the NSEvent up its responder chain on this status,
+            // and the Win32 view posts the key message to its parent window.
             return PUGL_UNSUPPORTED;
            #endif
         }
@@ -1228,6 +1229,17 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
             ev.pos = Point<double>(event->button.x, event->button.y);
         }
         ev.absolutePos = ev.pos;
+
+       #ifdef DAF_OS_WINDOWS
+        // Win32 never gives a child window the keyboard on a click, and a CLAP or VST2 host has no
+        // focus callback to do it either, so an embedded UI would never see a key. Take the focus
+        // on a primary click, as a native control would; keys the UI does not use still go to the
+        // host, see PUGL_KEY_PRESS above. Done before dispatching, so a modal child that claims
+        // the focus back in onPuglMouse keeps it.
+        if (ev.press && event->button.button == 0 && pData->isEmbed && ! puglHasFocus(view))
+            puglGrabFocus(view);
+       #endif
+
         pData->onPuglMouse(ev);
         break;
     }

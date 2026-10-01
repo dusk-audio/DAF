@@ -949,7 +949,12 @@ handleMessage(PuglView* view, UINT message, WPARAM wParam, LPARAM lParam)
     return DefWindowProc(view->impl->hwnd, message, wParam, lParam);
   }
 
-  puglDispatchEvent(view, &event);
+  // A key an embedded view does not use goes to the window it is embedded in,
+  // so host shortcuts keep working while the view has the keyboard focus
+  if (puglDispatchEvent(view, &event) == PUGL_UNSUPPORTED && view->parent &&
+      (event.type == PUGL_KEY_PRESS || event.type == PUGL_KEY_RELEASE)) {
+    PostMessage((HWND)view->parent, message, wParam, lParam);
+  }
 
   return 0;
 }
