@@ -56,6 +56,7 @@ ifeq ($(HAVE_OPENGL),true)
 UNIT_TESTS   += Window.opengl
 endif
 ifeq ($(HAVE_STUB),true)
+UNIT_TESTS   += KnobEventHandler.stub
 UNIT_TESTS   += Widget.stub
 UNIT_TESTS   += Window.stub
 endif
@@ -186,6 +187,10 @@ clean:
 ../build/tests/NanoSubWidgets$(APP_EXT): ../build/tests/NanoSubWidgets.cpp.o ../build/libdgl-opengl.a
 	@echo "Linking NanoSubWidgets (OpenGL)"
 	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) $(OPENGL_LIBS) -o $@
+
+../build/tests/KnobEventHandler.stub$(APP_EXT): ../build/tests/KnobEventHandler.cpp.stub.o ../build/libdgl-stub.a
+	@echo "Linking KnobEventHandler (Stub)"
+	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) -o $@
 
 ../build/tests/Widget.stub$(APP_EXT): ../build/tests/Widget.cpp.stub.o ../build/libdgl-stub.a
 	@echo "Linking Widget (Stub)"
