@@ -2317,6 +2317,19 @@ public:
         return V3_OK;
     }
 
+   #if DAF_PLUGIN_WANT_PROGRAMS
+    void syncCurrentProgram()
+    {
+        const int32_t program = fPlugin.getCurrentProgram();
+        if (program < 0 || static_cast<uint32_t>(program) >= fPlugin.getProgramCount()) return;
+        fCurrentProgram = static_cast<uint32_t>(program);
+        fCachedParameterValues[kVst3InternalParameterProgram] = static_cast<float>(program);
+       #if DAF_PLUGIN_HAS_UI
+        fParameterValueChangesForUI[kVst3InternalParameterProgram] = true;
+       #endif
+    }
+   #endif
+
 #if DAF_PLUGIN_HAS_UI
     // ----------------------------------------------------------------------------------------------------------------
     // v3_connection_point interface calls
@@ -2576,19 +2589,6 @@ public:
 
         return V3_NOT_IMPLEMENTED;
     }
-
-   #if DAF_PLUGIN_WANT_PROGRAMS
-    void syncCurrentProgram()
-    {
-        const int32_t program = fPlugin.getCurrentProgram();
-        if (program < 0 || static_cast<uint32_t>(program) >= fPlugin.getProgramCount()) return;
-        fCurrentProgram = static_cast<uint32_t>(program);
-        fCachedParameterValues[kVst3InternalParameterProgram] = static_cast<float>(program);
-       #if DAF_PLUGIN_HAS_UI
-        fParameterValueChangesForUI[kVst3InternalParameterProgram] = true;
-       #endif
-    }
-   #endif
 
    #if DAF_PLUGIN_WANT_STATE
     void syncParameterSnapshot()
