@@ -33,6 +33,12 @@
 #define DAF_PLUGIN_NUM_OUTPUTS  1
 #define DAF_PLUGIN_WANT_TIMEPOS 1
 
+// LADSPA has no time position
+#if defined(DAF_PLUGIN_TARGET_LADSPA)
+# undef DAF_PLUGIN_WANT_TIMEPOS
+# define DAF_PLUGIN_WANT_TIMEPOS 0
+#endif
+
 // LV2 state is tested through the worker
 #if defined(DAF_PLUGIN_TARGET_LV2)
 # define DAF_PLUGIN_WANT_STATE 1
