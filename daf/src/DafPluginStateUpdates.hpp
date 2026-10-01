@@ -1,0 +1,104 @@
+/*
+ * DISTRHO Plugin Framework (DPF)
+ * Copyright (C) 2012-2026 Filipe Coelho <falktx@falktx.com>
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any purpose with
+ * or without fee is hereby granted, provided that the above copyright notice and this
+ * permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD
+ * TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN
+ * NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL
+ * DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER
+ * IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+ * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+#ifndef DAF_PLUGIN_STATE_UPDATES_HPP_INCLUDED
+#define DAF_PLUGIN_STATE_UPDATES_HPP_INCLUDED
+
+#include "DafPluginInternal.hpp"
+#include "../extra/Mutex.hpp"
+
+#include <map>
+
+#if DAF_PLUGIN_WANT_STATE
+
+START_NAMESPACE_DAF
+
+// --------------------------------------------------------------------------------------------------------------------
+
+/**
+   State values set by the plugin itself through Plugin::updateStateValue().
+
+   updateStateValue() may be called from any thread except the audio one, while a wrapper's state map, its UI and
+   most host notifications belong to the host's main thread. The plugin's own setState() is called right away;
+   the new value is queued here, and the wrapper takes the queue on its main thread to update its state map,
+   the UI and the host. Later updates of the same key replace earlier ones that were not taken yet.
+ */
+class PluginStateUpdates
+{
+public:
+    typedef std::map<const String, String> Map;
+
+    /**
+       Validate and apply a state value to the plugin, then queue it for the main thread.
+       Returns false, and leaves the plugin untouched, for an unknown key or a value the plugin rejects.
+     */
+    bool update(PluginExporter& plugin, const char* const key, const char* const value)
+    {
+        if (! plugin.wantStateKey(key))
+        {
+            d_stderr("Failed to find plugin state with key \"%s\"", key);
+            return false;
+        }
+
+        if (! plugin.validateStateValue(key, value))
+            return false;
+
+        plugin.setState(key, value);
+
+        const MutexLocker cml(fMutex);
+        fUpdates[String(key)] = value;
+        return true;
+    }
+
+    /**
+       Take all queued updates, main thread only.
+       Returns false if there were none.
+     */
+    bool take(Map& updates)
+    {
+        updates.clear();
+
+        const MutexLocker cml(fMutex);
+
+        if (fUpdates.empty())
+            return false;
+
+        updates.swap(fUpdates);
+        return true;
+    }
+
+private:
+    Mutex fMutex;
+    Map fUpdates;
+};
+
+/**
+   Whether a state update should reach the UI.
+ */
+static inline
+bool isStateForUI(const PluginExporter& plugin, const char* const key)
+{
+    uint32_t hints = 0x0;
+    return plugin.getStateHints(key, hints) && (hints & kStateIsOnlyForDSP) == 0x0;
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+
+END_NAMESPACE_DAF
+
+#endif // DAF_PLUGIN_WANT_STATE
+
+#endif // DAF_PLUGIN_STATE_UPDATES_HPP_INCLUDED

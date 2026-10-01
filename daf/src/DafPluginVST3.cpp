@@ -38,6 +38,7 @@
 
 #include "DafPluginInternal.hpp"
 #include "DafPluginStateParser.hpp"
+#include "DafPluginStateUpdates.hpp"
 #include "../DafPluginUtils.hpp"
 #include "../extra/ScopedPointer.hpp"
 
@@ -84,6 +85,9 @@ static constexpr const writeMidiFunc writeMidiCallback = nullptr;
 #endif
 #if ! DAF_PLUGIN_WANT_PARAMETER_VALUE_CHANGE_REQUEST
 static constexpr const requestParameterValueChangeFunc requestParameterValueChangeCallback = nullptr;
+#endif
+#if ! DAF_PLUGIN_WANT_STATE
+static constexpr const updateStateValueFunc updateStateValueCallback = nullptr;
 #endif
 
 typedef std::map<const String, String> StringMap;
@@ -632,7 +636,7 @@ class PluginVst3
 
 public:
     PluginVst3(v3_host_application** const host, const bool isComponent)
-        : fPlugin(this, writeMidiCallback, requestParameterValueChangeCallback, nullptr),
+        : fPlugin(this, writeMidiCallback, requestParameterValueChangeCallback, updateStateValueCallback),
           fComponentHandler(nullptr),
         #if DAF_PLUGIN_HAS_UI
          #if DAF_VST3_USES_SEPARATE_CONTROLLER
@@ -988,6 +992,11 @@ public:
         else
             fPlugin.deactivateIfNeeded();
 
+       #if DAF_PLUGIN_WANT_STATE
+        // activate() is a common place for Plugin::updateStateValue(), and this is the main thread
+        applyStateUpdates(true);
+       #endif
+
         return V3_OK;
     }
 
@@ -999,6 +1008,11 @@ public:
      */
     v3_result setState(v3_bstream** const stream)
     {
+       #if DAF_PLUGIN_WANT_STATE
+        // settle earlier updates first, so they cannot overwrite the state being loaded
+        applyStateUpdates(false);
+       #endif
+
        #if DAF_PLUGIN_HAS_UI
         const bool connectedToUI = fConnectionFromCtrlToView != nullptr && fConnectedToUI;
        #endif
@@ -1181,6 +1195,11 @@ public:
 
     v3_result getState(v3_bstream** const stream)
     {
+       #if DAF_PLUGIN_WANT_STATE
+        // save what the plugin has, even if the main thread did not get to the update yet
+        applyStateUpdates(false);
+       #endif
+
         const uint32_t paramCount = fPlugin.getParameterCount();
        #if DAF_PLUGIN_WANT_STATE
         const uint32_t stateCount = fPlugin.getStateCount();
@@ -2303,7 +2322,21 @@ public:
 
        #if DAF_PLUGIN_WANT_STATE
         if (std::strcmp(msgid, "state-set") == 0)
-            return notify_state(attrs);
+            return notify_state(attrs, ! fIsComponent);
+
+        // component side: a main-thread tick forwarded by the edit controller, see ctrl2view_notify
+        if (std::strcmp(msgid, "idle") == 0)
+        {
+            applyStateUpdates(true);
+            return V3_OK;
+        }
+
+        // edit controller side: the component applied state updates from the plugin
+        if (std::strcmp(msgid, "state-dirty") == 0)
+        {
+            markHostStateDirty();
+            return V3_OK;
+        }
        #endif
 
         d_stderr("comp2ctrl_notify received unknown msg '%s'", msgid);
@@ -2388,6 +2421,16 @@ public:
 
         if (std::strcmp(msgid, "idle") == 0)
         {
+           #if DAF_PLUGIN_WANT_STATE
+           #if DAF_VST3_USES_SEPARATE_CONTROLLER
+            // state updates from the plugin are queued on the component, which has no main-thread tick of its own
+            if (fConnectionFromCompToCtrl != nullptr)
+                v3_cpp_obj(fConnectionFromCompToCtrl)->notify(fConnectionFromCompToCtrl, message);
+           #else
+            applyStateUpdates(true);
+           #endif
+           #endif
+
            #if DAF_VST3_USES_SEPARATE_CONTROLLER
             if (fParameterValueChangesForUI[kVst3InternalParameterSampleRate].exchange(false))
             {
@@ -2552,7 +2595,8 @@ public:
             v3_cpp_obj(fComponentHandler)->restart_component(fComponentHandler, V3_RESTART_PARAM_VALUES_CHANGED);
     }
 
-    v3_result notify_state(v3_attribute_list** const attrs)
+    // fromComponent: on the edit controller, for a state update the plugin made, see applyStateUpdates
+    v3_result notify_state(v3_attribute_list** const attrs, const bool fromComponent = false)
     {
         int64_t keyLength = -1;
         int64_t valueLength = -1;
@@ -2610,6 +2654,9 @@ public:
             const String dkey(key);
             fStateMap[dkey] = value;
         }
+
+        if (fromComponent && fConnectionFromCtrlToView != nullptr && fConnectedToUI)
+            sendStateSetToUI(key, value);
 
         std::free(key16);
         std::free(value16);
@@ -2689,6 +2736,7 @@ private:
    #endif
    #if DAF_PLUGIN_WANT_STATE
     StringMap fStateMap;
+    PluginStateUpdates fStateUpdates;
    #endif
    #if DAF_PLUGIN_WANT_TIMEPOS
     TimePosition fTimePosition;
@@ -3258,7 +3306,9 @@ private:
         v3_cpp_obj_unref(message);
     }
 
-    void sendStateSetToUI(const char* const key, const char* const value) const
+    // target: 1 towards the edit controller (and on to the component), 2 towards the view
+    void sendStateSet(v3_connection_point** const connection, const int64_t target,
+                      const char* const key, const char* const value) const
     {
         v3_message** const message = createMessage("state-set");
         DAF_SAFE_ASSERT_RETURN(message != nullptr,);
@@ -3266,15 +3316,36 @@ private:
         v3_attribute_list** const attrlist = v3_cpp_obj(message)->get_attributes(message);
         DAF_SAFE_ASSERT_RETURN(attrlist != nullptr,);
 
-        v3_cpp_obj(attrlist)->set_int(attrlist, "__daf_msg_target__", 2);
+        v3_cpp_obj(attrlist)->set_int(attrlist, "__daf_msg_target__", target);
         v3_cpp_obj(attrlist)->set_int(attrlist, "key:length", std::strlen(key));
         v3_cpp_obj(attrlist)->set_int(attrlist, "value:length", std::strlen(value));
         v3_cpp_obj(attrlist)->set_string(attrlist, "key", ScopedUTF16String(key));
         v3_cpp_obj(attrlist)->set_string(attrlist, "value", ScopedUTF16String(value));
-        v3_cpp_obj(fConnectionFromCtrlToView)->notify(fConnectionFromCtrlToView, message);
+        v3_cpp_obj(connection)->notify(connection, message);
 
         v3_cpp_obj_unref(message);
     }
+
+    void sendStateSetToUI(const char* const key, const char* const value) const
+    {
+        sendStateSet(fConnectionFromCtrlToView, 2, key, value);
+    }
+
+   #if DAF_VST3_USES_SEPARATE_CONTROLLER
+    void sendStateDirtyToController() const
+    {
+        v3_message** const message = createMessage("state-dirty");
+        DAF_SAFE_ASSERT_RETURN(message != nullptr,);
+
+        v3_attribute_list** const attrlist = v3_cpp_obj(message)->get_attributes(message);
+        DAF_SAFE_ASSERT_RETURN(attrlist != nullptr,);
+
+        v3_cpp_obj(attrlist)->set_int(attrlist, "__daf_msg_target__", 1);
+        v3_cpp_obj(fConnectionFromCompToCtrl)->notify(fConnectionFromCompToCtrl, message);
+
+        v3_cpp_obj_unref(message);
+    }
+   #endif
 
     void sendReadyToUI() const
     {
@@ -3293,6 +3364,84 @@ private:
 
     // ----------------------------------------------------------------------------------------------------------------
     // DAF callbacks
+
+   #if DAF_PLUGIN_WANT_STATE
+    // any thread but the audio one; the rest happens in applyStateUpdates on the main thread
+    bool updateState(const char* const key, const char* const value)
+    {
+        return fStateUpdates.update(fPlugin, key, value);
+    }
+
+    static bool updateStateValueCallback(void* const ptr, const char* const key, const char* const value)
+    {
+        return static_cast<PluginVst3*>(ptr)->updateState(key, value);
+    }
+
+    // main thread. A host that is saving or loading state at the time needs no telling: what it saves
+    // already has the update, and what it loads replaces it.
+    void applyStateUpdates(const bool markDirty)
+    {
+        PluginStateUpdates::Map updates;
+        if (! fStateUpdates.take(updates))
+            return;
+
+        for (PluginStateUpdates::Map::const_iterator cit=updates.begin(), cite=updates.end(); cit != cite; ++cit)
+        {
+            const String& key(cit->first);
+            const String& value(cit->second);
+
+            fStateMap[key] = value;
+
+           #if DAF_PLUGIN_HAS_UI
+            if (! isStateForUI(fPlugin, key))
+                continue;
+
+           #if DAF_VST3_USES_SEPARATE_CONTROLLER
+            // the view talks to the edit controller, which forwards the value from there
+            if (fIsComponent)
+            {
+                if (fConnectionFromCompToCtrl != nullptr)
+                    sendStateSet(fConnectionFromCompToCtrl, 1, key, value);
+                continue;
+            }
+           #endif
+
+            if (fConnectionFromCtrlToView != nullptr && fConnectedToUI)
+                sendStateSetToUI(key, value);
+           #endif
+        }
+
+        if (! markDirty)
+            return;
+
+       #if DAF_VST3_USES_SEPARATE_CONTROLLER
+        // only the edit controller has the component handler
+        if (fIsComponent)
+        {
+            if (fConnectionFromCompToCtrl != nullptr)
+                sendStateDirtyToController();
+            return;
+        }
+       #endif
+
+        markHostStateDirty();
+    }
+
+    void markHostStateDirty()
+    {
+        if (fComponentHandler == nullptr)
+            return;
+
+        v3_component_handler2** handler2 = nullptr;
+        if (v3_cpp_obj_query_interface(fComponentHandler, v3_component_handler2_iid, &handler2) != V3_OK)
+            return;
+        if (handler2 == nullptr)
+            return;
+
+        v3_cpp_obj(handler2)->set_dirty(handler2, true);
+        v3_cpp_obj_unref(handler2);
+    }
+   #endif
 
    #if DAF_PLUGIN_WANT_PARAMETER_VALUE_CHANGE_REQUEST
     bool requestParameterValueChange(const uint32_t index, float)

@@ -15,6 +15,7 @@
  */
 
 #include "DafPluginInternal.hpp"
+#include "DafPluginStateUpdates.hpp"
 
 #ifndef STATIC_BUILD
 # include "../DafPluginUtils.hpp"
@@ -87,6 +88,9 @@ static const writeMidiFunc writeMidiCallback = nullptr;
 #if ! DAF_PLUGIN_WANT_PARAMETER_VALUE_CHANGE_REQUEST
 static const requestParameterValueChangeFunc requestParameterValueChangeCallback = nullptr;
 #endif
+#if ! DAF_PLUGIN_WANT_STATE
+static const updateStateValueFunc updateStateValueCallback = nullptr;
+#endif
 
 // -----------------------------------------------------------------------
 
@@ -136,7 +140,7 @@ class PluginJack
 {
 public:
     PluginJack(jack_client_t* const client, const uintptr_t winId)
-        : fPlugin(this, writeMidiCallback, requestParameterValueChangeCallback, nullptr),
+        : fPlugin(this, writeMidiCallback, requestParameterValueChangeCallback, updateStateValueCallback),
 #if DAF_PLUGIN_HAS_UI
           fUI(this,
               winId,
@@ -344,6 +348,18 @@ protected:
                 fUI.parameterChanged(i, fPlugin.getParameterValue(i));
             }
         }
+
+# if DAF_PLUGIN_WANT_STATE
+        PluginStateUpdates::Map stateUpdates;
+        if (fStateUpdates.take(stateUpdates))
+        {
+            for (PluginStateUpdates::Map::const_iterator cit=stateUpdates.begin(), cite=stateUpdates.end(); cit != cite; ++cit)
+            {
+                if (isStateForUI(fPlugin, cit->first))
+                    fUI.stateChanged(cit->first, cit->second);
+            }
+        }
+# endif
 
         fUI.exec_idle();
     }
@@ -614,6 +630,11 @@ private:
     // Temporary data
     float* fLastOutputValues;
 
+#if DAF_PLUGIN_WANT_STATE
+    // There is no host to keep state for, these only go to the UI
+    PluginStateUpdates fStateUpdates;
+#endif
+
 #if DAF_PLUGIN_HAS_UI
     // Store DSP changes to send to UI
     bool* fParametersChanged;
@@ -771,6 +792,19 @@ private:
     }
 # endif
 #endif // DAF_PLUGIN_HAS_UI
+
+#if DAF_PLUGIN_WANT_STATE
+    // any thread but the audio one; the UI is told on its next idle
+    bool updateState(const char* const key, const char* const value)
+    {
+        return fStateUpdates.update(fPlugin, key, value);
+    }
+
+    static bool updateStateValueCallback(void* ptr, const char* key, const char* value)
+    {
+        return thisPtr->updateState(key, value);
+    }
+#endif
 
 #if DAF_PLUGIN_WANT_PARAMETER_VALUE_CHANGE_REQUEST
     bool requestParameterValueChange(const uint32_t index, const float value)

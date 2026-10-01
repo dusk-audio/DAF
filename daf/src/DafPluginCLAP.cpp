@@ -24,6 +24,7 @@
 
 #include "DafPluginInternal.hpp"
 #include "DafPluginStateParser.hpp"
+#include "DafPluginStateUpdates.hpp"
 #include "extra/ScopedPointer.hpp"
 
 #ifndef DAF_PLUGIN_CLAP_ID
@@ -1553,11 +1554,14 @@ public:
         return true;
     }
 
-    // Intentionally empty. Latency reporting used to be deferred to here, but
-    // clap_host_latency::changed is [main-thread & being-activated], so it now happens
-    // in activate() and nothing else needs a main-thread callback.
+    // Latency reporting used to be deferred to here, but clap_host_latency::changed is
+    // [main-thread & being-activated], so it now happens in activate().
+    // What remains is finishing Plugin::updateStateValue() calls, see updateState().
     void onMainThread()
     {
+       #if DAF_PLUGIN_WANT_STATE
+        applyStateUpdates(true);
+       #endif
     }
 
     // ----------------------------------------------------------------------------------------------------------------
@@ -2129,6 +2133,11 @@ public:
 
     bool stateSave(const clap_ostream_t* const stream)
     {
+       #if DAF_PLUGIN_WANT_STATE
+        // save what the plugin has, even if the main-thread callback for it did not run yet
+        applyStateUpdates(false);
+       #endif
+
         const uint32_t paramCount = fPlugin.getParameterCount();
        #if DAF_PLUGIN_WANT_STATE
         const uint32_t stateCount = fPlugin.getStateCount();
@@ -2235,6 +2244,11 @@ public:
 
     bool stateLoad(const clap_istream_t* const stream)
     {
+       #if DAF_PLUGIN_WANT_STATE
+        // settle earlier updates first, so they cannot overwrite the state being loaded
+        applyStateUpdates(false);
+       #endif
+
        #if DAF_PLUGIN_HAS_UI
         ClapUI* const ui = fUI.get();
        #endif
@@ -2550,6 +2564,9 @@ private:
    #if DAF_PLUGIN_WANT_TIMEPOS
     TimePosition fTimePosition;
    #endif
+   #if DAF_PLUGIN_WANT_STATE
+    PluginStateUpdates fStateUpdates;
+   #endif
 
     struct HostExtensions {
         const clap_host_t* const host;
@@ -2832,9 +2849,44 @@ private:
    #endif
 
    #if DAF_PLUGIN_WANT_STATE
-    bool updateState(const char*, const char*)
+    // any thread but the audio one
+    bool updateState(const char* const key, const char* const value)
     {
+        if (! fStateUpdates.update(fPlugin, key, value))
+            return false;
+
+        // the state map, the UI and clap_host_state are main-thread only, continue in onMainThread()
+        fHost->request_callback(fHost);
         return true;
+    }
+
+    // main thread. A host that is saving or loading state at the time needs no telling: what it saves
+    // already has the update, and what it loads replaces it.
+    void applyStateUpdates(const bool markDirty)
+    {
+        PluginStateUpdates::Map updates;
+        if (! fStateUpdates.take(updates))
+            return;
+
+       #if DAF_PLUGIN_HAS_UI
+        ClapUI* const ui = fUI.get();
+       #endif
+
+        for (PluginStateUpdates::Map::const_iterator cit=updates.begin(), cite=updates.end(); cit != cite; ++cit)
+        {
+            const String& key(cit->first);
+            const String& value(cit->second);
+
+            fStateMap[key] = value;
+
+           #if DAF_PLUGIN_HAS_UI
+            if (ui != nullptr && isStateForUI(fPlugin, key))
+                ui->setStateFromPlugin(key, value);
+           #endif
+        }
+
+        if (markDirty && fHostExtensions.state != nullptr && fHostExtensions.state->mark_dirty != nullptr)
+            fHostExtensions.state->mark_dirty(fHost);
     }
 
     static bool updateStateValueCallback(void* const ptr, const char* const key, const char* const value)

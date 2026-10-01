@@ -16,6 +16,7 @@
 
 #include "DafPluginInternal.hpp"
 #include "DafPluginVST.hpp"
+#include "DafPluginStateUpdates.hpp"
 #include "../DafPluginUtils.hpp"
 #include "../extra/ScopedSafeLocale.hpp"
 #include "../extra/ScopedPointer.hpp"
@@ -98,6 +99,9 @@ static constexpr const writeMidiFunc writeMidiCallback = nullptr;
 #endif
 #if ! DAF_PLUGIN_WANT_PARAMETER_VALUE_CHANGE_REQUEST
 static constexpr const requestParameterValueChangeFunc requestParameterValueChangeCallback = nullptr;
+#endif
+#if ! DAF_PLUGIN_WANT_STATE
+static constexpr const updateStateValueFunc updateStateValueCallback = nullptr;
 #endif
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -386,7 +390,7 @@ class PluginVst : public ParameterAndNotesHelper
 {
 public:
     PluginVst(const vst_host_callback audioMaster, vst_effect* const effect)
-        : fPlugin(this, writeMidiCallback, requestParameterValueChangeCallback, nullptr),
+        : fPlugin(this, writeMidiCallback, requestParameterValueChangeCallback, updateStateValueCallback),
           fAudioMaster(audioMaster),
           fEffect(effect)
     {
@@ -626,6 +630,12 @@ public:
                 return 0;
             }
            #endif
+
+           #if DAF_PLUGIN_WANT_STATE
+            // the new UI gets the state map below
+            applyStateUpdates(true);
+           #endif
+
             fVstUI = new UIVst(fAudioMaster, fEffect, this, &fPlugin, (intptr_t)ptr, fLastScaleFactor);
 
            #if DAF_PLUGIN_WANT_FULL_STATE
@@ -666,6 +676,9 @@ public:
             break;
 
         case VST_EFFECT_OPCODE_13: // window idle
+           #if DAF_PLUGIN_WANT_STATE
+            applyStateUpdates(true);
+           #endif
             if (fVstUI != nullptr)
                 fVstUI->idle();
             break;
@@ -686,6 +699,9 @@ public:
         {
             if (ptr == nullptr)
                 return 0;
+
+            // save what the plugin has, even if no idle call got to the update yet
+            applyStateUpdates(false);
 
             if (fStateChunk != nullptr)
             {
@@ -773,6 +789,9 @@ public:
         {
             if (value <= 1 || ptr == nullptr)
                 return 0;
+
+            // settle earlier updates first, so they cannot overwrite the state being loaded
+            applyStateUpdates(false);
 
             const size_t chunkSize = static_cast<size_t>(value);
 
@@ -1142,6 +1161,7 @@ private:
    #if DAF_PLUGIN_WANT_STATE
     char*     fStateChunk;
     StringMap fStateMap;
+    PluginStateUpdates fStateUpdates;
    #endif
 
     // ----------------------------------------------------------------------------------------------------------------
@@ -1265,6 +1285,46 @@ private:
    #endif
 
   #if DAF_PLUGIN_WANT_STATE
+    // ----------------------------------------------------------------------------------------------------------------
+    // Plugin::updateStateValue(), any thread but the audio one; the rest happens in applyStateUpdates
+
+    bool updateState(const char* const key, const char* const value)
+    {
+        return fStateUpdates.update(fPlugin, key, value);
+    }
+
+    static bool updateStateValueCallback(void* const ptr, const char* const key, const char* const value)
+    {
+        return static_cast<PluginVst*>(ptr)->updateState(key, value);
+    }
+
+    // Called from the host's main (UI) thread: window idle, editor open, chunk get and set.
+    // A host that is saving or loading the chunk at the time needs no telling: what it saves
+    // already has the update, and what it loads replaces it.
+    void applyStateUpdates(const bool notifyHost)
+    {
+        PluginStateUpdates::Map updates;
+        if (! fStateUpdates.take(updates))
+            return;
+
+        for (PluginStateUpdates::Map::const_iterator cit=updates.begin(), cite=updates.end(); cit != cite; ++cit)
+        {
+            const String& key(cit->first);
+            const String& value(cit->second);
+
+            fStateMap[key] = value;
+
+           #if DAF_PLUGIN_HAS_UI
+            if (fVstUI != nullptr && isStateForUI(fPlugin, key))
+                fVstUI->setStateFromPlugin(key, value);
+           #endif
+        }
+
+        // audioMasterUpdateDisplay, the closest VST2 has to marking the state as modified
+        if (notifyHost)
+            hostCallback(VST_HOST_OPCODE_2A);
+    }
+
     // ----------------------------------------------------------------------------------------------------------------
     // functions called from the UI side, may block
 
