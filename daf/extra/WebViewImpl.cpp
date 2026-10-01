@@ -258,7 +258,8 @@ enum WebViewMessageType {
     kWebViewMessageInitData,
     kWebViewMessageEvaluateJS,
     kWebViewMessageCallback,
-    kWebViewMessageReload
+    kWebViewMessageReload,
+    kWebViewMessageParentMoved
 };
 
 struct WebViewSharedBuffer {
@@ -368,6 +369,8 @@ struct WebViewData {
     ::Display* display;
     ::Window childWindow;
     ::Window ourWindow;
+    int ourRootX, ourRootY;
+    bool ourRootKnown;
    #endif
     WebViewData();
     DAF_DECLARE_NON_COPYABLE(WebViewData);
@@ -393,7 +396,10 @@ WebViewData::WebViewData()
       rbctrl2(),
       display(nullptr),
       childWindow(0),
-      ourWindow(0)
+      ourWindow(0),
+      ourRootX(0),
+      ourRootY(0),
+      ourRootKnown(false)
     #endif
 {
    #if WEB_VIEW_USING_X11_IPC
@@ -759,6 +765,34 @@ void webViewDestroy(const WebViewHandle handle)
 void webViewIdle(const WebViewHandle handle)
 {
    #if WEB_VIEW_USING_X11_IPC
+    // When the host moves its top-level window our window does not move relative to its parent, so
+    // the embedded child gets no ConfigureNotify and keeps a stale idea of its root position.
+    // Watch our own root position here and tell the child process when it changes.
+    {
+        int rootX = 0, rootY = 0;
+        ::Window ignored = 0;
+
+        if (XTranslateCoordinates(handle->display, handle->ourWindow, DefaultRootWindow(handle->display),
+                                  0, 0, &rootX, &rootY, &ignored))
+        {
+            if (! handle->ourRootKnown)
+            {
+                handle->ourRootKnown = true;
+                handle->ourRootX = rootX;
+                handle->ourRootY = rootY;
+            }
+            else if (rootX != handle->ourRootX || rootY != handle->ourRootY)
+            {
+                handle->ourRootX = rootX;
+                handle->ourRootY = rootY;
+
+                handle->rbctrl.writeUInt(kWebViewMessageParentMoved);
+                if (handle->rbctrl.commitWrite())
+                    webview_wake(&handle->shmptr->client.sem);
+            }
+        }
+    }
+
     uint32_t size = 0;
     void* buffer = nullptr;
 
@@ -893,6 +927,8 @@ static struct WebFramework {
     virtual void reload() = 0;
     virtual void terminate() = 0;
     virtual void wake(WebViewRingBuffer* rb) = 0;
+    // Qt maps to global coordinates with a server round trip, so by default nothing needs doing here
+    virtual void parentMoved() {}
 }* webFramework = nullptr;
 
 // -----------------------------------------------------------------------------------------------------------
@@ -1005,6 +1041,9 @@ static int web_wake_idle(void* const ptr)
         case kWebViewMessageReload:
             d_debug("client kWebViewMessageReload");
             webFramework->reload();
+            continue;
+        case kWebViewMessageParentMoved:
+            webFramework->parentMoved();
             continue;
         }
 
@@ -1211,6 +1250,8 @@ static bool gtk3(Display* const display,
     XFlush(display);
 
     struct Gtk3WebFramework : WebFramework {
+        Display* const _display;
+        const Window _wid;
         const char* const _url;
         WebViewRingBuffer* const _shmptr;
         GtkWidget* const _webview;
@@ -1220,7 +1261,9 @@ static bool gtk3(Display* const display,
         const gtk_main_quit_t _gtk_main_quit;
         const g_main_context_invoke_t _g_main_context_invoke;
 
-        Gtk3WebFramework(const char* const url,
+        Gtk3WebFramework(Display* const display,
+                         const Window wid,
+                         const char* const url,
                          WebViewRingBuffer* const shmptr,
                          GtkWidget* const webview,
                          const webkit_web_view_evaluate_javascript_t webkit_web_view_evaluate_javascript,
@@ -1228,7 +1271,9 @@ static bool gtk3(Display* const display,
                          const webkit_web_view_load_uri_t webkit_web_view_load_uri,
                          const gtk_main_quit_t gtk_main_quit,
                          const g_main_context_invoke_t g_main_context_invoke)
-            : _url(url),
+            : _display(display),
+              _wid(wid),
+              _url(url),
               _shmptr(shmptr),
               _webview(webview),
               _webkit_web_view_evaluate_javascript(webkit_web_view_evaluate_javascript),
@@ -1265,9 +1310,44 @@ static bool gtk3(Display* const display,
         {
             _g_main_context_invoke(NULL, G_CALLBACK(web_wake_idle), rb);
         }
+
+        // The plug is reparented into the plugin window, so as XEmbed and ICCCM specify for such
+        // windows, a move of the top-level is reported with a synthetic ConfigureNotify carrying
+        // root coordinates. GDK takes the position of a synthetic event as given and updates its
+        // cached root position from it, which popups and drag-and-drop rely on.
+        void parentMoved() override
+        {
+            Window root = 0, ignored = 0;
+            int x = 0, y = 0, rootX = 0, rootY = 0;
+            uint width = 0, height = 0, border = 0, depth = 0;
+
+            if (! XGetGeometry(_display, _wid, &root, &x, &y, &width, &height, &border, &depth))
+                return;
+            if (! XTranslateCoordinates(_display, _wid, root, 0, 0, &rootX, &rootY, &ignored))
+                return;
+
+            XEvent event;
+            std::memset(&event, 0, sizeof(event));
+            event.xconfigure.type = ConfigureNotify;
+            event.xconfigure.display = _display;
+            event.xconfigure.event = _wid;
+            event.xconfigure.window = _wid;
+            event.xconfigure.x = rootX - static_cast<int>(border);
+            event.xconfigure.y = rootY - static_cast<int>(border);
+            event.xconfigure.width = static_cast<int>(width);
+            event.xconfigure.height = static_cast<int>(height);
+            event.xconfigure.border_width = static_cast<int>(border);
+            event.xconfigure.above = None;
+            event.xconfigure.override_redirect = False;
+
+            XSendEvent(_display, _wid, False, StructureNotifyMask, &event);
+            XFlush(_display);
+        }
     };
 
-    Gtk3WebFramework webFrameworkObj(url,
+    Gtk3WebFramework webFrameworkObj(display,
+                                     wid,
+                                     url,
                                      shmptr,
                                      webview,
                                      webkit_web_view_evaluate_javascript,
