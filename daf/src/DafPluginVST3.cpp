@@ -65,6 +65,7 @@
 
 #if DAF_PLUGIN_WANT_STATE && DAF_VST3_USES_SEPARATE_CONTROLLER
 # include <ctime>
+# include <mutex>
 # include <random>
 #endif
 
@@ -116,7 +117,7 @@ public:
     static int64_t add(const Flag& flag)
     {
         Registry& reg(registry());
-        const MutexLocker cml(reg.mutex);
+        const std::lock_guard<std::mutex> cml(reg.mutex);
         // unique in this process, and random enough not to name a flag here when sent from another one
         const int64_t id = static_cast<int64_t>(reg.salt + ++reg.counter);
         reg.flags[id] = flag;
@@ -126,21 +127,21 @@ public:
     static void remove(const int64_t id)
     {
         Registry& reg(registry());
-        const MutexLocker cml(reg.mutex);
+        const std::lock_guard<std::mutex> cml(reg.mutex);
         reg.flags.erase(id);
     }
 
     static Flag find(const int64_t id)
     {
         Registry& reg(registry());
-        const MutexLocker cml(reg.mutex);
+        const std::lock_guard<std::mutex> cml(reg.mutex);
         const std::map<int64_t, Flag>::const_iterator it = reg.flags.find(id);
         return it != reg.flags.end() ? it->second : Flag();
     }
 
 private:
     struct Registry {
-        Mutex mutex;
+        std::mutex mutex;
         std::map<int64_t, Flag> flags;
         uint64_t salt;
         uint64_t counter;

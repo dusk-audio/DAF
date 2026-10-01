@@ -18,9 +18,9 @@
 #define DAF_PLUGIN_STATE_UPDATES_HPP_INCLUDED
 
 #include "DafPluginInternal.hpp"
-#include "../extra/Mutex.hpp"
 
 #include <map>
+#include <mutex>
 
 #if DAF_PLUGIN_WANT_STATE
 
@@ -62,7 +62,7 @@ public:
 
         plugin.setState(key, value);
 
-        const MutexLocker cml(fMutex);
+        const std::lock_guard<std::mutex> cml(fMutex);
         fFromPlugin[String(key)] = value;
         return true;
     }
@@ -76,7 +76,7 @@ public:
     {
         updates.clear();
 
-        const MutexLocker cml(fMutex);
+        const std::lock_guard<std::mutex> cml(fMutex);
 
         if (fFromPlugin.empty())
             return false;
@@ -94,7 +94,7 @@ public:
      */
     void supersede(const char* const key)
     {
-        const MutexLocker cml(fMutex);
+        const std::lock_guard<std::mutex> cml(fMutex);
 
         if (fFromPlugin.empty() && fForUI.empty())
             return;
@@ -113,7 +113,7 @@ public:
     {
         updates.clear();
 
-        const MutexLocker cml(fMutex);
+        const std::lock_guard<std::mutex> cml(fMutex);
 
         markDirty = ! fFromPlugin.empty();
 
@@ -130,7 +130,7 @@ public:
     }
 
 private:
-    Mutex fMutex;
+    std::mutex fMutex;
     Map fFromPlugin; // not in the wrapper's state map yet
     Map fForUI;      // in the state map, but the UI and the host's main thread were not told yet
 };
