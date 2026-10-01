@@ -48,7 +48,7 @@ MANUAL_TESTS += NanoSubWidgets
 endif
 
 ifneq ($(WASM),true)
-UNIT_TESTS   += Application
+UNIT_TESTS   += Application Thread
 ifeq ($(HAVE_CAIRO),true)
 UNIT_TESTS   += Window.cairo
 endif
