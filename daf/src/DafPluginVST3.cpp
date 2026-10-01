@@ -1017,9 +1017,11 @@ public:
         else
             fPlugin.deactivateIfNeeded();
 
-       #if DAF_PLUGIN_WANT_STATE
-        // activate() is a common place for Plugin::updateStateValue(), and this is the main thread
-        applyStateUpdates(true);
+       #if DAF_PLUGIN_WANT_STATE && ! DAF_PLUGIN_HAS_UI
+        // activate() is a common place for Plugin::updateStateValue(). With a UI, its idle takes the updates
+        // to the view and the host; without one this is the only main-thread call there is (the spec puts
+        // setActive on the UI thread), and with no view to message, only the "modified" flag is left to set.
+        applyStateUpdates();
        #endif
 
         return V3_OK;
@@ -1035,7 +1037,7 @@ public:
     {
        #if DAF_PLUGIN_WANT_STATE
         // settle earlier updates first, so they cannot overwrite the state being loaded
-        applyStateUpdates(false);
+        mergeStateUpdates();
        #endif
 
        #if DAF_PLUGIN_HAS_UI
@@ -1126,6 +1128,7 @@ public:
                         {
                             fStateMap[String(key)] = value;
                             fPlugin.setState(key, value);
+                            fStateUpdates.supersede(key);
 
                            #if DAF_PLUGIN_HAS_UI
                             if (connectedToUI)
@@ -1222,7 +1225,7 @@ public:
     {
        #if DAF_PLUGIN_WANT_STATE
         // save what the plugin has, even if the main thread did not get to the update yet
-        applyStateUpdates(false);
+        mergeStateUpdates();
        #endif
 
         const uint32_t paramCount = fPlugin.getParameterCount();
@@ -2365,7 +2368,7 @@ public:
         // component side: a main-thread tick forwarded by the edit controller, see ctrl2view_notify
         if (std::strcmp(msgid, "idle") == 0)
         {
-            applyStateUpdates(true);
+            applyStateUpdates();
             return V3_OK;
         }
 
@@ -2465,7 +2468,7 @@ public:
             if (fConnectionFromCompToCtrl != nullptr)
                 v3_cpp_obj(fConnectionFromCompToCtrl)->notify(fConnectionFromCompToCtrl, message);
            #else
-            applyStateUpdates(true);
+            applyStateUpdates();
            #endif
            #endif
 
@@ -2678,6 +2681,10 @@ public:
         {
             const String dkey(key);
             fStateMap[dkey] = value;
+
+            // an earlier Plugin::updateStateValue() must not put its value back later
+            if (! fromComponent)
+                fStateUpdates.supersede(key);
         }
 
         if (fromComponent && fConnectionFromCtrlToView != nullptr && fConnectedToUI)
@@ -3402,12 +3409,12 @@ private:
         return static_cast<PluginVst3*>(ptr)->updateState(key, value);
     }
 
-    // main thread. A host that is saving or loading state at the time needs no telling: what it saves
-    // already has the update, and what it loads replaces it.
-    void applyStateUpdates(const bool markDirty)
+    // Main thread only: the UI idle, see ctrl2view_notify and comp2ctrl_notify.
+    void applyStateUpdates()
     {
         PluginStateUpdates::Map updates;
-        if (! fStateUpdates.take(updates))
+        bool markDirty = false;
+        if (! fStateUpdates.takeForMainThread(updates, markDirty))
             return;
 
         for (PluginStateUpdates::Map::const_iterator cit=updates.begin(), cite=updates.end(); cit != cite; ++cit)
@@ -3436,6 +3443,7 @@ private:
            #endif
         }
 
+        // not for updates a state save or load took first: the host has those, or loaded over them
         if (! markDirty)
             return;
 
@@ -3450,6 +3458,18 @@ private:
        #endif
 
         markHostStateDirty();
+    }
+
+    // getState() and setState(), which some hosts call off their main thread: only the state map takes the
+    // updates there, the UI and the host's "modified" flag get them from applyStateUpdates() later.
+    void mergeStateUpdates()
+    {
+        PluginStateUpdates::Map updates;
+        if (! fStateUpdates.takeForStateMap(updates))
+            return;
+
+        for (PluginStateUpdates::Map::const_iterator cit=updates.begin(), cite=updates.end(); cit != cite; ++cit)
+            fStateMap[cit->first] = cit->second;
     }
 
     void markHostStateDirty()

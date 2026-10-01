@@ -351,7 +351,8 @@ protected:
 
 # if DAF_PLUGIN_WANT_STATE
         PluginStateUpdates::Map stateUpdates;
-        if (fStateUpdates.take(stateUpdates))
+        bool unusedDirty;
+        if (fStateUpdates.takeForMainThread(stateUpdates, unusedDirty))
         {
             for (PluginStateUpdates::Map::const_iterator cit=stateUpdates.begin(), cite=stateUpdates.end(); cit != cite; ++cit)
             {
@@ -581,6 +582,9 @@ protected:
     void setState(const char* const key, const char* const value)
     {
         fPlugin.setState(key, value);
+
+        // an earlier Plugin::updateStateValue() must not send its value back to the UI later
+        fStateUpdates.supersede(key);
     }
 # endif
 #endif // DAF_PLUGIN_HAS_UI

@@ -2499,6 +2499,9 @@ public:
         {
             const String dkey(key);
             fStateMap[dkey] = value;
+
+            // an earlier Plugin::updateStateValue() must not put its value back later
+            fStateUpdates.supersede(key);
         }
 
         if (snapshot)
@@ -2874,12 +2877,13 @@ private:
         return true;
     }
 
-    // main thread. A host that is saving or loading state at the time needs no telling: what it saves
-    // already has the update, and what it loads replaces it.
-    void applyStateUpdates(const bool markDirty)
+    // main thread, as are all of clap_plugin_state. A host that is saving or loading state at the time
+    // needs no telling: what it saves already has the update, and what it loads replaces it.
+    void applyStateUpdates(const bool hostNeedsTelling)
     {
         PluginStateUpdates::Map updates;
-        if (! fStateUpdates.take(updates))
+        bool markDirty = false;
+        if (! fStateUpdates.takeForMainThread(updates, markDirty))
             return;
 
        #if DAF_PLUGIN_HAS_UI
@@ -2899,7 +2903,8 @@ private:
            #endif
         }
 
-        if (markDirty && fHostExtensions.state != nullptr && fHostExtensions.state->mark_dirty != nullptr)
+        if (hostNeedsTelling && markDirty &&
+            fHostExtensions.state != nullptr && fHostExtensions.state->mark_dirty != nullptr)
             fHostExtensions.state->mark_dirty(fHost);
     }
 

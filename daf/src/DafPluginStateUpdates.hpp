@@ -35,6 +35,10 @@ START_NAMESPACE_DAF
    most host notifications belong to the host's main thread. The plugin's own setState() is called right away;
    the new value is queued here, and the wrapper takes the queue on its main thread to update its state map,
    the UI and the host. Later updates of the same key replace earlier ones that were not taken yet.
+
+   Some hosts save and load state off their main thread. There the wrapper only takes the values for its state map,
+   with takeForStateMap(): they stay queued for the main thread, which still has to tell the UI, but no longer has
+   to mark the host state as modified, since the host has them already (or loaded something over them).
  */
 class PluginStateUpdates
 {
@@ -59,30 +63,76 @@ public:
         plugin.setState(key, value);
 
         const MutexLocker cml(fMutex);
-        fUpdates[String(key)] = value;
+        fFromPlugin[String(key)] = value;
         return true;
     }
 
     /**
-       Take all queued updates, main thread only.
+       Take the values that are not in the wrapper's state map yet, from wherever the host saves or loads state.
+       They stay queued for takeForMainThread(), but without asking it to mark the host state as modified.
        Returns false if there were none.
      */
-    bool take(Map& updates)
+    bool takeForStateMap(Map& updates)
     {
         updates.clear();
 
         const MutexLocker cml(fMutex);
 
-        if (fUpdates.empty())
+        if (fFromPlugin.empty())
             return false;
 
-        updates.swap(fUpdates);
+        for (Map::const_iterator cit=fFromPlugin.begin(), cite=fFromPlugin.end(); cit != cite; ++cit)
+            fForUI[cit->first] = cit->second;
+
+        updates.swap(fFromPlugin);
+        return true;
+    }
+
+    /**
+       Forget a queued value: the host or the UI has set the key since, so the plugin has another value now.
+       Without this the main thread would later put the older value back into the state map and the UI.
+     */
+    void supersede(const char* const key)
+    {
+        const MutexLocker cml(fMutex);
+
+        if (fFromPlugin.empty() && fForUI.empty())
+            return;
+
+        const String skey(key);
+        fFromPlugin.erase(skey);
+        fForUI.erase(skey);
+    }
+
+    /**
+       Take everything queued, host main thread only.
+       @a markDirty tells whether some of it has not reached the host through a state save or load yet.
+       Returns false if there was nothing.
+     */
+    bool takeForMainThread(Map& updates, bool& markDirty)
+    {
+        updates.clear();
+
+        const MutexLocker cml(fMutex);
+
+        markDirty = ! fFromPlugin.empty();
+
+        if (fForUI.empty() && fFromPlugin.empty())
+            return false;
+
+        updates.swap(fForUI);
+
+        for (Map::const_iterator cit=fFromPlugin.begin(), cite=fFromPlugin.end(); cit != cite; ++cit)
+            updates[cit->first] = cit->second;
+
+        fFromPlugin.clear();
         return true;
     }
 
 private:
     Mutex fMutex;
-    Map fUpdates;
+    Map fFromPlugin; // not in the wrapper's state map yet
+    Map fForUI;      // in the state map, but the UI and the host's main thread were not told yet
 };
 
 /**

@@ -633,7 +633,7 @@ public:
 
            #if DAF_PLUGIN_WANT_STATE
             // the new UI gets the state map below
-            applyStateUpdates(true);
+            applyStateUpdates();
            #endif
 
             fVstUI = new UIVst(fAudioMaster, fEffect, this, &fPlugin, (intptr_t)ptr, fLastScaleFactor);
@@ -677,7 +677,7 @@ public:
 
         case VST_EFFECT_OPCODE_13: // window idle
            #if DAF_PLUGIN_WANT_STATE
-            applyStateUpdates(true);
+            applyStateUpdates();
            #endif
             if (fVstUI != nullptr)
                 fVstUI->idle();
@@ -701,7 +701,7 @@ public:
                 return 0;
 
             // save what the plugin has, even if no idle call got to the update yet
-            applyStateUpdates(false);
+            mergeStateUpdates();
 
             if (fStateChunk != nullptr)
             {
@@ -791,7 +791,7 @@ public:
                 return 0;
 
             // settle earlier updates first, so they cannot overwrite the state being loaded
-            applyStateUpdates(false);
+            mergeStateUpdates();
 
             const size_t chunkSize = static_cast<size_t>(value);
 
@@ -1303,13 +1303,12 @@ private:
         return static_cast<PluginVst*>(ptr)->updateState(key, value);
     }
 
-    // Called from the host's main (UI) thread: window idle, editor open, chunk get and set.
-    // A host that is saving or loading the chunk at the time needs no telling: what it saves
-    // already has the update, and what it loads replaces it.
-    void applyStateUpdates(const bool notifyHost)
+    // Window idle and editor open, the host's main (UI) thread.
+    void applyStateUpdates()
     {
         PluginStateUpdates::Map updates;
-        if (! fStateUpdates.take(updates))
+        bool notifyHost = false;
+        if (! fStateUpdates.takeForMainThread(updates, notifyHost))
             return;
 
         for (PluginStateUpdates::Map::const_iterator cit=updates.begin(), cite=updates.end(); cit != cite; ++cit)
@@ -1325,9 +1324,22 @@ private:
            #endif
         }
 
-        // audioMasterUpdateDisplay, the closest VST2 has to marking the state as modified
+        // audioMasterUpdateDisplay, the closest VST2 has to marking the state as modified.
+        // Not for updates a chunk save or load took first: the host has those, or loaded over them.
         if (notifyHost)
             hostCallback(VST_HOST_OPCODE_2A);
+    }
+
+    // Chunk get and set, which some hosts call off their main thread, where the UI must not be touched.
+    // Only the state map takes the updates here; the UI gets them on the next window idle.
+    void mergeStateUpdates()
+    {
+        PluginStateUpdates::Map updates;
+        if (! fStateUpdates.takeForStateMap(updates))
+            return;
+
+        for (PluginStateUpdates::Map::const_iterator cit=updates.begin(), cite=updates.end(); cit != cite; ++cit)
+            fStateMap[cit->first] = cit->second;
     }
 
     // ----------------------------------------------------------------------------------------------------------------
@@ -1346,6 +1358,9 @@ private:
         {
             const String dkey(key);
             fStateMap[dkey] = value;
+
+            // an earlier Plugin::updateStateValue() must not put its value back on the next idle
+            fStateUpdates.supersede(key);
         }
     }
   #endif
