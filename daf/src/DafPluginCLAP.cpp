@@ -3540,6 +3540,36 @@ static bool CLAP_ABI clap_plugin_entry_init(const char* const plugin_path)
 {
     static String bundlePath;
     bundlePath = plugin_path;
+
+   #ifndef DAF_OS_MAC
+    // Only macOS hands over a bundle directory here; elsewhere plugin_path is the binary itself.
+    // A plugin that ships resources is laid out as NAME.clap/NAME.clap with NAME.clap/resources beside
+    // the binary, and getResourcePath() appends "resources" to the bundle path, so the bundle must be
+    // the enclosing .clap directory, not the binary inside it (which has no resources below it).
+    {
+        bool found = false;
+        size_t sep = bundlePath.rfind(DAF_OS_SEP, &found);
+       #ifdef DAF_OS_WINDOWS
+        bool foundSlash = false;
+        const size_t slash = bundlePath.rfind('/', &foundSlash);
+        if (foundSlash && (! found || slash > sep))
+        {
+            sep = slash;
+            found = true;
+        }
+       #endif
+
+        if (found && sep != 0)
+        {
+            String bundleDir(bundlePath);
+            bundleDir.truncate(sep);
+
+            if (bundleDir.endsWith(".clap"))
+                bundlePath = bundleDir;
+        }
+    }
+   #endif
+
     d_nextBundlePath = bundlePath.buffer();
 
     // init dummy plugin

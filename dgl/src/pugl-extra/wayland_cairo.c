@@ -372,6 +372,9 @@ puglWaylandCairoLeave(PuglView* const view, const PuglExposeEvent* const expose)
 
   cairo_surface_flush(surface->images[index]);
 
+  // Any new size and scale go out in the same commit as the buffer drawn for them
+  puglWaylandApplyGeometry(view);
+
   wl_surface_attach(wlSurface, surface->buffers[index], 0, 0);
 
 #if defined(WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)

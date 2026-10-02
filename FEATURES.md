@@ -108,6 +108,20 @@ plugins only:
 > that has already shipped. Every existing Windows session using it stops finding the plugin.
 > Linux and macOS class IDs are the same with or without it.
 
+## CLAP output parameters
+
+CLAP has no output parameters. DAF exposes them as `CLAP_PARAM_IS_READONLY` parameters whose value
+the plugin changes on its own: a host reads them with `clap_plugin_params::get_value()` and never
+sets them. Parameter events outside `CLAP_CORE_EVENT_SPACE_ID`, and any event for an output
+parameter, are ignored in `process()` and `flush()` alike.
+
+clap-validator 0.4 does not leave read-only parameters out of its parameter tests. For a plugin whose
+outputs move while it runs (meters, host and transport information) `param-set-wrong-namespace`
+therefore fails: it sends events in a foreign namespace, processes, and sees the outputs changed.
+This is expected and not a bug in the plugin or the wrapper. What a plugin should do is give each
+output, like each input, a default equal to the value it really starts with, so that
+`param-default-values` passes.
+
 ## AU host-resize
 
 AU v2 has no size negotiation of its own: the host simply resizes the view the plugin handed it,

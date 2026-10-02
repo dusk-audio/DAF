@@ -461,6 +461,91 @@ void Window::PrivateData::focus()
     puglGrabFocus(view);
 }
 
+void Window::PrivateData::hostOfferedKeyUsed(const bool used)
+{
+    hostKeyFilter.keyUsed(used);
+}
+
+void Window::PrivateData::hostOfferedKey(const bool press, const bool deliveredChar)
+{
+#ifdef DAF_OS_WINDOWS
+    // The time of the message the host is processing, which is the time the native copy of the
+    // key will carry if the host dispatches it to this window afterwards.
+    hostKeyFilter.keyOffered(press, static_cast<uint32_t>(GetMessageTime()), deliveredChar);
+#else
+    // Only Win32 hosts are known to hand a key over twice.
+    (void)press;
+    (void)deliveredChar;
+#endif
+}
+
+void Window::PrivateData::updateClickFocus()
+{
+#ifdef DAF_OS_WINDOWS
+    const bool wants    = anyWidgetWantsKeyboardFocus();
+    const bool hasFocus = puglHasFocus(view);
+
+    if (clickFocus.pending)
+    {
+        if (! hasFocus)
+        {
+            // the focus went elsewhere already, nothing to give back
+            clickFocus.pending = false;
+        }
+        else if (puglWin32IsMouseButtonDown())
+        {
+            // leave the focus alone while the click (a drag, say) is still going on
+            clickFocus.idles = 0;
+        }
+        else if (++clickFocus.idles >= 2)
+        {
+            // Two idles after the release a frame has handled the click, so a widget it activated,
+            // a text field say, now says it wants the keyboard.
+            clickFocus.pending = false;
+
+            if (wants)
+                clickFocus.owned = true;
+            else
+                puglWin32ReturnFocus(view);
+        }
+    }
+    else if (wants != clickFocus.widgetsWanted)
+    {
+        if (wants)
+        {
+            // A widget started wanting the keyboard without a click, take the focus for it, but
+            // only while the host window is the active one, never to steal it from another app.
+            if (! hasFocus && puglWin32IsInActiveWindow(view))
+            {
+                puglGrabFocus(view);
+                clickFocus.owned = true;
+            }
+        }
+        else if (hasFocus && clickFocus.owned)
+        {
+            // editing is over, the host gets its shortcuts back
+            clickFocus.owned = false;
+            puglWin32ReturnFocus(view);
+        }
+    }
+
+    clickFocus.widgetsWanted = wants;
+#endif
+}
+
+bool Window::PrivateData::anyWidgetWantsKeyboardFocus()
+{
+#ifndef DAF_TEST_WINDOW_CPP
+    FOR_EACH_TOP_LEVEL_WIDGET(it)
+    {
+        if ((*it)->pData->anyVisibleWantsKeyboardFocus())
+            return true;
+    }
+#endif
+
+    return false;
+}
+
 // -----------------------------------------------------------------------
 
 void Window::PrivateData::setResizable(const bool resizable)
@@ -526,6 +611,11 @@ const GraphicsContext& Window::PrivateData::getGraphicsContext() const noexcept
 
 void Window::PrivateData::idleCallback()
 {
+#ifdef DAF_OS_WINDOWS
+    if (isEmbed && grabsFocusOnClick && view != nullptr)
+        updateClickFocus();
+#endif
+
 #ifdef DGL_USE_FILE_BROWSER
     if (fileBrowserHandle != nullptr && fileBrowserIdle(fileBrowserHandle))
     {
@@ -1164,6 +1254,8 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
     case PUGL_FOCUS_IN:
     ///< Keyboard focus left view, a #PuglFocusEvent
     case PUGL_FOCUS_OUT:
+        if (event->type == PUGL_FOCUS_OUT)
+            pData->clickFocus.owned = false;
         pData->onPuglFocus(event->type == PUGL_FOCUS_IN,
                            static_cast<CrossingMode>(event->focus.mode));
         break;
@@ -1189,6 +1281,17 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
             ev.mod |= kModifierShift;
         }
 
+       #ifdef DAF_OS_WINDOWS
+        // The host already offered this very key message to the UI through the plugin format and
+        // is now dispatching it here as well. The UI has had it, so it is not delivered again;
+        // one the UI declined still goes on to the host as below. See HostKeyFilter.
+        {
+            bool declined = false;
+            if (pData->hostKeyFilter.dropNativeKey(ev.press, static_cast<uint32_t>(GetMessageTime()), declined))
+                return (declined && pData->isEmbed) ? PUGL_UNSUPPORTED : PUGL_SUCCESS;
+        }
+       #endif
+
         // An embedded UI that has no use for a key hands it to the host, so host shortcuts
         // keep working while the UI has the keyboard or, on X11, sits under the pointer.
         if (! pData->onPuglKey(ev) && pData->isEmbed)
@@ -1207,6 +1310,12 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
     ///< Character entered, a #PuglTextEvent
     case PUGL_TEXT:
     {
+       #ifdef DAF_OS_WINDOWS
+        // the character of a key dropped above, which the plugin format call delivered already
+        if (pData->hostKeyFilter.dropNativeText())
+            break;
+       #endif
+
         // unused x, y, xRoot, yRoot (double)
         Widget::CharacterInputEvent ev;
         ev.mod       = event->text.state;
@@ -1252,13 +1361,20 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
         // Win32 never gives a child window the keyboard on a click, and a CLAP or VST2 host has no
         // focus API to do it either, so an embedded UI would never see a key. Where the plugin
         // wrapper asked for it (grabsFocusOnClick), take the focus on a primary click, as a native
-        // control would; keys the UI does not use still go to the host, see PUGL_KEY_PRESS above.
+        // control would. Once the click is over the focus goes back to the host unless a widget
+        // wants the keyboard, see ClickFocus; keys the UI does not use while it holds the focus
+        // still go to the host, see PUGL_KEY_PRESS above.
         // Elsewhere the focus stays the host's to give, VST3 having IPlugView::onFocus for it.
         // Done before dispatching, so a modal child that claims the focus back in onPuglMouse
         // keeps it.
-        if (ev.press && event->button.button == 0 && pData->isEmbed && pData->grabsFocusOnClick
-            && ! puglHasFocus(view))
-            puglGrabFocus(view);
+        if (ev.press && event->button.button == 0 && pData->isEmbed && pData->grabsFocusOnClick)
+        {
+            if (! puglHasFocus(view))
+                puglGrabFocus(view);
+
+            pData->clickFocus.pending = true;
+            pData->clickFocus.idles   = 0;
+        }
        #endif
 
         pData->onPuglMouse(ev);

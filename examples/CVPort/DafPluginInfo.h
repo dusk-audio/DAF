@@ -17,7 +17,7 @@
 #ifndef DAF_PLUGIN_INFO_H_INCLUDED
 #define DAF_PLUGIN_INFO_H_INCLUDED
 
-#define DAF_PLUGIN_BRAND "DISTRHO"
+#define DAF_PLUGIN_BRAND "Dusk Audio"
 #define DAF_PLUGIN_NAME  "CVPort"
 #define DAF_PLUGIN_URI   "http://distrho.sf.net/examples/CVPort"
 

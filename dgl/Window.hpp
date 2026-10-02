@@ -427,6 +427,13 @@ public:
     */
     void focus();
 
+   /**
+      Whether any visible widget of this window wants the keyboard focus.
+      This asks Widget::wantsKeyboardFocus() of every visible top-level widget and, recursively,
+      of their visible subwidgets. A hidden widget hides its whole subtree.
+    */
+    bool anyWidgetWantsKeyboardFocus();
+
    #ifdef DGL_USE_FILE_BROWSER
    /**
       Open a file browser dialog with this window as transient parent.

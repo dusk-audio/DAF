@@ -41,7 +41,7 @@ public:
         if (d_isNotEqual(scaleFactor, 1.0))
             setSize(width, height);
 
-        webview = webViewCreate("https://distrho.github.io/DAF/",
+        webview = webViewCreate("https://github.com/dusk-audio/DAF",
                                 getWindow().getNativeWindowHandle(),
                                 width, height, scaleFactor);
     }

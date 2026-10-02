@@ -210,9 +210,22 @@ PluginWindow& UI::PrivateData::createNextWindow(UI* const ui, uint width, uint h
             path += "/resources";
         }
 
+       #ifdef DAF_OS_WINDOWS
+        // A Windows path is not a URL path: "C:\dir\resources" pasted after "file://" reads as host "C:"
+        // followed by percent-encoded backslashes, which WebView2 refuses, leaving the view blank.
+        // Use forward slashes and give a drive path the empty authority a file URL needs
+        // (file:///C:/dir/resources). A UNC path (\\server\share) already starts with the "//"
+        // that introduces its host (file://server/share).
+        path.replace('\\', '/');
         path.urlEncode();
-
-        // TODO convert win32 paths to web
+        if (path.startsWith("//"))
+            path = "file:" + path;
+        else
+            path = "file:///" + path;
+       #else
+        path.urlEncode();
+        path = "file://" + path;
+       #endif
 
         WebViewOptions opts;
         opts.initialJS = ""
@@ -228,7 +241,7 @@ PluginWindow& UI::PrivateData::createNextWindow(UI* const ui, uint width, uint h
         ;
         opts.callback = webViewMessageCallback;
         opts.callbackPtr = uiData;
-        uiData->webview = webViewCreate("file://" + path + "/index.html",
+        uiData->webview = webViewCreate(path + "/index.html",
                                         uiData->winId != 0 ? uiData->winId : uiData->window->getNativeWindowHandle(),
                                         width,
                                         height,
@@ -244,6 +257,34 @@ PluginWindow& UI::PrivateData::createNextWindow(UI* const ui, uint width, uint h
 
     return uiData->window.getObject();
 }
+
+#if DAF_UI_USE_WEB_VIEW && defined(DAF_OS_WINDOWS) && DAF_UI_IS_STANDALONE
+void UI::PrivateData::webViewDispatchThreadMessages()
+{
+    /* WebView2 does its UI-thread work (navigation, showing its child window, script results)
+     * through messages for windows of its own, which are neither our window nor its children.
+     * pugl only dispatches messages for its own windows, so in a standalone, where nothing else
+     * runs a message loop, those messages were never delivered: navigation never committed and
+     * the web view stayed blank. Inside a plugin host this is the host's job, and its loop does it.
+     *
+     * Dispatch whatever is queued for this thread. The count is bounded because input such as
+     * mouse movement can keep the queue from ever draining, and a WM_QUIT is put back for the
+     * outer loop to see.
+     */
+    MSG msg;
+    for (int i = 0; i < 256 && PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE); ++i)
+    {
+        if (msg.message == WM_QUIT)
+        {
+            PostQuitMessage(static_cast<int>(msg.wParam));
+            break;
+        }
+
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+}
+#endif
 
 #if DAF_UI_USE_WEB_VIEW
 void UI::PrivateData::webViewMessageCallback(void* const arg, char* const msg)

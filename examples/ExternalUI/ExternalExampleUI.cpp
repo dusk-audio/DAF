@@ -34,7 +34,7 @@ START_NAMESPACE_DAF
 
 #ifdef KDE_FIFO_TEST
 // TODO: generate a random, not-yet-existing, filename
-const char* const kFifoFilename = "/tmp/dpf-fifo-test";
+const char* const kFifoFilename = "/tmp/daf-fifo-test";
 
 // Helper to get current path of this plugin
 static const char* getCurrentPluginFilename()

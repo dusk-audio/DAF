@@ -63,7 +63,7 @@ protected:
     */
     const char* getMaker() const override
     {
-        return "DISTRHO";
+        return "Dusk Audio";
     }
 
    /**
@@ -71,7 +71,7 @@ protected:
     */
     const char* getHomePage() const override
     {
-        return "https://github.com/DISTRHO/DPF";
+        return "https://github.com/dusk-audio/DAF";
     }
 
    /**
@@ -120,15 +120,18 @@ protected:
 
         switch (index)
         {
+        // these two are already set in the constructor, so report the values they start with as defaults
         case kParameterBufferSize:
             parameter.name   = "BufferSize";
             parameter.symbol = "buffer_size";
+            parameter.ranges.def = fParameters[kParameterBufferSize];
             break;
         case kParameterCanRequestParameterValueChanges:
             parameter.name   = "Parameter Changes";
             parameter.symbol = "parameter_changes";
             parameter.hints |= kParameterIsBoolean;
             parameter.ranges.max = 1.0f;
+            parameter.ranges.def = fParameters[kParameterCanRequestParameterValueChanges];
             break;
         case kParameterTimePlaying:
             parameter.name   = "TimePlaying";

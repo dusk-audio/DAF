@@ -7,7 +7,9 @@ daf_add_plugin(d_webmeters
   FILES_DSP
       ExamplePluginWebMeters.cpp
   FILES_UI
-      ExampleUIWebMeters.cpp)
+      ExampleUIWebMeters.cpp
+  RESOURCES
+      index.html)
 
 target_include_directories(
   d_webmeters PUBLIC ".")

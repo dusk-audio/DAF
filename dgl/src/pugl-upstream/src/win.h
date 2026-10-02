@@ -23,6 +23,7 @@ struct PuglInternalsImpl {
   int             pfId;
   HWND            hwnd;
   HCURSOR         cursor;
+  HWND            prevFocus; // outside window that last lost the focus to this view
   HDC             hdc;
   WINDOWPLACEMENT oldPlacement;
   PAINTSTRUCT     paint;

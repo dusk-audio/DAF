@@ -207,7 +207,12 @@ public:
 
        #if DAF_UI_USE_WEB_VIEW
         if (uiData->webview != nullptr)
+        {
+           #ifdef DAF_OS_WINDOWS
+            UI::PrivateData::webViewDispatchThreadMessages();
+           #endif
             webViewIdle(uiData->webview);
+        }
        #endif
 
         ui->uiIdle();
@@ -325,6 +330,18 @@ public:
     {
         using namespace DGL_NAMESPACE;
 
+       #ifdef DAF_OS_WINDOWS
+        // A key the UI declined and the window is sending on to the host right now, handed back
+        // through the format: the UI has seen it, and taking it again would loop.
+        if (puglWin32IsForwardingKey())
+            return false;
+       #endif
+
+        const bool deliversChar = press && !special && (mods & (kModifierControl|kModifierAlt|kModifierSuper)) == 0;
+
+        // Hosts may dispatch the same key message to the window as well, which then drops it.
+        uiData->window->hostOfferedKey(press, deliversChar);
+
         Widget::KeyboardEvent ev;
         ev.mod     = mods;
         ev.press   = press;
@@ -336,8 +353,9 @@ public:
             ev.key += 'a' - 'A'; // A-Z -> a-z
 
         const bool ret = ui->onKeyboard(ev);
+        uiData->window->hostOfferedKeyUsed(ret);
 
-        if (press && !special && (mods & (kModifierControl|kModifierAlt|kModifierSuper)) == 0)
+        if (deliversChar)
         {
             Widget::CharacterInputEvent cev;
             cev.mod       = mods;

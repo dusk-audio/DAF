@@ -51,7 +51,7 @@ protected:
     */
     const char* getDescription() const override
     {
-        return "Plugin to show how to use an embedable dpf-external UI.";
+        return "Plugin to show how to use an embeddable external UI.";
     }
 
    /**
@@ -59,7 +59,7 @@ protected:
     */
     const char* getMaker() const override
     {
-        return "DISTRHO";
+        return "Dusk Audio";
     }
 
    /**
@@ -67,7 +67,7 @@ protected:
     */
     const char* getHomePage() const override
     {
-        return "https://github.com/DISTRHO/DPF";
+        return "https://github.com/dusk-audio/DAF";
     }
 
    /**

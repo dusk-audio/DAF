@@ -95,6 +95,13 @@ public:
     */
     void setFontSize(float fontSize);
 
+   /**
+      True while ImGui wants text input (io.WantTextInput), that is while a text field is being edited.
+      The answer comes from the last frame ImGui drew.
+      @see Widget::wantsKeyboardFocus
+    */
+    bool wantsKeyboardFocus() override;
+
 protected:
    /**
       New virtual onDisplay function.

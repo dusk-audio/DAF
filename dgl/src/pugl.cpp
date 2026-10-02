@@ -712,6 +712,61 @@ void puglWin32RestoreWindow(PuglView* const view)
 }
 
 // --------------------------------------------------------------------------------------------------------------------
+// win32 specific, whether this thread is sending a key some view declined on to its host right now
+
+bool puglWin32IsForwardingKey()
+{
+    return puglWinForwardingKeys != 0U;
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+// win32 specific, hand the keyboard focus back to the window that had it before this view took it
+
+void puglWin32ReturnFocus(PuglView* const view)
+{
+    PuglInternals* const impl = view->impl;
+    DAF_SAFE_ASSERT_RETURN(impl->hwnd != nullptr,);
+
+    const HWND prev = impl->prevFocus;
+    impl->prevFocus = nullptr;
+
+    // SetFocus only works for windows of this thread, and returns null when it fails
+    if (prev != nullptr && IsWindow(prev) && IsWindowVisible(prev) && IsWindowEnabled(prev)
+        && SetFocus(prev) != nullptr)
+        return;
+
+    HWND root = GetAncestor(impl->hwnd, GA_ROOT);
+    if (root == nullptr || root == impl->hwnd)
+        root = (HWND)view->parent;
+
+    if (root != nullptr)
+        SetFocus(root);
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+// win32 specific, whether a mouse button is held down right now
+
+bool puglWin32IsMouseButtonDown()
+{
+    // physical state, so a release that went to another window while the view lost the capture counts
+    return GetAsyncKeyState(VK_LBUTTON) < 0
+        || GetAsyncKeyState(VK_RBUTTON) < 0
+        || GetAsyncKeyState(VK_MBUTTON) < 0;
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+// win32 specific, whether the top-level window this view sits in is the active window
+
+bool puglWin32IsInActiveWindow(const PuglView* const view)
+{
+    const HWND hwnd = view->impl->hwnd;
+    DAF_SAFE_ASSERT_RETURN(hwnd != nullptr, false);
+
+    const HWND active = GetActiveWindow();
+    return active != nullptr && active == GetAncestor(hwnd, GA_ROOT);
+}
+
+// --------------------------------------------------------------------------------------------------------------------
 // win32 specific, center view based on parent coordinates (if there is one)
 
 void puglWin32ShowCentered(PuglView* const view)

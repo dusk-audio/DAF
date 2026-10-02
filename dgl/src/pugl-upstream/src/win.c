@@ -1006,6 +1006,12 @@ handleMessage(PuglView* view, UINT message, WPARAM wParam, LPARAM lParam)
     initCharEvent(&event, view, wParam, lParam);
     break;
   case WM_SETFOCUS:
+    // Remember where the focus came from, so an embedded view that took it on a
+    // click can give it back (see puglWin32ReturnFocus in DAF's pugl.cpp)
+    if (wParam && (HWND)wParam != view->impl->hwnd &&
+        !IsChild(view->impl->hwnd, (HWND)wParam)) {
+      view->impl->prevFocus = (HWND)wParam;
+    }
     event.type = PUGL_FOCUS_IN;
     break;
   case WM_KILLFOCUS:

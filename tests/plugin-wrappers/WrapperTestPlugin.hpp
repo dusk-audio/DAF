@@ -45,6 +45,11 @@ enum WrapperTestParameters {
     kParamCount
 };
 
+#if DAF_PLUGIN_WANT_TIMEPOS
+// every time a wrapper set an output parameter, which only the plugin itself may do
+static uint32_t gOutputParameterWrites = 0;
+#endif
+
 #if DAF_PLUGIN_WANT_STATE
 static constexpr const char* const kWrapperTestStateKey = "file";
 #endif
@@ -192,6 +197,11 @@ protected:
 
     void setParameterValue(const uint32_t index, const float value) override
     {
+       #if DAF_PLUGIN_WANT_TIMEPOS
+        if (index >= kParamOutFrame && index <= kParamOutBarStartTick)
+            ++gOutputParameterWrites;
+       #endif
+
         fParameters[index] = value;
     }
 

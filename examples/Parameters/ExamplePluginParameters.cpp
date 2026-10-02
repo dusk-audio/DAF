@@ -64,7 +64,7 @@ The plugin will be treated as an effect, but it will not change the host audio."
     */
     const char* getMaker() const override
     {
-        return "DISTRHO";
+        return "Dusk Audio";
     }
 
    /**
@@ -72,7 +72,7 @@ The plugin will be treated as an effect, but it will not change the host audio."
     */
     const char* getHomePage() const override
     {
-        return "https://github.com/DISTRHO/DPF";
+        return "https://github.com/dusk-audio/DAF";
     }
 
    /**

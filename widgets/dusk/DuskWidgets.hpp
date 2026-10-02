@@ -292,6 +292,11 @@ struct Context {
    navigation on unconditionally, which pins that flag true whether or not anything
    would consume the key. A shortcut layer may take a key when no text field is open,
    no item is active, and no modal is up.
+
+   The window's keyboard focus follows the narrower io.WantTextInput instead, through
+   ImGuiWidget::wantsKeyboardFocus(): textField() is an ImGui InputText, so the editor
+   holds the keyboard exactly while one is being edited, and hands it back to the host
+   (CLAP and VST2 on Windows) otherwise.
  */
 bool shortcutsAvailable(const Context& ctx);
 

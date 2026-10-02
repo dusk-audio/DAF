@@ -39,6 +39,7 @@ struct TopLevelWidget::PrivateData {
     bool motionEvent(const MotionEvent& ev);
     bool scrollEvent(const ScrollEvent& ev);
     void fallbackOnResize(uint width, uint height);
+    bool anyVisibleWantsKeyboardFocus();
 
     DAF_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PrivateData)
 };

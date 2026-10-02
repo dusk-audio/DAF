@@ -418,6 +418,22 @@ public:
     */
     virtual void repaint() noexcept;
 
+   /**
+      Whether this widget wants the keyboard focus right now, typically because a text field in it is being edited.
+
+      This reports the widget's own state only. Window::anyWidgetWantsKeyboardFocus() asks every visible widget of a
+      window, subwidgets included, so an override does not need to ask its children.
+
+      An embedded plugin editor on Windows uses the answer in the formats whose hosts have no keyboard focus API
+      (CLAP and VST2): the editor takes the focus when clicked, keeps it while some widget wants it and hands it back
+      to the host window once none does, so host shortcuts keep working after a click on a knob.
+      Elsewhere the answer is informational.
+
+      It is asked on every idle of such an editor, so it should be cheap.
+      The default implementation returns false.
+    */
+    virtual bool wantsKeyboardFocus();
+
     DAF_DEPRECATED_BY("getApp()")
     Application& getParentApp() const noexcept { return getApp(); }
 

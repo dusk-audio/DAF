@@ -28,7 +28,7 @@ class ExamplePluginMeters : public Plugin
 public:
     ExamplePluginMeters()
         : Plugin(3, 0, 0), // 3 parameters, 0 programs, 0 states
-          fColor(0.0f),
+          fColor(METER_COLOR_BLUE),
           fOutLeft(0.0f),
           fOutRight(0.0f),
           fNeedsReset(true)
@@ -61,7 +61,7 @@ protected:
     */
     const char* getMaker() const override
     {
-        return "DISTRHO";
+        return "Dusk Audio";
     }
 
    /**
@@ -69,7 +69,7 @@ protected:
     */
     const char* getHomePage() const override
     {
-        return "https://github.com/DISTRHO/DPF";
+        return "https://github.com/dusk-audio/DAF";
     }
 
    /**
@@ -127,6 +127,8 @@ protected:
             parameter.hints  = kParameterIsAutomatable|kParameterIsInteger;
             parameter.name   = "color";
             parameter.symbol = "color";
+            // starts out blue, matching fColor in the constructor
+            parameter.ranges.def = METER_COLOR_BLUE;
             parameter.enumValues.count = 2;
             parameter.enumValues.restrictedMode = true;
             {

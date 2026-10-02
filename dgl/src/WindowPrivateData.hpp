@@ -20,6 +20,7 @@
 #include "../Window.hpp"
 #include "../Widget.hpp"
 #include "ApplicationPrivateData.hpp"
+#include "HostKeyFilter.hpp"
 
 #include "pugl.hpp"
 
@@ -87,8 +88,32 @@ struct Window::PrivateData : IdleCallback {
 
     /** Whether an embedded window takes the keyboard focus when clicked, on Windows only.
         Set by the plugin wrappers of formats with no focus API (CLAP and VST2), where nothing
-        else would give an embedded Win32 child the keyboard. Defaults to false. */
+        else would give an embedded Win32 child the keyboard; see ClickFocus for when it hands it back.
+        Defaults to false. */
     bool grabsFocusOnClick;
+
+    /** Keyboard focus an embedded window took on a click (grabsFocusOnClick), on Windows only.
+        The click takes the focus so a widget that wants the keyboard can have it. Once the click is over
+        and a frame has seen it, the focus goes back to the host window that had it, unless a widget wants the keyboard
+        (Widget::wantsKeyboardFocus); it also goes back when the last such widget stops wanting it, and is
+        taken again when one starts. This keeps host shortcuts working after a click on a knob, which the
+        key forwarding cannot do for hosts that only look at keys in their own message loop. */
+    struct ClickFocus {
+        bool pending;       // a click took or kept the focus, the decision is still to be made
+        bool owned;         // the focus is held for a widget that wants the keyboard
+        bool widgetsWanted; // what the widgets answered on the previous idle
+        uint idles;         // idles since the click ended
+
+        ClickFocus() noexcept
+            : pending(false),
+              owned(false),
+              widgetsWanted(false),
+              idles(0) {}
+    } clickFocus;
+
+    /** Drops the native copy of a key the host already offered through the plugin format, on Windows only.
+        Fed by hostOfferedKey, see HostKeyFilter. */
+    HostKeyFilter hostKeyFilter;
 
     /** Scale factor to report to widgets on request, purely informational. */
     double scaleFactor;
@@ -198,6 +223,20 @@ struct Window::PrivateData : IdleCallback {
     void hide();
 
     void focus();
+
+    /** Whether any visible widget of this window wants the keyboard focus, see Widget::wantsKeyboardFocus. */
+    bool anyWidgetWantsKeyboardFocus();
+
+    /** A key was offered to the UI through the plugin format (VST2/VST3 key calls) instead of the window.
+        On Windows the host may dispatch the same key message to this window afterwards, which is then dropped.
+        @a deliveredChar tells whether a character input was delivered along with it. */
+    void hostOfferedKey(bool press, bool deliveredChar);
+
+    /** Whether the UI used the key last given to hostOfferedKey. */
+    void hostOfferedKeyUsed(bool used);
+
+    /** Called on idle for an embedded window that grabs the focus on click, see ClickFocus. */
+    void updateClickFocus();
 
     void setResizable(bool resizable);
 

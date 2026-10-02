@@ -85,6 +85,25 @@ void Widget::PrivateData::displaySubWidgets(const uint width, const uint height,
 
 // -----------------------------------------------------------------------
 
+bool Widget::PrivateData::anyVisibleWantsKeyboardFocus()
+{
+    if (! visible)
+        return false;
+
+    if (self->wantsKeyboardFocus())
+        return true;
+
+    FOR_EACH_SUBWIDGET(it)
+    {
+        if (static_cast<Widget*>(*it)->pData->anyVisibleWantsKeyboardFocus())
+            return true;
+    }
+
+    return false;
+}
+
+// -----------------------------------------------------------------------
+
 bool Widget::PrivateData::giveKeyboardEventForSubWidgets(const KeyboardEvent& ev)
 {
     if (! visible)

@@ -350,15 +350,28 @@ puglWaylandUpdateScale(PuglView* const view)
   return impl->scale != oldScale || impl->bufferScale != oldBuffer;
 }
 
-/// Push the current logical size and scale down to the compositor
-static void
+/**
+   Push the current logical size and scale down to the compositor, if they changed.
+
+   Called by the graphics backends right before the commit that attaches a buffer (cairo's attach
+   and commit, the GL backend's eglSwapBuffers), and from nowhere else.  All of this is
+   double-buffered surface state that takes effect on the next commit, and the first commit on a new
+   xdg_surface is the bufferless one that asks for the initial configure: a window geometry applied
+   there describes a rectangle on a 0x0 surface, which mutter rejects ("Client provided invalid
+   window geometry ... Working around.").  The buffer scale and viewport destination likewise belong
+   with the buffer they describe.  puglWaylandSetSize() therefore only marks the geometry dirty, and
+   the stub backend, which never attaches a buffer, never sends it at all.
+*/
+void
 puglWaylandApplyGeometry(PuglView* const view)
 {
   PuglInternals* const impl = view->impl;
 
-  if (!impl->wlSurface) {
+  if (!impl->wlSurface || !impl->geometryDirty) {
     return;
   }
+
+  impl->geometryDirty = false;
 
   const bool canSetBufferScale =
     wl_surface_get_version(impl->wlSurface) >=
@@ -445,10 +458,9 @@ puglWaylandSetSize(PuglView* const view, const PuglArea logicalRequest)
   // Renormalise so the buffer is exactly the logical size times the scale
   pixels = puglWaylandLogicalToPixels(logical, impl->scale);
 
-  impl->size        = pixels;
-  impl->logicalSize = logical;
-
-  puglWaylandApplyGeometry(view);
+  impl->size          = pixels;
+  impl->logicalSize   = logical;
+  impl->geometryDirty = true;
 
   return oldSize.width != pixels.width || oldSize.height != pixels.height;
 }
@@ -3108,6 +3120,33 @@ puglWaylandApplyTransientParent(PuglView* const view)
   }
 }
 
+/* Title, app id and transient parent, as the application last set them.  Realize applies them to
+   a new toplevel, and puglShow() again after puglHide(): xdg-shell discards a toplevel's
+   attributes when it is unmapped, so a window shown again would otherwise come back untitled,
+   unparented and without its size limits (puglUpdateSizeHints() re-sends those). */
+static void
+puglWaylandApplyToplevelAttributes(PuglView* const view)
+{
+  PuglInternals* const impl = view->impl;
+
+  if (!impl->xdgToplevel) {
+    return;
+  }
+
+  if (view->strings[PUGL_WINDOW_TITLE]) {
+    xdg_toplevel_set_title(impl->xdgToplevel, view->strings[PUGL_WINDOW_TITLE]);
+  }
+
+  const char* const appId = impl->appId                          ? impl->appId
+                            : view->strings[PUGL_CLASS_NAME]       ? view->strings[PUGL_CLASS_NAME]
+                                                                   : view->world->strings[PUGL_CLASS_NAME];
+  if (appId) {
+    xdg_toplevel_set_app_id(impl->xdgToplevel, appId);
+  }
+
+  puglWaylandApplyTransientParent(view);
+}
+
 /**
    Destroy every protocol object hanging off a view's wl_surface, in reverse creation order.
 
@@ -3154,6 +3193,8 @@ puglWaylandDestroyViewSurface(PuglInternals* const impl)
   }
 
   impl->configured               = false;
+  impl->geometryDirty            = false;
+  impl->unmapped                 = false;
   impl->frameCallbackWorks       = false;
   impl->needsRedisplay           = false;
   impl->numEnteredOutputs        = 0U;
@@ -3246,16 +3287,7 @@ puglRealize(PuglView* const view)
     }
   }
 
-  if (view->strings[PUGL_WINDOW_TITLE]) {
-    xdg_toplevel_set_title(impl->xdgToplevel,
-                           view->strings[PUGL_WINDOW_TITLE]);
-  }
-
-  if (world->strings[PUGL_CLASS_NAME]) {
-    xdg_toplevel_set_app_id(impl->xdgToplevel, world->strings[PUGL_CLASS_NAME]);
-  }
-
-  puglWaylandApplyTransientParent(view);
+  puglWaylandApplyToplevelAttributes(view);
 
   // Settle on an initial size before the compositor gets a chance to ask for one
   puglWaylandUpdateScale(view);
@@ -3329,6 +3361,19 @@ puglShow(PuglView* const view, const PuglShowCommand PUGL_UNUSED(command))
      same thing, which is to make sure a buffer gets attached. */
   impl->visible = true;
 
+  /* puglHide() unmapped the surface, and xdg-shell treats an unmapped surface like a new one: it
+     needs another bufferless commit and a fresh configure before a buffer may be attached.  Without
+     this the next expose attaches straight away, which mutter calls a buggy client ("committed
+     initial non-empty content without acknowledging configuration") and stricter compositors may
+     refuse.  The expose queued below waits for the configure, as it does after realize. */
+  if (impl->unmapped) {
+    impl->unmapped = false;
+    puglWaylandApplyToplevelAttributes(view);
+    puglUpdateSizeHints(view);
+    wl_surface_commit(impl->wlSurface);
+    wl_display_flush(view->world->impl->display);
+  }
+
   puglWaylandQueueConfigure(view);
   puglWaylandQueueFullExpose(view);
 
@@ -3353,7 +3398,18 @@ puglHide(PuglView* const view)
   wl_surface_commit(impl->wlSurface);
   wl_display_flush(view->world->impl->display);
 
-  impl->visible = false;
+  /* The configure acked so far belonged to the mapping that just ended, so nothing may be drawn
+     until puglShow() has asked for a new one.  A frame callback still pending was for a buffer that
+     is gone and may never come back; drop it so it does not hold up the first frame after showing
+     again. */
+  impl->visible    = false;
+  impl->configured = false;
+  impl->unmapped   = true;
+
+  if (impl->frameCallback) {
+    wl_callback_destroy(impl->frameCallback);
+    impl->frameCallback = NULL;
+  }
 
   puglWaylandQueueConfigure(view);
 
@@ -3408,6 +3464,7 @@ puglFreeViewInternals(PuglView* const view)
 
     free(view->impl->clipboard.formatStrings);
     free(view->impl->clipboard.data.data);
+    free(view->impl->appId);
     free(view->impl);
   }
 }
@@ -4260,7 +4317,18 @@ puglWaylandUpdateWithoutExposures(PuglWorld* const world)
 void
 puglWaylandSetAppId(PuglView* const view, const char* const appId)
 {
-  if (view->impl->xdgToplevel && appId && *appId) {
+  if (!appId || !*appId) {
+    return;
+  }
+
+  // kept for puglShow() to re-apply after an unmap, which discards it
+  char* const copy = strdup(appId);
+  if (copy) {
+    free(view->impl->appId);
+    view->impl->appId = copy;
+  }
+
+  if (view->impl->xdgToplevel) {
     xdg_toplevel_set_app_id(view->impl->xdgToplevel, appId);
   }
 }

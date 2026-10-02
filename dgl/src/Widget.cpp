@@ -157,6 +157,11 @@ void Widget::repaint() noexcept
 {
 }
 
+bool Widget::wantsKeyboardFocus()
+{
+    return false;
+}
+
 uint Widget::getId() const noexcept
 {
     return pData->id;
