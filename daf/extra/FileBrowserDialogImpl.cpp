@@ -83,12 +83,21 @@ START_NAMESPACE_DAF
 static const char* const kSelectedFileCancelled = "__daf_cancelled__";
 
 #ifdef HAVE_X11
+// Xlib error handlers are process-global, so errors raised on other displays (the host's own
+// connection, say) go on to the handler this one replaced instead of being swallowed here.
 static bool x11TopLevelQueryFailed = false;
+static Display* x11TopLevelQueryDisplay = nullptr;
+static int (*x11TopLevelPreviousHandler)(Display*, XErrorEvent*) = nullptr;
 
-static int x11TopLevelErrorHandler(Display*, XErrorEvent*)
+static int x11TopLevelErrorHandler(Display* const display, XErrorEvent* const event)
 {
-    x11TopLevelQueryFailed = true;
-    return 0;
+    if (display == x11TopLevelQueryDisplay)
+    {
+        x11TopLevelQueryFailed = true;
+        return 0;
+    }
+
+    return x11TopLevelPreviousHandler != nullptr ? x11TopLevelPreviousHandler(display, event) : 0;
 }
 
 // An embedded view is a child window that the window manager knows nothing about, while portals and
@@ -104,8 +113,9 @@ static ::Window getX11TopLevelWindow(Display* const display, const ::Window wind
     const Atom wmState = XInternAtom(display, "WM_STATE", True);
 
     // A non-existent window is not fatal here, so keep Xlib's default handler from exiting the host
-    int (*const oldHandler)(Display*, XErrorEvent*) = XSetErrorHandler(x11TopLevelErrorHandler);
+    x11TopLevelQueryDisplay = display;
     x11TopLevelQueryFailed = false;
+    x11TopLevelPreviousHandler = XSetErrorHandler(x11TopLevelErrorHandler);
 
     ::Window current = window;
     ::Window result = window;
@@ -157,7 +167,9 @@ static ::Window getX11TopLevelWindow(Display* const display, const ::Window wind
     }
 
     XSync(display, False);
-    XSetErrorHandler(oldHandler);
+    XSetErrorHandler(x11TopLevelPreviousHandler);
+    x11TopLevelPreviousHandler = nullptr;
+    x11TopLevelQueryDisplay = nullptr;
 
     return x11TopLevelQueryFailed ? window : result;
 }
