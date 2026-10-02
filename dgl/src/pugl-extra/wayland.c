@@ -3120,6 +3120,33 @@ puglWaylandApplyTransientParent(PuglView* const view)
   }
 }
 
+/* Title, app id and transient parent, as the application last set them.  Realize applies them to
+   a new toplevel, and puglShow() again after puglHide(): xdg-shell discards a toplevel's
+   attributes when it is unmapped, so a window shown again would otherwise come back untitled,
+   unparented and without its size limits (puglUpdateSizeHints() re-sends those). */
+static void
+puglWaylandApplyToplevelAttributes(PuglView* const view)
+{
+  PuglInternals* const impl = view->impl;
+
+  if (!impl->xdgToplevel) {
+    return;
+  }
+
+  if (view->strings[PUGL_WINDOW_TITLE]) {
+    xdg_toplevel_set_title(impl->xdgToplevel, view->strings[PUGL_WINDOW_TITLE]);
+  }
+
+  const char* const appId = impl->appId                          ? impl->appId
+                            : view->strings[PUGL_CLASS_NAME]       ? view->strings[PUGL_CLASS_NAME]
+                                                                   : view->world->strings[PUGL_CLASS_NAME];
+  if (appId) {
+    xdg_toplevel_set_app_id(impl->xdgToplevel, appId);
+  }
+
+  puglWaylandApplyTransientParent(view);
+}
+
 /**
    Destroy every protocol object hanging off a view's wl_surface, in reverse creation order.
 
@@ -3260,16 +3287,7 @@ puglRealize(PuglView* const view)
     }
   }
 
-  if (view->strings[PUGL_WINDOW_TITLE]) {
-    xdg_toplevel_set_title(impl->xdgToplevel,
-                           view->strings[PUGL_WINDOW_TITLE]);
-  }
-
-  if (world->strings[PUGL_CLASS_NAME]) {
-    xdg_toplevel_set_app_id(impl->xdgToplevel, world->strings[PUGL_CLASS_NAME]);
-  }
-
-  puglWaylandApplyTransientParent(view);
+  puglWaylandApplyToplevelAttributes(view);
 
   // Settle on an initial size before the compositor gets a chance to ask for one
   puglWaylandUpdateScale(view);
@@ -3350,6 +3368,8 @@ puglShow(PuglView* const view, const PuglShowCommand PUGL_UNUSED(command))
      refuse.  The expose queued below waits for the configure, as it does after realize. */
   if (impl->unmapped) {
     impl->unmapped = false;
+    puglWaylandApplyToplevelAttributes(view);
+    puglUpdateSizeHints(view);
     wl_surface_commit(impl->wlSurface);
     wl_display_flush(view->world->impl->display);
   }
@@ -3444,6 +3464,7 @@ puglFreeViewInternals(PuglView* const view)
 
     free(view->impl->clipboard.formatStrings);
     free(view->impl->clipboard.data.data);
+    free(view->impl->appId);
     free(view->impl);
   }
 }
@@ -4296,7 +4317,18 @@ puglWaylandUpdateWithoutExposures(PuglWorld* const world)
 void
 puglWaylandSetAppId(PuglView* const view, const char* const appId)
 {
-  if (view->impl->xdgToplevel && appId && *appId) {
+  if (!appId || !*appId) {
+    return;
+  }
+
+  // kept for puglShow() to re-apply after an unmap, which discards it
+  char* const copy = strdup(appId);
+  if (copy) {
+    free(view->impl->appId);
+    view->impl->appId = copy;
+  }
+
+  if (view->impl->xdgToplevel) {
     xdg_toplevel_set_app_id(view->impl->xdgToplevel, appId);
   }
 }

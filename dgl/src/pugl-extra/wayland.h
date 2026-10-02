@@ -248,6 +248,7 @@ struct PuglInternalsImpl {
   bool needsRedisplay;     ///< A redraw was requested while a frame callback was pending
   bool geometryDirty;      ///< Size or scale changed and has not gone out with a buffer yet
   bool unmapped;           ///< puglHide() unmapped the surface, showing it again needs an initial commit
+  char* appId;             ///< app id set through puglWaylandSetAppId(), re-applied after an unmap
   bool frameCallbackWorks; ///< A frame callback has come back at least once
 };
 
