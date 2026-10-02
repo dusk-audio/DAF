@@ -54,7 +54,7 @@ public:
     */
     const char* getMaker() const override
     {
-        return "DISTRHO";
+        return "Dusk Audio";
     }
 
    /**

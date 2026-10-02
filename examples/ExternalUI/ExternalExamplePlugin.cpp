@@ -58,7 +58,7 @@ protected:
     */
     const char* getMaker() const override
     {
-        return "DISTRHO";
+        return "Dusk Audio";
     }
 
    /**
@@ -66,7 +66,7 @@ protected:
     */
     const char* getHomePage() const override
     {
-        return "https://github.com/DISTRHO/DPF";
+        return "https://github.com/dusk-audio/DAF";
     }
 
    /**
