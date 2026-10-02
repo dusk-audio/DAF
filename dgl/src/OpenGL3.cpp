@@ -943,6 +943,13 @@ void Window::PrivateData::createContextIfNeeded()
     if (gl3context.program != 0)
         return;
 
+    // Everything below goes into whichever context is current, so it must be this view's. Where that
+    // cannot be asked, trust the caller. Windows in particular reports a failed wglMakeCurrent as a
+    // successful enter, and with no context current glCreateShader just returns 0. Leaving the
+    // program at zero is not an error: the next call with the context current creates it.
+    if (! puglBackendIsCurrent(view, true))
+        return;
+
 #if defined(DAF_OS_WINDOWS)
 # if defined(__GNUC__) && (__GNUC__ >= 9)
 #  pragma GCC diagnostic push
