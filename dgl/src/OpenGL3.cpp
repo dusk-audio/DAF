@@ -1136,9 +1136,16 @@ void Window::PrivateData::destroyContext()
         puglBackendLeave(view);
 }
 
-void Window::PrivateData::startContext()
+bool Window::PrivateData::startContext()
 {
     OpenGL3GraphicsContext& gl3context = reinterpret_cast<OpenGL3GraphicsContext&>(graphicsContext);
+
+    // No program means the context could not provide what this renderer needs (a pre-3.0 legacy
+    // context on Windows leaves the entry points unloaded) or it was not current yet; drawing now
+    // would call through null function pointers, so this frame is skipped.
+    if (gl3context.program == 0)
+        return false;
+
     const PuglArea size = puglGetSizeHint(view, PUGL_CURRENT_SIZE);
 
     gl3context.width = size.width;
@@ -1147,6 +1154,7 @@ void Window::PrivateData::startContext()
 
     // so that custom onDisplay() code drawing through context.bounds/buffers has a valid VAO bound too
     bindVertexArray(gl3context);
+    return true;
 }
 
 void Window::PrivateData::endContext()

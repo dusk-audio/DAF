@@ -803,7 +803,8 @@ void Window::PrivateData::onPuglExpose()
     puglOnDisplayPrepare(view);
 
 #ifndef DAF_TEST_WINDOW_CPP
-    startContext();
+    if (! startContext())
+        return;
 
     FOR_EACH_TOP_LEVEL_WIDGET(it)
     {
