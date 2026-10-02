@@ -283,6 +283,16 @@ int main()
         DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamLinearLow), 7.0, "process must apply core parameter events");
     }
 
+    // nor a core one for an output parameter. run() rewrites the outputs every block, so their value
+    // cannot show it; the plugin counts any write that reached it instead
+    {
+        const uint32_t writesBefore = gOutputParameterWrites;
+        clap_event_param_value_t event = makeParamEvent(CLAP_CORE_EVENT_SPACE_ID, kParamOutFrame, 5.0);
+        const clap_input_events_t in = { &event, param_event_size, param_event_get };
+        h.process(transport, &in);
+        DAF_ASSERT_EQUAL(gOutputParameterWrites, writesBefore, "process must ignore events for output parameters");
+    }
+
     h.plugin->stop_processing(h.plugin);
     h.plugin->deactivate(h.plugin);
 
@@ -293,8 +303,12 @@ int main()
     DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamLinearLow), 3.0, "flush must apply core parameter events");
 
     // and the host cannot set an output parameter at all
-    h.flush(makeParamEvent(CLAP_CORE_EVENT_SPACE_ID, kParamOutFrame, 5.0));
-    DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamOutFrame), 0.0, "flush must ignore events for output parameters");
+    {
+        const uint32_t writesBefore = gOutputParameterWrites;
+        h.flush(makeParamEvent(CLAP_CORE_EVENT_SPACE_ID, kParamOutFrame, 5.0));
+        DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamOutFrame), 0.0, "flush must ignore events for output parameters");
+        DAF_ASSERT_EQUAL(gOutputParameterWrites, writesBefore, "flush must not set an output parameter");
+    }
 
     // the main-thread callback marks the state dirty, and a save has the value
     DAF_ASSERT_EQUAL(h.plugin->activate(h.plugin, kSampleRate, 1, kFrames), true, "activate must succeed");
