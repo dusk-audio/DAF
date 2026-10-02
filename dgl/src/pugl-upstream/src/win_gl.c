@@ -232,14 +232,15 @@ puglWinGlCreate(PuglView* view)
     return PUGL_SET_FORMAT_FAILED;
   }
 
-  // Create GL context
-  if (surface->procs.wglCreateContextAttribs &&
-      !(surface->hglrc = surface->procs.wglCreateContextAttribs(
-          impl->hdc, 0, contextAttribs))) {
-    return PUGL_CREATE_CONTEXT_FAILED;
-  }
-
-  if (!(surface->hglrc = wglCreateContext(impl->hdc))) {
+  // Create GL context, with the requested version and profile when the driver supports it.
+  // The legacy call is only a fallback: running it unconditionally replaced (and leaked) the
+  // context created with the attributes, so every view got a compatibility context.
+  if (surface->procs.wglCreateContextAttribs) {
+    if (!(surface->hglrc = surface->procs.wglCreateContextAttribs(
+            impl->hdc, 0, contextAttribs))) {
+      return PUGL_CREATE_CONTEXT_FAILED;
+    }
+  } else if (!(surface->hglrc = wglCreateContext(impl->hdc))) {
     return PUGL_CREATE_CONTEXT_FAILED;
   }
 
