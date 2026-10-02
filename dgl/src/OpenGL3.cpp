@@ -1115,10 +1115,23 @@ void Window::PrivateData::destroyContext()
     if (gl3context.program == 0)
         return;
 
-    destroyVertexArray(gl3context);
-    glDeleteBuffers(2, gl3context.buffers);
-    glDeleteProgram(gl3context.program);
+    // Called as the window goes away, where nothing has entered its context (a plugin window has
+    // already left it). The names only mean something in this view's context: deleted elsewhere,
+    // they are leaked here and may take out another context's objects.
+    const bool entered = view != nullptr && ! puglBackendIsCurrent(view, false) && puglBackendEnter(view);
+
+    if (puglBackendIsCurrent(view, true))
+    {
+        destroyVertexArray(gl3context);
+        glDeleteBuffers(2, gl3context.buffers);
+        glDeleteProgram(gl3context.program);
+    }
+
     gl3context.program = 0;
+    gl3context.vao = 0;
+
+    if (entered)
+        puglBackendLeave(view);
 }
 
 void Window::PrivateData::startContext()

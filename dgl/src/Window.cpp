@@ -29,9 +29,24 @@ START_NAMESPACE_DGL
 Window::ScopedGraphicsContext::ScopedGraphicsContext(Window& win)
     : window(win),
       ppData(nullptr),
-      active(window.pData->view != nullptr && puglBackendEnter(window.pData->view)),
+      active(false),
       reenter(false)
 {
+    PuglView* const view = window.pData->view;
+
+    if (view == nullptr)
+        return;
+
+    // Already current, as for a widget deleted during a plugin UI's teardown or a scope opened inside
+    // another: use it, and leave it current when done, since whoever entered it is still using it.
+    if (puglBackendIsCurrent(view, false))
+    {
+        window.pData->createContextIfNeeded();
+        return;
+    }
+
+    active = puglBackendEnter(view);
+
     if (active)
         window.pData->createContextIfNeeded();
 }
