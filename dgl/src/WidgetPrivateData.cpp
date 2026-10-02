@@ -53,8 +53,8 @@ Widget::PrivateData::PrivateData(Widget* const s, Widget* const pw)
 Widget::PrivateData::~PrivateData()
 {
     // detach any subwidgets that outlive us, so they do not keep pointers to freed memory.
-    // a widget without a parent is either the top-level widget, whose whole subtree then loses its
-    // top-level widget, or already detached, in which case its subtree is unreachable from it anyway
+    // a detached subtree is no longer part of any top-level widget's tree, and that widget would not
+    // reach it to clear its pointer when destroyed later, so the subtree loses its top-level widget now
     FOR_EACH_SUBWIDGET(it)
     {
         SubWidget* const subwidget(*it);
@@ -62,8 +62,7 @@ Widget::PrivateData::~PrivateData()
         subwidget->pData->parentWidget = nullptr;
         static_cast<Widget*>(subwidget)->pData->parentWidget = nullptr;
 
-        if (parentWidget == nullptr)
-            clearTopLevelWidget(subwidget);
+        clearTopLevelWidget(subwidget);
     }
 
     subWidgets.clear();

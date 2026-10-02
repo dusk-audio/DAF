@@ -41,12 +41,30 @@ int main()
 
         delete parent;
         DAF_ASSERT_EQUAL(child->getParentWidget(), nullptr, "child is detached when its parent goes first");
-        DAF_ASSERT_EQUAL(child->getTopLevelWidget(), &tlw, "child keeps a top-level widget that still exists");
+        DAF_ASSERT_EQUAL(child->getTopLevelWidget(), nullptr, "a detached child is no longer in the top-level tree");
 
         // these used to dereference the freed parent
         child->toFront();
         child->toBottom();
         delete child;
+    }
+
+    // a subtree detached from its parent does not keep the top-level widget, which is destroyed later
+    {
+        TopLevelWidget* const tlw = new TopLevelWidget(win);
+        SubWidget* const parent = new SubWidget(tlw);
+        SubWidget* const child = new SubWidget(parent);
+        SubWidget* const grandchild = new SubWidget(child);
+        DAF_ASSERT_EQUAL(grandchild->getTopLevelWidget(), tlw, "grandchild has its top-level widget");
+
+        delete parent;
+        delete tlw;
+        DAF_ASSERT_EQUAL(child->getTopLevelWidget(), nullptr, "surviving child does not reference the freed top-level widget");
+        DAF_ASSERT_EQUAL(grandchild->getTopLevelWidget(), nullptr, "its descendants do not either");
+
+        grandchild->repaint();
+        delete child;
+        delete grandchild;
     }
 
     // destroying the top-level widget first detaches its whole subtree
