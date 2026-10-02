@@ -247,6 +247,7 @@ struct PuglInternalsImpl {
   bool visible;            ///< puglShow() called, puglHide() not called since
   bool needsRedisplay;     ///< A redraw was requested while a frame callback was pending
   bool geometryDirty;      ///< Size or scale changed and has not gone out with a buffer yet
+  bool unmapped;           ///< puglHide() unmapped the surface, showing it again needs an initial commit
   bool frameCallbackWorks; ///< A frame callback has come back at least once
 };
 

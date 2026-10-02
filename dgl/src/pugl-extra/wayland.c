@@ -3167,6 +3167,7 @@ puglWaylandDestroyViewSurface(PuglInternals* const impl)
 
   impl->configured               = false;
   impl->geometryDirty            = false;
+  impl->unmapped                 = false;
   impl->frameCallbackWorks       = false;
   impl->needsRedisplay           = false;
   impl->numEnteredOutputs        = 0U;
@@ -3342,6 +3343,17 @@ puglShow(PuglView* const view, const PuglShowCommand PUGL_UNUSED(command))
      same thing, which is to make sure a buffer gets attached. */
   impl->visible = true;
 
+  /* puglHide() unmapped the surface, and xdg-shell treats an unmapped surface like a new one: it
+     needs another bufferless commit and a fresh configure before a buffer may be attached.  Without
+     this the next expose attaches straight away, which mutter calls a buggy client ("committed
+     initial non-empty content without acknowledging configuration") and stricter compositors may
+     refuse.  The expose queued below waits for the configure, as it does after realize. */
+  if (impl->unmapped) {
+    impl->unmapped = false;
+    wl_surface_commit(impl->wlSurface);
+    wl_display_flush(view->world->impl->display);
+  }
+
   puglWaylandQueueConfigure(view);
   puglWaylandQueueFullExpose(view);
 
@@ -3366,7 +3378,18 @@ puglHide(PuglView* const view)
   wl_surface_commit(impl->wlSurface);
   wl_display_flush(view->world->impl->display);
 
-  impl->visible = false;
+  /* The configure acked so far belonged to the mapping that just ended, so nothing may be drawn
+     until puglShow() has asked for a new one.  A frame callback still pending was for a buffer that
+     is gone and may never come back; drop it so it does not hold up the first frame after showing
+     again. */
+  impl->visible    = false;
+  impl->configured = false;
+  impl->unmapped   = true;
+
+  if (impl->frameCallback) {
+    wl_callback_destroy(impl->frameCallback);
+    impl->frameCallback = NULL;
+  }
 
   puglWaylandQueueConfigure(view);
 
