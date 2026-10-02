@@ -160,16 +160,16 @@ void d_debug(const char* const fmt, ...) noexcept
         if (output == stdout)
         {
            #ifdef DAF_OS_MAC
-            std::fprintf(output, "\x1b[37;1m[dpf] ");
+            std::fprintf(output, "\x1b[37;1m[daf] ");
            #else
-            std::fprintf(output, "\x1b[30;1m[dpf] ");
+            std::fprintf(output, "\x1b[30;1m[daf] ");
            #endif
             std::vfprintf(output, fmt, args);
             std::fprintf(output, "\x1b[0m\n");
         }
         else
         {
-            std::fprintf(output, "[dpf] ");
+            std::fprintf(output, "[daf] ");
             std::vfprintf(output, fmt, args);
             std::fprintf(output, "\n");
         }
@@ -191,7 +191,7 @@ void d_stdout(const char* const fmt, ...) noexcept
     try {
         va_list args;
         va_start(args, fmt);
-        std::fprintf(output, "[dpf] ");
+        std::fprintf(output, "[daf] ");
         std::vfprintf(output, fmt, args);
         std::fprintf(output, "\n");
        #ifndef DEBUG
@@ -213,7 +213,7 @@ void d_stderr(const char* const fmt, ...) noexcept
     try {
         va_list args;
         va_start(args, fmt);
-        std::fprintf(output, "[dpf] ");
+        std::fprintf(output, "[daf] ");
         std::vfprintf(output, fmt, args);
         std::fprintf(output, "\n");
        #ifndef DEBUG
@@ -238,13 +238,13 @@ void d_stderr2(const char* const fmt, ...) noexcept
 
         if (output == stdout)
         {
-            std::fprintf(output, "\x1b[31m[dpf] ");
+            std::fprintf(output, "\x1b[31m[daf] ");
             std::vfprintf(output, fmt, args);
             std::fprintf(output, "\x1b[0m\n");
         }
         else
         {
-            std::fprintf(output, "[dpf] ");
+            std::fprintf(output, "[daf] ");
             std::vfprintf(output, fmt, args);
             std::fprintf(output, "\n");
         }
