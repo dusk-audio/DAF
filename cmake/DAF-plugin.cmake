@@ -115,11 +115,30 @@ include(CMakeParseArguments)
 #   `USE_WEB_VIEW`
 #       enable web browser view APIs
 #
+#   `RESOURCES` <file-or-dir1>...<file-or-dirN>
+#       files the plugin loads at runtime, such as a web view's index.html,
+#       relative to the current source directory. Each one is copied into the
+#       resources directory of every format built, the place getResourcePath()
+#       and the web view look in: `bin/resources` next to the JACK program,
+#       `Contents/Resources` inside a macOS bundle and the VST3 bundle, and
+#       `resources` inside the LV2 bundle. A directory contributes its
+#       contents, keeping its subdirectories. Outside macOS, the VST2 and CLAP
+#       binaries then go into bundle directories (`NAME.vst/NAME.<ext>` and
+#       `NAME.clap/NAME.clap`, as the Makefile build does) so they have a
+#       resources directory of their own.
+#
 function(daf_add_plugin NAME)
   set(options MONOLITHIC NO_SHARED_RESOURCES FORCE_NATIVE_AUDIO_FALLBACK SKIP_NATIVE_AUDIO_FALLBACK USE_FILE_BROWSER USE_WEB_VIEW)
   set(oneValueArgs MODGUI_CLASS_NAME UI_TYPE)
-  set(multiValueArgs FILES_COMMON FILES_DSP FILES_UI TARGETS)
+  set(multiValueArgs FILES_COMMON FILES_DSP FILES_UI TARGETS RESOURCES)
   cmake_parse_arguments(_daf_plugin "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+  # A plugin with resources needs a directory of its own for every format to keep them in.
+  if(_daf_plugin_RESOURCES)
+    set(_daf_bundle TRUE)
+  else()
+    set(_daf_bundle FALSE)
+  endif()
 
   # macOS defaults to opengl3, every other platform keeps opengl. Mirrors the same default in
   # Makefile.plugins.mk.
@@ -296,11 +315,11 @@ function(daf_add_plugin NAME)
     elseif(_target STREQUAL "lv2")
       daf__build_lv2("${NAME}" "${_dgl_has_ui}" "${_daf_plugin_MONOLITHIC}" "${_daf_plugin_shared_crt}")
     elseif(_target STREQUAL "vst2")
-      daf__build_vst2("${NAME}" "${_dgl_has_ui}" "${_daf_plugin_shared_crt}")
+      daf__build_vst2("${NAME}" "${_dgl_has_ui}" "${_daf_plugin_shared_crt}" "${_daf_bundle}")
     elseif(_target STREQUAL "vst3")
       daf__build_vst3("${NAME}" "${_dgl_has_ui}" "${_daf_plugin_shared_crt}")
     elseif(_target STREQUAL "clap")
-      daf__build_clap("${NAME}" "${_dgl_has_ui}" "${_daf_plugin_shared_crt}")
+      daf__build_clap("${NAME}" "${_dgl_has_ui}" "${_daf_plugin_shared_crt}" "${_daf_bundle}")
     elseif(_target STREQUAL "au")
       if (APPLE)
         daf__build_au("${NAME}" "${_dgl_has_ui}")
@@ -311,6 +330,12 @@ function(daf_add_plugin NAME)
       message(FATAL_ERROR "Unrecognized target type for plugin: ${_target}")
     endif()
   endforeach()
+
+  if(_daf_plugin_RESOURCES)
+    daf__add_plugin_resources("${NAME}"
+      TARGETS ${_daf_plugin_TARGETS}
+      RESOURCES ${_daf_plugin_RESOURCES})
+  endif()
 endfunction()
 
 # daf_add_executable(target <args...>)
@@ -718,7 +743,7 @@ endfunction()
 #
 # Add build rules for a VST2 plugin.
 #
-function(daf__build_vst2 NAME HAS_UI EXTRA_UI_LINK_OPTS)
+function(daf__build_vst2 NAME HAS_UI EXTRA_UI_LINK_OPTS BUNDLE)
   daf__create_dummy_source_list(_no_srcs)
 
   daf__add_module("${NAME}-vst2" ${_no_srcs})
@@ -732,6 +757,13 @@ function(daf__build_vst2 NAME HAS_UI EXTRA_UI_LINK_OPTS)
     ARCHIVE_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/obj/vst2/$<0:>"
     OUTPUT_NAME "${NAME}-vst2"
     PREFIX "")
+  if(BUNDLE AND NOT APPLE)
+    # NAME.vst/NAME.<ext>: DafPluginVST2.cpp takes a binary inside a ".vst" directory as bundled
+    # and looks for its resources in NAME.vst/resources.
+    set_target_properties("${NAME}-vst2" PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin/${NAME}.vst/$<0:>"
+      OUTPUT_NAME "${NAME}")
+  endif()
   if(APPLE)
     set_target_properties("${NAME}-vst2" PROPERTIES
       LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin/${NAME}.vst/Contents/MacOS/$<0:>"
@@ -845,7 +877,7 @@ endfunction()
 #
 # Add build rules for a CLAP plugin.
 #
-function(daf__build_clap NAME HAS_UI EXTRA_UI_LINK_OPTS)
+function(daf__build_clap NAME HAS_UI EXTRA_UI_LINK_OPTS BUNDLE)
   daf__create_dummy_source_list(_no_srcs)
 
   daf__add_module("${NAME}-clap" ${_no_srcs})
@@ -860,6 +892,12 @@ function(daf__build_clap NAME HAS_UI EXTRA_UI_LINK_OPTS)
     OUTPUT_NAME "${NAME}"
     PREFIX ""
     SUFFIX ".clap")
+  if(BUNDLE AND NOT APPLE)
+    # NAME.clap/NAME.clap: DafPluginCLAP.cpp takes a binary inside a ".clap" directory as bundled
+    # and looks for its resources in NAME.clap/resources.
+    set_target_properties("${NAME}-clap" PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin/${NAME}.clap/$<0:>")
+  endif()
   daf__set_msvc_debug_file_names("${NAME}-clap")
 
   if(APPLE)
@@ -919,6 +957,107 @@ function(daf__build_au NAME HAS_UI)
 
   file(COPY "${DAF_ROOT_DIR}/utils/plugin.bundle/Contents/PkgInfo"
     DESTINATION "${PROJECT_BINARY_DIR}/bin/${NAME}.component/Contents")
+endfunction()
+
+# daf__add_plugin_resources
+# ------------------------------------------------------------------------------
+#
+# Copies a plugin's RESOURCES into the resources directory of each format in
+# TARGETS, i.e. where getResourcePath() (daf/src/DafUtils.cpp) points for the
+# bundle path that format's entry point detects. Mirrors the per-format copies
+# of examples/WebMeters/Makefile.
+#
+# The copies are build steps that depend on their sources, so editing a
+# resource and rebuilding refreshes it without a reconfigure.
+#
+function(daf__add_plugin_resources NAME)
+  cmake_parse_arguments(_res "" "" "TARGETS;RESOURCES" ${ARGN})
+
+  # every source file, and its path relative to a resources directory
+  set(_sources)
+  set(_relpaths)
+  foreach(_item ${_res_RESOURCES})
+    get_filename_component(_item "${_item}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(IS_DIRECTORY "${_item}")
+      if(CMAKE_VERSION VERSION_LESS 3.12)
+        file(GLOB_RECURSE _found RELATIVE "${_item}" "${_item}/*")
+      else()
+        file(GLOB_RECURSE _found RELATIVE "${_item}" CONFIGURE_DEPENDS "${_item}/*")
+      endif()
+      foreach(_file ${_found})
+        list(APPEND _sources "${_item}/${_file}")
+        list(APPEND _relpaths "${_file}")
+      endforeach()
+    elseif(EXISTS "${_item}")
+      get_filename_component(_file "${_item}" NAME)
+      list(APPEND _sources "${_item}")
+      list(APPEND _relpaths "${_file}")
+    else()
+      message(FATAL_ERROR "daf_add_plugin(${NAME}): resource not found: ${_item}")
+    endif()
+  endforeach()
+
+  set(_bin "${PROJECT_BINARY_DIR}/bin")
+  set(_dirs)
+  set(_format_targets)
+  foreach(_target ${_res_TARGETS})
+    set(_dir)
+    if(_target STREQUAL "jack")
+      # no .app bundle in the CMake build: the program looks next to itself
+      set(_dir "${_bin}/resources")
+    elseif(_target STREQUAL "lv2")
+      set(_dir "${_bin}/${NAME}.lv2/resources")
+    elseif(_target STREQUAL "vst2")
+      if(APPLE)
+        set(_dir "${_bin}/${NAME}.vst/Contents/Resources")
+      else()
+        set(_dir "${_bin}/${NAME}.vst/resources")
+      endif()
+    elseif(_target STREQUAL "vst3")
+      set(_dir "${_bin}/${NAME}.vst3/Contents/Resources")
+    elseif(_target STREQUAL "clap")
+      if(APPLE)
+        set(_dir "${_bin}/${NAME}.clap/Contents/Resources")
+      else()
+        set(_dir "${_bin}/${NAME}.clap/resources")
+      endif()
+    elseif(_target STREQUAL "au" AND APPLE)
+      set(_dir "${_bin}/${NAME}.component/Contents/Resources")
+    endif()
+    if(_dir)
+      list(APPEND _dirs "${_dir}")
+      list(APPEND _format_targets "${NAME}-${_target}")
+    endif()
+  endforeach()
+
+  if(NOT _dirs OR NOT _sources)
+    return()
+  endif()
+  list(REMOVE_DUPLICATES _dirs)
+
+  list(LENGTH _sources _count)
+  math(EXPR _last "${_count} - 1")
+
+  set(_outputs)
+  foreach(_dir ${_dirs})
+    foreach(_i RANGE ${_last})
+      list(GET _sources ${_i} _src)
+      list(GET _relpaths ${_i} _rel)
+      set(_dst "${_dir}/${_rel}")
+      get_filename_component(_dstdir "${_dst}" DIRECTORY)
+      add_custom_command(OUTPUT "${_dst}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_dstdir}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_src}" "${_dst}"
+        DEPENDS "${_src}"
+        VERBATIM)
+      list(APPEND _outputs "${_dst}")
+    endforeach()
+  endforeach()
+
+  add_custom_target("${NAME}-resources" ALL DEPENDS ${_outputs})
+  foreach(_format_target ${_format_targets})
+    add_dependencies("${_format_target}" "${NAME}-resources")
+  endforeach()
 endfunction()
 
 # daf__build_static
