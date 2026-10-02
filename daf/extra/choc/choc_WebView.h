@@ -504,17 +504,40 @@ struct WebView::Pimpl
 
     ~Pimpl()
     {
+        // WebView2 keeps the handler alive for as long as it holds a registration or has a
+        // completion pending, so detach it first: anything that still reaches it from now on
+        // must not touch this object.
+        if (eventHandler != nullptr)
+            eventHandler->ownerPimpl = nullptr;
+
         if (coreWebView != nullptr)
         {
+            coreWebView->remove_WebMessageReceived (webMessageReceivedToken);
+            coreWebView->remove_PermissionRequested (permissionRequestedToken);
+            coreWebView->remove_WebResourceRequested (webResourceRequestedToken);
             coreWebView->Release();
             coreWebView = nullptr;
         }
 
         if (coreWebViewController != nullptr)
         {
+            // Releasing the last reference does not tear the browser down synchronously, Close does
+            coreWebViewController->Close();
             coreWebViewController->Release();
             coreWebViewController = nullptr;
         }
+
+        if (eventHandler != nullptr)
+        {
+            eventHandler->Release();
+            eventHandler = nullptr;
+        }
+
+        // Still waiting for an environment or controller (the 6 second timeout gave up on it).
+        // The loader's asynchronous code may still run and call back into the handler, so the
+        // loader image must outlive this object; leak it rather than unmap code that is in use.
+        if (webviewInitialising)
+            new MemoryDLL (std::move (webviewDLL));
 
         if (coreWebViewEnvironment != nullptr)
         {
@@ -592,7 +615,7 @@ private:
                 w->resizeContentToFit();
 
         if (msg == WM_SHOWWINDOW)
-            if (auto w = getPimpl (h); w->coreWebViewController != nullptr)
+            if (auto w = getPimpl (h); w != nullptr && w->coreWebViewController != nullptr)
                 w->coreWebViewController->put_IsVisible (wp != 0);
 
         return DefWindowProcW (h, msg, wp, lp);
@@ -614,19 +637,35 @@ private:
     {
         if (auto userDataFolder = getUserDataFolder(); ! userDataFolder.empty())
         {
-            COMPtr<EventHandler> handler (new EventHandler (*this));
-            webviewInitialising.test_and_set();
+            eventHandler = new EventHandler (*this);
+            eventHandler->AddRef();
 
             if (auto createCoreWebView2EnvironmentWithOptions = (decltype(&CreateCoreWebView2EnvironmentWithOptions))
                                                                    webviewDLL.findFunction ("CreateCoreWebView2EnvironmentWithOptions"))
             {
-                if (createCoreWebView2EnvironmentWithOptions (nullptr, userDataFolder.c_str(), nullptr, handler) == S_OK)
+                webviewInitialising = true;
+
+                if (createCoreWebView2EnvironmentWithOptions (nullptr, userDataFolder.c_str(), nullptr, eventHandler) == S_OK)
                 {
                     MSG msg;
                     auto timeoutTimer = SetTimer ({}, {}, 6000, {});
 
-                    while (webviewInitialising.test_and_set() && GetMessage (std::addressof (msg), nullptr, 0, 0))
+                    // NOTE: this dispatches every message of the thread, the host's and the plugin
+                    // window's included, while the caller (UI::UI on DAF) is still running.
+                    while (webviewInitialising)
                     {
+                        const BOOL ret = GetMessage (std::addressof (msg), nullptr, 0, 0);
+
+                        if (ret == 0)
+                        {
+                            // WM_QUIT belongs to whoever runs the outer loop, hand it back
+                            PostQuitMessage ((int) msg.wParam);
+                            break;
+                        }
+
+                        if (ret < 0)
+                            break;
+
                         TranslateMessage (std::addressof (msg));
                         DispatchMessage (std::addressof (msg));
 
@@ -639,8 +678,7 @@ private:
                     if (coreWebView == nullptr)
                         return false;
 
-                    EventRegistrationToken token;
-                    coreWebView->add_WebResourceRequested (handler, std::addressof (token));
+                    coreWebView->add_WebResourceRequested (eventHandler, std::addressof (webResourceRequestedToken));
 
                     ICoreWebView2Settings* settings = nullptr;
 
@@ -661,12 +699,18 @@ private:
                             {
                                 auto agent = createUTF16StringFromUTF8 (options.customUserAgent);
                                 settings2->put_UserAgent (agent.c_str());
+                                settings2->Release();
                             }
                         }
+
+                        settings->Release();
                     }
 
                     return true;
                 }
+
+                // no completion will ever arrive
+                webviewInitialising = false;
             }
         }
 
@@ -693,7 +737,7 @@ private:
             coreWebView = view;
         }
 
-        webviewInitialising.clear();
+        webviewInitialising = false;
     }
 
     HRESULT onResourceRequested (ICoreWebView2WebResourceRequestedEventArgs* args)
@@ -762,7 +806,7 @@ private:
                            public ICoreWebView2PermissionRequestedEventHandler,
                            public ICoreWebView2WebResourceRequestedEventHandler
     {
-        EventHandler (Pimpl& p) : ownerPimpl (p) {}
+        EventHandler (Pimpl& p) : ownerPimpl (std::addressof (p)) {}
         EventHandler (const EventHandler&) = delete;
         EventHandler (EventHandler&&) = delete;
         EventHandler& operator= (const EventHandler&) = delete;
@@ -773,44 +817,68 @@ private:
         ULONG STDMETHODCALLTYPE AddRef() override     { return ++refCount; }
         ULONG STDMETHODCALLTYPE Release() override    { auto newCount = --refCount; if (newCount == 0) delete this; return newCount; }
 
-        HRESULT STDMETHODCALLTYPE Invoke (HRESULT, ICoreWebView2Environment* env) override
+        HRESULT STDMETHODCALLTYPE Invoke (HRESULT result, ICoreWebView2Environment* env) override
         {
-            if (env == nullptr)
+            if (ownerPimpl == nullptr)
                 return E_FAIL;
 
-            if (! ownerPimpl.environmentCreated (env))
+            if (result != S_OK || env == nullptr || ! ownerPimpl->environmentCreated (env))
+            {
+                ownerPimpl->webviewCreated (nullptr, nullptr);
                 return E_FAIL;
+            }
 
-            env->CreateCoreWebView2Controller (ownerPimpl.hwnd, this);
+            if (env->CreateCoreWebView2Controller (ownerPimpl->hwnd, this) != S_OK)
+            {
+                ownerPimpl->webviewCreated (nullptr, nullptr);
+                return E_FAIL;
+            }
+
             return S_OK;
         }
 
-        HRESULT STDMETHODCALLTYPE Invoke (HRESULT, ICoreWebView2Controller* controller) override
+        HRESULT STDMETHODCALLTYPE Invoke (HRESULT result, ICoreWebView2Controller* controller) override
         {
-            if (controller == nullptr)
+            if (ownerPimpl == nullptr)
+            {
+                // The owner gave up waiting and is gone: don't leave an orphaned browser behind
+                if (controller != nullptr)
+                    controller->Close();
+
                 return E_FAIL;
+            }
 
             ICoreWebView2* view = {};
-            controller->get_CoreWebView2 (std::addressof (view));
 
-            if (view == nullptr)
+            if (result != S_OK || controller == nullptr
+                || controller->get_CoreWebView2 (std::addressof (view)) != S_OK || view == nullptr)
+            {
+                ownerPimpl->webviewCreated (nullptr, nullptr);
                 return E_FAIL;
+            }
 
-            EventRegistrationToken token;
-            view->add_WebMessageReceived (this, std::addressof (token));
-            view->add_PermissionRequested (this, std::addressof (token));
-            ownerPimpl.webviewCreated (controller, view);
+            view->add_WebMessageReceived (this, std::addressof (ownerPimpl->webMessageReceivedToken));
+            view->add_PermissionRequested (this, std::addressof (ownerPimpl->permissionRequestedToken));
+            ownerPimpl->webviewCreated (controller, view);
+            view->Release(); // webviewCreated took its own reference
             return S_OK;
         }
 
         HRESULT STDMETHODCALLTYPE Invoke (ICoreWebView2* sender, ICoreWebView2WebMessageReceivedEventArgs* args) override
         {
-            if (sender == nullptr)
+            if (ownerPimpl == nullptr || sender == nullptr || args == nullptr)
                 return E_FAIL;
 
             LPWSTR message = {};
-            args->TryGetWebMessageAsString (std::addressof (message));
-            ownerPimpl.owner.invokeBinding (createUTF8FromUTF16 (message));
+
+            if (args->TryGetWebMessageAsString (std::addressof (message)) != S_OK || message == nullptr)
+                return E_FAIL;
+
+            // This is a COM callback from WebView2, nothing may unwind through it
+            try {
+                ownerPimpl->owner.invokeBinding (createUTF8FromUTF16 (message));
+            } catch (...) {}
+
             sender->PostWebMessageAsString (message);
             CoTaskMemFree (message);
             return S_OK;
@@ -818,8 +886,13 @@ private:
 
         HRESULT STDMETHODCALLTYPE Invoke (ICoreWebView2*, ICoreWebView2PermissionRequestedEventArgs* args) override
         {
+            if (args == nullptr)
+                return E_FAIL;
+
             COREWEBVIEW2_PERMISSION_KIND permissionKind;
-            args->get_PermissionKind (std::addressof (permissionKind));
+
+            if (args->get_PermissionKind (std::addressof (permissionKind)) != S_OK)
+                return E_FAIL;
 
             if (permissionKind == COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ)
                 args->put_State (COREWEBVIEW2_PERMISSION_STATE_ALLOW);
@@ -829,10 +902,14 @@ private:
 
         HRESULT STDMETHODCALLTYPE Invoke (ICoreWebView2*, ICoreWebView2WebResourceRequestedEventArgs* args) override
         {
-            return ownerPimpl.onResourceRequested (args);
+            if (ownerPimpl == nullptr || args == nullptr)
+                return E_FAIL;
+
+            return ownerPimpl->onResourceRequested (args);
         }
 
-        Pimpl& ownerPimpl;
+        // Cleared by ~Pimpl, WebView2 may hold on to this handler and call it after that
+        Pimpl* ownerPimpl;
         std::atomic<ULONG> refCount { 0 };
     };
 
@@ -843,7 +920,12 @@ private:
     ICoreWebView2Environment* coreWebViewEnvironment = nullptr;
     ICoreWebView2* coreWebView = nullptr;
     ICoreWebView2Controller* coreWebViewController = nullptr;
-    std::atomic_flag webviewInitialising = ATOMIC_FLAG_INIT;
+    EventHandler* eventHandler = nullptr;
+    EventRegistrationToken webMessageReceivedToken {};
+    EventRegistrationToken permissionRequestedToken {};
+    EventRegistrationToken webResourceRequestedToken {};
+    // Only touched on the thread that created this object, which is where WebView2 calls back
+    bool webviewInitialising = false;
 
     //==============================================================================
     static std::wstring getUserDataFolder()
@@ -910,7 +992,8 @@ inline bool WebView::bind (CallbackFn&& fn)
 
 inline void WebView::invokeBinding (const std::string& msg)
 {
-    binding(msg);
+    if (binding)
+        binding (msg);
 }
 
 END_NAMESPACE_DAF
