@@ -29,6 +29,9 @@
 #define DAF_TEST_NO_DGL
 
 #include "tests.hpp"
+
+#include <algorithm>
+#include <vector>
 #include "plugin-wrappers/WrapperTestPlugin.hpp"
 #include "daf/DafPluginMain.cpp"
 
@@ -223,9 +226,13 @@ static v3_param_value_queue** V3_API changes_get_param_data(void* const self, co
     return reinterpret_cast<v3_param_value_queue**>(&changes->queues[idx]);
 }
 
+// the IDs the component reported through output parameter changes, in order
+static std::vector<v3_param_id> gReportedIds;
+
 static v3_param_value_queue** V3_API changes_add_param_data(void*, const v3_param_id* const id, int32_t* const idx)
 {
     gOutputQueue.id = *id;
+    gReportedIds.push_back(*id);
     if (idx != nullptr) *idx = 0;
     return reinterpret_cast<v3_param_value_queue**>(&gOutputQueue);
 }
@@ -370,6 +377,21 @@ int main()
         DAF_ASSERT_EQUAL(processBlock(processor, &press, nullptr), V3_OK, "process must succeed without output changes");
         DAF_ASSERT_SAFE_EQUAL((*controller)->ctrl.get_parameter_normalised(controller, triggerId), 0.0,
                          "a trigger must reset to its default without output parameter changes");
+
+        // the reset could not be reported then, so the next block that has output changes reports it
+        {
+            TestParamChanges noInput = { &gChangesVTable, nullptr, 0 };
+            TestParamChanges output = { &gChangesVTable, nullptr, 0 };
+            gReportedIds.clear();
+            DAF_ASSERT_EQUAL(processBlock(processor, &noInput, &output), V3_OK, "process must succeed");
+            DAF_ASSERT_EQUAL(std::find(gReportedIds.begin(), gReportedIds.end(), triggerId) != gReportedIds.end(), true,
+                             "a trigger reset made without output changes must be reported in the next block");
+
+            gReportedIds.clear();
+            DAF_ASSERT_EQUAL(processBlock(processor, &noInput, &output), V3_OK, "process must succeed");
+            DAF_ASSERT_EQUAL(std::find(gReportedIds.begin(), gReportedIds.end(), triggerId) == gReportedIds.end(), true,
+                             "a reported trigger reset must not be reported again");
+        }
 
         // an unknown parameter ID (kNoParamId) first, then a valid one
         TestParamQueue mixedQueues[2] = { { &gQueueVTable, 0xFFFFFFFFu, 1.0 }, { &gQueueVTable, linearId, 0.8 } };

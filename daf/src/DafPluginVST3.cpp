@@ -3327,12 +3327,18 @@ private:
 
         for (uint32_t i=0; i<fParameterCount; ++i)
         {
+            std::atomic<bool>& changed(fParameterValuesChangedDuringProcessing[kVst3InternalParameterBaseCount + i]);
+
+            // the flag is only taken when the change can be reported; without output changes it stays
+            // set, and below an unreported output or trigger change sets it, for the next block to report
+            const bool reportPending = outparamsptr != nullptr ? changed.exchange(false) : changed.load();
+
             if (fPlugin.isParameterOutput(i))
             {
                 // NOTE: no output parameter support in VST3, simulate it here
                 curValue = fPlugin.getParameterValue(i);
 
-                if (d_isEqual(curValue, fCachedParameterValues[kVst3InternalParameterBaseCount + i].load()))
+                if (! reportPending && d_isEqual(curValue, fCachedParameterValues[kVst3InternalParameterBaseCount + i].load()))
                     continue;
             }
             else if (fPlugin.isParameterTrigger(i))
@@ -3341,13 +3347,13 @@ private:
                 defValue = fPlugin.getParameterDefault(i);
                 curValue = fPlugin.getParameterValue(i);
 
-                if (d_isEqual(curValue, defValue))
+                if (! reportPending && d_isEqual(curValue, defValue))
                     continue;
 
                 curValue = defValue;
                 fPlugin.setParameterValue(i, curValue);
             }
-            else if (fParameterValuesChangedDuringProcessing[kVst3InternalParameterBaseCount + i].exchange(false))
+            else if (reportPending)
             {
                 curValue = fPlugin.getParameterValue(i);
             }
@@ -3406,6 +3412,12 @@ private:
             if (fPlugin.isParameterOutput(i))
                 continue;
            #endif
+
+            if (outparamsptr == nullptr)
+            {
+                changed = true;
+                continue;
+            }
 
             normalized = _getNormalizedParameterValue(i, curValue);
 
