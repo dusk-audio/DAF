@@ -461,6 +461,24 @@ void Window::PrivateData::focus()
     puglGrabFocus(view);
 }
 
+void Window::PrivateData::hostOfferedKeyUsed(const bool used)
+{
+    hostKeyFilter.keyUsed(used);
+}
+
+void Window::PrivateData::hostOfferedKey(const bool press, const bool deliveredChar)
+{
+#ifdef DAF_OS_WINDOWS
+    // The time of the message the host is processing, which is the time the native copy of the
+    // key will carry if the host dispatches it to this window afterwards.
+    hostKeyFilter.keyOffered(press, static_cast<uint32_t>(GetMessageTime()), deliveredChar);
+#else
+    // Only Win32 hosts are known to hand a key over twice.
+    (void)press;
+    (void)deliveredChar;
+#endif
+}
+
 bool Window::PrivateData::anyWidgetWantsKeyboardFocus()
 {
 #ifndef DAF_TEST_WINDOW_CPP
@@ -1202,6 +1220,17 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
             ev.mod |= kModifierShift;
         }
 
+       #ifdef DAF_OS_WINDOWS
+        // The host already offered this very key message to the UI through the plugin format and
+        // is now dispatching it here as well. The UI has had it, so it is not delivered again;
+        // one the UI declined still goes on to the host as below. See HostKeyFilter.
+        {
+            bool declined = false;
+            if (pData->hostKeyFilter.dropNativeKey(ev.press, static_cast<uint32_t>(GetMessageTime()), declined))
+                return (declined && pData->isEmbed) ? PUGL_UNSUPPORTED : PUGL_SUCCESS;
+        }
+       #endif
+
         // An embedded UI that has no use for a key hands it to the host, so host shortcuts
         // keep working while the UI has the keyboard or, on X11, sits under the pointer.
         if (! pData->onPuglKey(ev) && pData->isEmbed)
@@ -1220,6 +1249,12 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
     ///< Character entered, a #PuglTextEvent
     case PUGL_TEXT:
     {
+       #ifdef DAF_OS_WINDOWS
+        // the character of a key dropped above, which the plugin format call delivered already
+        if (pData->hostKeyFilter.dropNativeText())
+            break;
+       #endif
+
         // unused x, y, xRoot, yRoot (double)
         Widget::CharacterInputEvent ev;
         ev.mod       = event->text.state;

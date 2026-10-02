@@ -118,6 +118,11 @@ void puglWin32RestoreWindow(PuglView* view);
 // win32 specific, center view based on parent coordinates (if there is one)
 void puglWin32ShowCentered(PuglView* view);
 
+// win32 specific, whether this thread is sending a key some view declined on to its host right now
+// A host that hands such a key back through the plugin format (IPlugView::onKeyDown, effEditKeyDown)
+// would otherwise offer the UI the key it just declined, and could send it on again.
+bool puglWin32IsForwardingKey();
+
 // On Unix, HAVE_X11 and HAVE_WAYLAND can both be defined: the two sets of development files
 // coexist happily and most desktop distributions ship both. The order of the arms below is
 // therefore a deliberate policy, not an accident:

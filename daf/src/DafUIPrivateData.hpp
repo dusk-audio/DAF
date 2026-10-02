@@ -249,6 +249,17 @@ public:
         return pData->setScaleFactor(scaleFactor);
     }
 
+    // a key offered to the UI through the plugin format (VST2/VST3) instead of the window
+    void hostOfferedKey(const bool press, const bool deliveredChar)
+    {
+        pData->hostOfferedKey(press, deliveredChar);
+    }
+
+    void hostOfferedKeyUsed(const bool used)
+    {
+        pData->hostOfferedKeyUsed(used);
+    }
+
     // used for temporary windows (VST/CLAP get size without active/visible view)
     void setIgnoreIdleCallbacks(const bool ignore = true)
     {

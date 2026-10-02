@@ -20,6 +20,7 @@
 #include "../Window.hpp"
 #include "../Widget.hpp"
 #include "ApplicationPrivateData.hpp"
+#include "HostKeyFilter.hpp"
 
 #include "pugl.hpp"
 
@@ -89,6 +90,10 @@ struct Window::PrivateData : IdleCallback {
         Set by the plugin wrappers of formats with no focus API (CLAP and VST2), where nothing
         else would give an embedded Win32 child the keyboard. Defaults to false. */
     bool grabsFocusOnClick;
+
+    /** Drops the native copy of a key the host already offered through the plugin format, on Windows only.
+        Fed by hostOfferedKey, see HostKeyFilter. */
+    HostKeyFilter hostKeyFilter;
 
     /** Scale factor to report to widgets on request, purely informational. */
     double scaleFactor;
@@ -201,6 +206,14 @@ struct Window::PrivateData : IdleCallback {
 
     /** Whether any visible widget of this window wants the keyboard focus, see Widget::wantsKeyboardFocus. */
     bool anyWidgetWantsKeyboardFocus();
+
+    /** A key was offered to the UI through the plugin format (VST2/VST3 key calls) instead of the window.
+        On Windows the host may dispatch the same key message to this window afterwards, which is then dropped.
+        @a deliveredChar tells whether a character input was delivered along with it. */
+    void hostOfferedKey(bool press, bool deliveredChar);
+
+    /** Whether the UI used the key last given to hostOfferedKey. */
+    void hostOfferedKeyUsed(bool used);
 
     void setResizable(bool resizable);
 

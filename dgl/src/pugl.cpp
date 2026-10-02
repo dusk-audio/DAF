@@ -712,6 +712,14 @@ void puglWin32RestoreWindow(PuglView* const view)
 }
 
 // --------------------------------------------------------------------------------------------------------------------
+// win32 specific, whether this thread is sending a key some view declined on to its host right now
+
+bool puglWin32IsForwardingKey()
+{
+    return puglWinForwardingKeys != 0U;
+}
+
+// --------------------------------------------------------------------------------------------------------------------
 // win32 specific, center view based on parent coordinates (if there is one)
 
 void puglWin32ShowCentered(PuglView* const view)
