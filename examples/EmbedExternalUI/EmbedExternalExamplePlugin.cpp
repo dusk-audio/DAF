@@ -51,7 +51,7 @@ protected:
     */
     const char* getDescription() const override
     {
-        return "Plugin to show how to use an embedable dpf-external UI.";
+        return "Plugin to show how to use an embeddable external UI.";
     }
 
    /**

@@ -31,4 +31,4 @@ if (timePos.bbt.valid)
 ```
 
 Reference:
-- [Dusk Audio Framework: TimePosition::BarBeatTick Struct Reference](https://distrho.github.io/DAF/structTimePosition_1_1BarBeatTick.html)
+- [Dusk Audio Framework: TimePosition::BarBeatTick Struct Reference](https://github.com/dusk-audio/DAF/blob/main/daf/DafDetails.hpp)
