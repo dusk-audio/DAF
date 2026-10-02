@@ -19,7 +19,11 @@
  * on every platform, and the factory and component must accept and return those same IDs.
  *
  * Plugin::updateStateValue() from activate() must be in the state the component saves, and, as this plugin
- * has no UI, mark the project modified through IComponentHandler2 from setActive. */
+ * has no UI, mark the project modified through IComponentHandler2 from setActive.
+ *
+ * process() must reset a pressed trigger when the host passes no output parameter changes (the spec allows
+ * it and the Steinberg validator does it), and a queue with an unknown parameter ID must skip only itself,
+ * not the queues after it. */
 
 #define DAF_PLUGIN_TARGET_VST3
 #define DAF_TEST_NO_DGL
@@ -165,6 +169,110 @@ static bool savedStateHasStatus(v3_component_cpp** const component, const char* 
 }
 
 // --------------------------------------------------------------------------------------------------------------------
+// host-side parameter changes for process(): input queues with one point each, and output changes that accept
+// whatever the component reports
+
+struct TestParamQueue {
+    v3_param_value_queue_cpp* vtable;
+    v3_param_id id;
+    double value;
+};
+
+struct TestParamChanges {
+    v3_param_changes_cpp* vtable;
+    TestParamQueue* queues;
+    int32_t count;
+};
+
+static v3_param_value_queue_cpp gQueueVTable;
+static v3_param_changes_cpp gChangesVTable;
+static TestParamQueue gOutputQueue = { &gQueueVTable, 0, 0.0 };
+
+static v3_param_id V3_API queue_get_param_id(void* const self)
+{
+    return static_cast<TestParamQueue*>(self)->id;
+}
+
+static int32_t V3_API queue_get_point_count(void*) { return 1; }
+
+static v3_result V3_API queue_get_point(void* const self, const int32_t idx, int32_t* const offset, double* const value)
+{
+    if (idx != 0)
+        return V3_INVALID_ARG;
+    *offset = 0;
+    *value = static_cast<TestParamQueue*>(self)->value;
+    return V3_OK;
+}
+
+static v3_result V3_API queue_add_point(void*, int32_t, double, int32_t* const idx)
+{
+    if (idx != nullptr) *idx = 0;
+    return V3_OK;
+}
+
+static int32_t V3_API changes_get_param_count(void* const self)
+{
+    return static_cast<TestParamChanges*>(self)->count;
+}
+
+static v3_param_value_queue** V3_API changes_get_param_data(void* const self, const int32_t idx)
+{
+    TestParamChanges* const changes = static_cast<TestParamChanges*>(self);
+    if (idx < 0 || idx >= changes->count)
+        return nullptr;
+    return reinterpret_cast<v3_param_value_queue**>(&changes->queues[idx]);
+}
+
+static v3_param_value_queue** V3_API changes_add_param_data(void*, const v3_param_id* const id, int32_t* const idx)
+{
+    gOutputQueue.id = *id;
+    if (idx != nullptr) *idx = 0;
+    return reinterpret_cast<v3_param_value_queue**>(&gOutputQueue);
+}
+
+static void initParamChangeObjects()
+{
+    gQueueVTable.query_interface = no_interface;
+    gQueueVTable.ref = gQueueVTable.unref = static_ref;
+    gQueueVTable.queue.get_param_id = queue_get_param_id;
+    gQueueVTable.queue.get_point_count = queue_get_point_count;
+    gQueueVTable.queue.get_point = queue_get_point;
+    gQueueVTable.queue.add_point = queue_add_point;
+
+    gChangesVTable.query_interface = no_interface;
+    gChangesVTable.ref = gChangesVTable.unref = static_ref;
+    gChangesVTable.changes.get_param_count = changes_get_param_count;
+    gChangesVTable.changes.get_param_data = changes_get_param_data;
+    gChangesVTable.changes.add_param_data = changes_add_param_data;
+}
+
+// one process() call of 16 frames through the single mono bus, with these parameter changes
+static v3_result processBlock(v3_audio_processor_cpp** const processor,
+                              TestParamChanges* const inputParams, TestParamChanges* const outputParams)
+{
+    float inBuf[16] = {}, outBuf[16] = {};
+    float* inChannels[1] = { inBuf };
+    float* outChannels[1] = { outBuf };
+
+    v3_audio_bus_buffers inputs = {}, outputs = {};
+    inputs.num_channels = outputs.num_channels = 1;
+    inputs.channel_buffers_32 = inChannels;
+    outputs.channel_buffers_32 = outChannels;
+
+    v3_process_data data = {};
+    data.process_mode = V3_REALTIME;
+    data.symbolic_sample_size = V3_SAMPLE_32;
+    data.nframes = 16;
+    data.num_input_buses = data.num_output_buses = 1;
+    data.inputs = &inputs;
+    data.outputs = &outputs;
+    data.input_params = reinterpret_cast<v3_param_changes**>(inputParams);
+    data.output_params = reinterpret_cast<v3_param_changes**>(outputParams);
+
+    return (*processor)->proc.process(processor, &data);
+}
+
+// --------------------------------------------------------------------------------------------------------------------
 
 int main()
 {
@@ -235,6 +343,46 @@ int main()
     DAF_ASSERT_EQUAL(gSetDirtyCalls, 2, "an update must mark the project modified");
     DAF_ASSERT_EQUAL(savedStateHasStatus(component, "active-2"), true, "a saved state must have the update");
     DAF_ASSERT_EQUAL((*component)->comp.set_active(component, false), V3_OK, "set_active must succeed");
+
+    // process() with parameter changes
+    {
+        initParamChangeObjects();
+
+        v3_audio_processor_cpp** processor = nullptr;
+        DAF_ASSERT_EQUAL(v3_cpp_obj_query_interface(component, v3_audio_processor_iid, &processor), V3_OK,
+                         "the component must also be the audio processor");
+
+        v3_process_setup setup = {};
+        setup.process_mode = V3_REALTIME;
+        setup.symbolic_sample_size = V3_SAMPLE_32;
+        setup.max_block_size = 16;
+        setup.sample_rate = 48000.0;
+        DAF_ASSERT_EQUAL((*processor)->proc.setup_processing(processor, &setup), V3_OK, "setup_processing must succeed");
+        DAF_ASSERT_EQUAL((*component)->comp.set_active(component, true), V3_OK, "set_active must succeed");
+        DAF_ASSERT_EQUAL((*processor)->proc.set_processing(processor, true), V3_OK, "set_processing must succeed");
+
+        const v3_param_id triggerId = kVst3InternalParameterCount + kParamTrigger;
+        const v3_param_id linearId = kVst3InternalParameterCount + kParamLinearLow;
+
+        // a pressed trigger, and no output parameter changes from the host
+        TestParamQueue pressQueue[1] = { { &gQueueVTable, triggerId, 1.0 } };
+        TestParamChanges press = { &gChangesVTable, pressQueue, 1 };
+        DAF_ASSERT_EQUAL(processBlock(processor, &press, nullptr), V3_OK, "process must succeed without output changes");
+        DAF_ASSERT_SAFE_EQUAL((*controller)->ctrl.get_parameter_normalised(controller, triggerId), 0.0,
+                         "a trigger must reset to its default without output parameter changes");
+
+        // an unknown parameter ID (kNoParamId) first, then a valid one
+        TestParamQueue mixedQueues[2] = { { &gQueueVTable, 0xFFFFFFFFu, 1.0 }, { &gQueueVTable, linearId, 0.8 } };
+        TestParamChanges mixed = { &gChangesVTable, mixedQueues, 2 };
+        TestParamChanges output = { &gChangesVTable, nullptr, 0 };
+        DAF_ASSERT_EQUAL(processBlock(processor, &mixed, &output), V3_OK, "process must succeed");
+        DAF_ASSERT_EQUAL(std::abs((*controller)->ctrl.get_parameter_normalised(controller, linearId) - 0.8) < 1e-6, true,
+                         "a queue after one with an unknown parameter ID must still be applied");
+
+        DAF_ASSERT_EQUAL((*processor)->proc.set_processing(processor, false), V3_OK, "set_processing must succeed");
+        DAF_ASSERT_EQUAL((*component)->comp.set_active(component, false), V3_OK, "set_active must succeed");
+        v3_cpp_obj_unref(processor);
+    }
 
     (*controller)->ctrl.set_component_handler(controller, nullptr);
     v3_cpp_obj_unref(controller);
