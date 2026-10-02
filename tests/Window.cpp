@@ -188,6 +188,23 @@ int main()
         DAF_ASSERT_EQUAL(win.followsPuglScaleFactor(), false, "host scale factor stops following pugl");
     }
 
+    // Window sizes are in pixels whatever the backing scale: a size set is the size reported. On macOS pugl
+    // converts them to points and back, and when the two directions read the scale from different screens
+    // the size came back halved or doubled (360 -> 180), so they must agree, and the factor pugl reports
+    // for a window must be a usable one, never 0.
+    {
+        Application app(true);
+
+        DAF_NAMESPACE::PluginWindow win(app, 300, 300, 0.0);
+        DAF_ASSERT_EQUAL(win.getScaleFactor() > 0.0, true, "pugl reports a usable scale factor");
+        DAF_ASSERT_EQUAL(win.getWidth(), 300u, "window reports the pixel size it was created with");
+        DAF_ASSERT_EQUAL(win.getHeight(), 300u, "window reports the pixel size it was created with");
+
+        win.setSize(422, 254);
+        DAF_ASSERT_EQUAL(win.getWidth(), 422u, "window reports the pixel size it was given");
+        DAF_ASSERT_EQUAL(win.getHeight(), 254u, "window reports the pixel size it was given");
+    }
+
    #ifdef DGL_OPENGL
     // A graphics context scope opened while the context is current leaves it current: widget destructors
     // open one to delete their GL objects, and when the plugin wrapper has entered the context for the
