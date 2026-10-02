@@ -682,6 +682,16 @@ void ImGuiWidget<BaseWidget>::onFocusChanged(const Widget::FocusEvent& event)
 }
 
 // --------------------------------------------------------------------------------------------------------------------
+// The primary template declares one constructor per base (SubWidget, TopLevelWidget, StandaloneWindow), but each
+// base only has a definition for its own. MSVC warns (C4661) about the other constructors at every explicit
+// instantiation below; they are intentionally left undefined, so silence it for this block only.
+
+#ifdef _MSC_VER
+# pragma warning(push)
+# pragma warning(disable:4661)
+#endif
+
+// --------------------------------------------------------------------------------------------------------------------
 // ImGuiSubWidget
 
 template <>
@@ -813,6 +823,10 @@ ImGuiWidget<StandaloneWindow>::~ImGuiWidget()
 }
 
 template class ImGuiWidget<StandaloneWindow>;
+
+#ifdef _MSC_VER
+# pragma warning(pop)
+#endif
 
 // --------------------------------------------------------------------------------------------------------------------
 
