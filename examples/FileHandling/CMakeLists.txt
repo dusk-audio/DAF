@@ -1,5 +1,5 @@
-# CMake file for DISTRHO Plugins #
-# ------------------------------ #
+# CMake file for DAF example plugins #
+# ----------------------------------- #
 
 daf_add_plugin(d_files
   USE_FILE_BROWSER

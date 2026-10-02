@@ -1,5 +1,5 @@
-# CMake file for DISTRHO Plugins #
-# ------------------------------ #
+# CMake file for DAF example plugins #
+# ----------------------------------- #
 
 daf_add_plugin(d_cairoui
   TARGETS clap dssi jack lv2 vst2 vst3

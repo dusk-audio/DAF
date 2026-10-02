@@ -1,6 +1,6 @@
 #!/usr/bin/make -f
-# Makefile for DISTRHO Plugins #
-# ---------------------------- #
+# Makefile for DAF example plugins #
+# --------------------------------- #
 # Created by falkTX
 #
 

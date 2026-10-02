@@ -1272,6 +1272,19 @@ puglWaylandPointerAxisRelativeDirection(void* const PUGL_UNUSED(data),
 }
 #endif
 
+#if defined(WL_POINTER_WARP_SINCE_VERSION)
+/* wl_pointer.warp (version 11) tells a client the compositor moved the pointer itself.  The
+   pointer is bound below that version, so it is never sent; the member only has to be there for
+   newer headers, which otherwise leave it out of the initializer (-Wmissing-field-initializers). */
+static void
+puglWaylandPointerWarp(void* const PUGL_UNUSED(data),
+                       struct wl_pointer* const PUGL_UNUSED(p),
+                       const wl_fixed_t PUGL_UNUSED(surfaceX),
+                       const wl_fixed_t PUGL_UNUSED(surfaceY))
+{
+}
+#endif
+
 static const struct wl_pointer_listener puglWaylandPointerListener = {
   puglWaylandPointerEnter,
   puglWaylandPointerLeave,
@@ -1287,6 +1300,9 @@ static const struct wl_pointer_listener puglWaylandPointerListener = {
 #endif
 #if defined(WL_POINTER_AXIS_RELATIVE_DIRECTION_SINCE_VERSION)
   puglWaylandPointerAxisRelativeDirection,
+#endif
+#if defined(WL_POINTER_WARP_SINCE_VERSION)
+  puglWaylandPointerWarp,
 #endif
 };
 
