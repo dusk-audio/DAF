@@ -187,7 +187,15 @@ public:
       Set state value and notify the host about the change.@n
       This function will call `setState()` and also trigger an update on the UI side as necessary.@n
       It must not be called during run.@n
-      The state must be host readable.
+      The state must be host readable.@n
+      Returns false for an unknown key.@n
+      On CLAP, VST2, VST3 and JACK it may be called from any thread other than the audio one:
+      `setState()` is called right away, while the UI and the host's "modified" flag are updated
+      later on the host's main thread. A state the host saves in the meantime has the new value.
+      VST2 and VST3 get there on the editor's idle, so with the editor closed the host is not told before it
+      opens; a VST3 plugin without a UI tells the host on its next setActive instead.@n
+      Until the plugin is fully constructed, that is from its constructor and from initState() and the other
+      init functions, there is no host to tell yet: the call does nothing and returns false.
       @note this function does nothing on DSSI plugin format, as DSSI only supports UI->DSP messages.
 
       TODO API under construction

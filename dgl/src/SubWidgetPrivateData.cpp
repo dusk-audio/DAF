@@ -32,12 +32,15 @@ SubWidget::PrivateData::PrivateData(SubWidget* const s, Widget* const pw)
       skipDrawing(false),
       viewportScaleFactor(0.0)
 {
-    parentWidget->pData->subWidgets.push_back(self);
+    if (parentWidget != nullptr)
+        parentWidget->pData->subWidgets.push_back(self);
 }
 
 SubWidget::PrivateData::~PrivateData()
 {
-    parentWidget->pData->subWidgets.remove(self);
+    // parentWidget is null if the parent was destroyed first, see Widget::PrivateData::~PrivateData
+    if (parentWidget != nullptr)
+        parentWidget->pData->subWidgets.remove(self);
 }
 
 // --------------------------------------------------------------------------------------------------------------------

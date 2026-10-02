@@ -47,6 +47,23 @@
 #include <sys/stat.h>
 #include <assert.h>
 
+/* Large files. Without _FILE_OFFSET_BITS=64, 32-bit glibc has a 32-bit off_t:
+ * stat() fails with EOVERFLOW for files of 2 GiB or more, and readdir() for
+ * 64-bit inode numbers, so such entries would silently vanish from the list.
+ * This file is compiled as part of other translation units, after system
+ * headers, so it cannot pick _FILE_OFFSET_BITS itself. It uses the explicit
+ * 64-bit interfaces instead, which glibc provides with _LARGEFILE64_SOURCE
+ * (implied by _GNU_SOURCE, which g++ always defines). Other C libraries
+ * either have a 64-bit off_t throughout or follow the build's own choice. */
+#if defined(__GLIBC__) && defined(_LARGEFILE64_SOURCE)
+# define SOFD_LFS64
+typedef struct stat64 sofd_stat_t;
+static inline int sofd_stat (const char *path, sofd_stat_t *st) { return stat64 (path, st); }
+#else
+typedef struct stat sofd_stat_t;
+static inline int sofd_stat (const char *path, sofd_stat_t *st) { return stat (path, st); }
+#endif
+
 #if defined(__clang__)
 # pragma clang diagnostic push
 # pragma clang diagnostic ignored "-Wnarrowing"
@@ -168,12 +185,12 @@ static int cmp_recent (const void *p1, const void *p2) {
 
 int x_fib_add_recent (const char *path, time_t atime) {
 	unsigned int i;
-	struct stat fs;
+	sofd_stat_t fs;
 	if (_recentlock) { return -1; }
 	if (access (path, R_OK)) {
 		return -1;
 	}
-	if (stat (path, &fs)) {
+	if (sofd_stat (path, &fs)) {
 		return -1;
 	}
 	if (!S_ISREG (fs.st_mode)) {
@@ -340,11 +357,20 @@ const char *x_fib_recent_file(const char *appname) {
 #ifdef HAVE_X11
 #include <dirent.h>
 
+#ifdef SOFD_LFS64
+typedef struct dirent64 sofd_dirent_t;
+static inline sofd_dirent_t* sofd_readdir (DIR *dir) { return readdir64 (dir); }
+#else
+typedef struct dirent sofd_dirent_t;
+static inline sofd_dirent_t* sofd_readdir (DIR *dir) { return readdir (dir); }
+#endif
+
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 #include <X11/Xos.h>
+
 
 #if defined(__linux__) || defined(__linux)
 #define HAVE_MNTENT
@@ -363,6 +389,9 @@ static Window   _fib_win = 0;
 static GC       _fib_gc = 0;
 static XColor   _c_gray0, _c_gray1, _c_gray2, _c_gray3, _c_gray4, _c_gray5;
 static Font     _fibfont = 0;
+#ifdef X_HAVE_UTF8_STRING
+static XFontSet _fibfontset = NULL;
+#endif
 static Pixmap   _pixbuffer = None;
 
 static int      _fib_width  = 100;
@@ -422,7 +451,7 @@ typedef struct {
 	char strtime[32];
 	char strsize[32];
 	int ssizew;
-	off_t size;
+	uint64_t size;
 	time_t mtime;
 	uint8_t flags; // 2: selected, 4: isdir 8: recent-entry
 	FibRecentFile *rfp;
@@ -488,7 +517,33 @@ static int (*_fib_filter_function)(const char *filename);
 #define DOUBLE_BUFFER
 #define LIST_ENTRY_HOVER
 
+/* File names are UTF-8. When a font set could be created (see fib_create_fontset),
+ * all text is drawn and measured through it; otherwise the core font is used
+ * byte by byte, as before, and non-ASCII names come out garbled. */
+static void fib_draw_string (Display *dpy, Drawable d, GC gc, int x, int y, const char *txt, int len) {
+#ifdef X_HAVE_UTF8_STRING
+	if (_fibfontset) {
+		Xutf8DrawString (dpy, d, _fibfontset, gc, x, y, txt, len);
+		return;
+	}
+#endif
+	XDrawString (dpy, d, gc, x, y, txt, len);
+}
+
 static int query_font_geometry (Display *dpy, GC gc, const char *txt, int *w, int *h, int *a, int *d) {
+#ifdef X_HAVE_UTF8_STRING
+	if (_fibfontset) {
+		// ink extents correspond to the per-glyph metrics XTextExtents reports
+		XRectangle ink, logical;
+		const int len = strlen (txt);
+		Xutf8TextExtents (_fibfontset, txt, len, &ink, &logical);
+		if (w) *w = Xutf8TextEscapement (_fibfontset, txt, len);
+		if (h) *h = ink.height;
+		if (a) *a = -ink.y;
+		if (d) *d = ink.height + ink.y;
+		return 0;
+	}
+#endif
 	XCharStruct text_structure;
 	int font_direction, font_ascent, font_descent;
 	XFontStruct *fontinfo = XQueryFont (dpy, XGContextFromGC (gc));
@@ -581,7 +636,7 @@ static void fib_expose (Display *dpy, Window realwin) {
 		} else {
 			XSetForeground (dpy, _fib_gc, _c_gray0.pixel);
 		}
-		XDrawString (dpy, win, _fib_gc, ppx, PATHBTNTOP, "<", 1);
+		fib_draw_string (dpy, win, _fib_gc, ppx, PATHBTNTOP, "<", 1);
 		ppx += _pathbtn[0].xw + PSEP * _scalefactor;
 		if (i == _pathparts) --i;
 	}
@@ -601,7 +656,7 @@ static void fib_expose (Display *dpy, Window realwin) {
 				ppx, PATHBTNTOP - _fib_font_ascent,
 				_pathbtn[i].xw, _fib_font_height);
 		XSetForeground (dpy, _fib_gc, _c_gray4.pixel);
-		XDrawString (dpy, win, _fib_gc, ppx + 1 + BTNPADDING, PATHBTNTOP,
+		fib_draw_string (dpy, win, _fib_gc, ppx + 1 + BTNPADDING, PATHBTNTOP,
 				_pathbtn[i].name, strlen (_pathbtn[i].name));
 		_pathbtn[i].x0 = ppx; // current position
 		ppx += _pathbtn[i].xw + PSEP * _scalefactor;
@@ -734,7 +789,7 @@ static void fib_expose (Display *dpy, Window realwin) {
 			t_x + _fib_dir_indent - TEXTSEP * _scalefactor, ltop - 3 * _scalefactor);
 
 	XSetForeground (dpy, _fib_gc, _c_gray4.pixel);
-	XDrawString (dpy, win, _fib_gc, t_x + _fib_dir_indent, ttop, "Name", 4);
+	fib_draw_string (dpy, win, _fib_gc, t_x + _fib_dir_indent, ttop, "Name", 4);
 
 	if (_columns & 1) {
 		XSetForeground (dpy, _fib_gc, _c_gray2.pixel);
@@ -742,7 +797,7 @@ static void fib_expose (Display *dpy, Window realwin) {
 				t_t - TEXTSEP * _scalefactor, ltop - _fib_font_vsep + 3 * _scalefactor,
 				t_t - TEXTSEP * _scalefactor, ltop - 3 * _scalefactor);
 		XSetForeground (dpy, _fib_gc, _c_gray4.pixel);
-		XDrawString (dpy, win, _fib_gc, t_t, ttop, "Size", 4);
+		fib_draw_string (dpy, win, _fib_gc, t_t, ttop, "Size", 4);
 	}
 
 	if (_columns & 2) {
@@ -752,9 +807,9 @@ static void fib_expose (Display *dpy, Window realwin) {
 				t_s - TEXTSEP * _scalefactor, ltop - 3 * _scalefactor);
 		XSetForeground (dpy, _fib_gc, _c_gray4.pixel);
 		if (_pathparts > 0)
-			XDrawString (dpy, win, _fib_gc, t_s, ttop, "Last Modified", 13);
+			fib_draw_string (dpy, win, _fib_gc, t_s, ttop, "Last Modified", 13);
 		else
-			XDrawString (dpy, win, _fib_gc, t_s, ttop, "Last Used", 9);
+			fib_draw_string (dpy, win, _fib_gc, t_s, ttop, "Last Used", 9);
 	}
 
 	// scrollbar sep
@@ -794,21 +849,21 @@ static void fib_expose (Display *dpy, Window realwin) {
 		*/
 		if (_dirlist[j].flags & 4) {
 			XSetForeground (dpy, _fib_gc, (_dirlist[j].flags & 2) ? _c_gray3.pixel : _c_gray5.pixel);
-			XDrawString (dpy, win, _fib_gc, t_x, t_y, "D", 1);
+			fib_draw_string (dpy, win, _fib_gc, t_x, t_y, "D", 1);
 		}
 		XSetClipRectangles (dpy, _fib_gc, 0, 0, &clp, 1, Unsorted);
 		XSetForeground (dpy, _fib_gc, _c_gray4.pixel);
-		XDrawString (dpy, win, _fib_gc,
+		fib_draw_string (dpy, win, _fib_gc,
 				t_x + _fib_dir_indent, t_y,
 				_dirlist[j].name, strlen (_dirlist[j].name));
 		XSetClipMask (dpy, _fib_gc, None);
 
 		if (_columns & 1) // right-aligned 'size'
-			XDrawString (dpy, win, _fib_gc,
+			fib_draw_string (dpy, win, _fib_gc,
 					t_s - (TEXTSEP + 2) * _scalefactor - _dirlist[j].ssizew, t_y,
 					_dirlist[j].strsize, strlen (_dirlist[j].strsize));
 		if (_columns & 2)
-			XDrawString (dpy, win, _fib_gc,
+			fib_draw_string (dpy, win, _fib_gc,
 					t_s, t_y,
 					_dirlist[j].strtime, strlen (_dirlist[j].strtime));
 	}
@@ -878,7 +933,7 @@ static void fib_expose (Display *dpy, Window realwin) {
 #endif
 
 		XSetForeground (dpy, _fib_gc, _c_gray4.pixel);
-		XDrawString (dpy, win, _fib_gc, (FAREAMRGB + TEXTSEP) * _scalefactor, ttop, "Places", 6);
+		fib_draw_string (dpy, win, _fib_gc, (FAREAMRGB + TEXTSEP) * _scalefactor, ttop, "Places", 6);
 
 		XRectangle pclip = {(FAREAMRGB + 1) * _scalefactor, ltop, PLACESW - (TEXTSEP + 1) * _scalefactor, fsel_height};
 		XSetClipRectangles (dpy, _fib_gc, 0, 0, &pclip, 1, Unsorted);
@@ -890,7 +945,7 @@ static void fib_expose (Display *dpy, Window realwin) {
 				XFillRectangle (dpy, win, _fib_gc, FAREAMRGB * _scalefactor, ltop + i * _fib_font_vsep, PLACESW - TEXTSEP * _scalefactor, _fib_font_vsep);
 			}
 			XSetForeground (dpy, _fib_gc, _c_gray4.pixel);
-			XDrawString (dpy, win, _fib_gc,
+			fib_draw_string (dpy, win, _fib_gc,
 					plx, ply,
 					_placelist[i].name, strlen (_placelist[i].name));
 			if (_placelist[i].flags & 4) {
@@ -939,7 +994,7 @@ static void fib_expose (Display *dpy, Window realwin) {
 					bx, cby0 - 1, cbox + 1, cbox + 1);
 
 			XSetForeground (dpy, _fib_gc, _c_gray4.pixel);
-			XDrawString (dpy, win, _fib_gc, BTNPADDING * _scalefactor + bx + _fib_font_ascent, bbase + (BTNPADDING + 1) * _scalefactor,
+			fib_draw_string (dpy, win, _fib_gc, BTNPADDING * _scalefactor + bx + _fib_font_ascent, bbase + (BTNPADDING + 1) * _scalefactor,
 					_btns[i]->text, strlen (_btns[i]->text));
 
 			if (i == _hov_b) {
@@ -991,7 +1046,7 @@ static void fib_expose (Display *dpy, Window realwin) {
 					bx, bbase - _fib_font_ascent,
 					_btn_w, _fib_font_height + BTNPADDING * 2 * _scalefactor);
 			XSetForeground (dpy, _fib_gc, _c_gray4.pixel);
-			XDrawString (dpy, win, _fib_gc, bx + (_btn_w - _btns[i]->tw) * .5, 1 + bbase + BTNPADDING * _scalefactor,
+			fib_draw_string (dpy, win, _fib_gc, bx + (_btn_w - _btns[i]->tw) * .5, 1 + bbase + BTNPADDING * _scalefactor,
 					_btns[i]->text, strlen (_btns[i]->text));
 		}
 		_btns[i]->x0 = bx;
@@ -1065,13 +1120,13 @@ static int cmp_s_down (const void *p1, const void *p2) {
 }
 
 static void fmt_size (Display *dpy, FibFileEntry *f) {
-	if (f->size > 10995116277760) {
+	if (f->size > 10995116277760ULL) {
 		sprintf (f->strsize, "%.0f TB", f->size / 1099511627776.f);
 	}
-	if (f->size > 1099511627776) {
+	else if (f->size > 1099511627776ULL) {
 		sprintf (f->strsize, "%.1f TB", f->size / 1099511627776.f);
 	}
-	else if (f->size > 10737418240) {
+	else if (f->size > 10737418240ULL) {
 		sprintf (f->strsize, "%.0f GB", f->size / 1073741824.f);
 	}
 	else if (f->size > 1073741824) {
@@ -1195,7 +1250,7 @@ static void fib_post_opendir (Display *dpy, const char *sel) {
 
 static int fib_dirlistadd (Display *dpy, const int i, const char* path, const char *name, time_t mtime) {
 	char tp[1024];
-	struct stat fs;
+	sofd_stat_t fs;
 	if (!_fib_hidden_fn && name[0] == '.') return -1;
 	if (!strcmp (name, ".")) return -1;
 	if (!strcmp (name, "..")) return -1;
@@ -1204,7 +1259,7 @@ static int fib_dirlistadd (Display *dpy, const int i, const char* path, const ch
 	if (access (tp, R_OK)) {
 		return -1;
 	}
-	if (stat (tp, &fs)) {
+	if (sofd_stat (tp, &fs)) {
 		return -1;
 	}
 	assert (i < _dircount); // could happen if dir changes while we're reading.
@@ -1225,7 +1280,7 @@ static int fib_dirlistadd (Display *dpy, const int i, const char* path, const ch
 	}
 	strcpy (_dirlist[i].name, name);
 	_dirlist[i].mtime = mtime > 0 ? mtime : fs.st_mtime;
-	_dirlist[i].size = fs.st_size;
+	_dirlist[i].size = (uint64_t) fs.st_size;
 	if (!(_dirlist[i].flags & 4))
 		fmt_size (dpy, &_dirlist[i]);
 	fmt_time (dpy, &_dirlist[i]);
@@ -1282,14 +1337,14 @@ static int fib_opendir (Display *dpy, const char* path, const char *sel) {
 		strcpy (_cur_path, "/");
 	} else {
 		int i;
-		struct dirent *de;
+		sofd_dirent_t *de;
 		if (path != _cur_path)
 			strcpy (_cur_path, path);
 
 		if (_cur_path[strlen (_cur_path) -1] != '/')
 			strcat (_cur_path, "/");
 
-		while ((de = readdir (dir))) {
+		while ((de = sofd_readdir (dir))) {
 			if (!_fib_hidden_fn && de->d_name[0] == '.') continue;
 			++_dircount;
 		}
@@ -1300,7 +1355,7 @@ static int fib_opendir (Display *dpy, const char* path, const char *sel) {
 		rewinddir (dir);
 
 		i = 0;
-		while ((de = readdir (dir))) {
+		while ((de = sofd_readdir (dir))) {
 			if (!fib_dirlistadd (dpy, i, _cur_path, de->d_name, 0))
 				++i;
 		}
@@ -1704,7 +1759,7 @@ static void add_place_raw (Display *dpy, const char *name, const char *path) {
 
 static int add_place_places (Display *dpy, const char *name, const char *url) {
 	char const * path;
-	struct stat fs;
+	sofd_stat_t fs;
 	int i;
 	if (!url || strlen (url) < 1) return -1;
 	if (!name || strlen (name) < 1) return -1;
@@ -1721,7 +1776,7 @@ static int add_place_places (Display *dpy, const char *name, const char *url) {
 	if (access (path, R_OK)) {
 		return -1;
 	}
-	if (stat (path, &fs)) {
+	if (sofd_stat (path, &fs)) {
 		return -1;
 	}
 	if (!S_ISDIR (fs.st_mode)) {
@@ -1921,6 +1976,49 @@ static int x_error_handler (Display *d, XErrorEvent *e) {
 	(void)d; (void)e;
 }
 
+#ifdef X_HAVE_UTF8_STRING
+/* Create a font set for drawing UTF-8 text, from the core font picked in
+ * x_fib_show plus a generic fallback of the same pixel size for the character
+ * sets that font does not cover.
+ *
+ * A font set covers the character sets of the locale it is created in, and
+ * keeps using that locale's converters afterwards. The locale is left as the
+ * host set it: setlocale() is process-wide, and Xlib looks the locale up with
+ * setlocale(LC_CTYPE, NULL), which a thread-local uselocale() does not change.
+ * Under a UTF-8 LC_CTYPE every installed charset can be drawn; under "C" the
+ * set covers ISO 8859-1, so Latin-1 names still draw correctly and others
+ * fall back to the font set's default string. If no set can be created at
+ * all, or it cannot draw plain ASCII, the caller keeps the core font. Glyphs
+ * from character sets no installed font covers are left out (see
+ * XCreateFontSet's def_string). */
+static XFontSet fib_create_fontset (Display *dpy, const char *fontname, int pixelsize) {
+	char base[512];
+	if (fontname) {
+		snprintf (base, sizeof(base), "%s,-*-*-medium-r-normal-*-%d-*-*-*-*-*-*-*,-*-*-*-*-*-*-%d-*-*-*-*-*-*-*",
+				fontname, pixelsize, pixelsize);
+	} else {
+		snprintf (base, sizeof(base), "-*-*-medium-r-normal-*-%d-*-*-*-*-*-*-*,-*-*-*-*-*-*-%d-*-*-*-*-*-*-*",
+				pixelsize, pixelsize);
+	}
+
+	XFontSet fs = NULL;
+	if (XSupportsLocale ()) {
+		char **missing = NULL;
+		int nmissing = 0;
+		char *defstr = NULL;
+		fs = XCreateFontSet (dpy, base, &missing, &nmissing, &defstr);
+		if (missing) XFreeStringList (missing);
+	}
+
+	// make sure the set can draw plain text, or keep the core font
+	if (fs && Xutf8TextEscapement (fs, "|0Yy", 4) <= 0) {
+		XFreeFontSet (dpy, fs);
+		fs = NULL;
+	}
+	return fs;
+}
+#endif
+
 int x_fib_show (Display *dpy, Window parent, int x, int y, double scalefactor) {
 	if (_fib_win) {
 		XSetInputFocus (dpy, _fib_win, RevertToParent, CurrentTime);
@@ -1980,9 +2078,13 @@ int x_fib_show (Display *dpy, Window parent, int x, int y, double scalefactor) {
 
 	int (*handler)(Display *, XErrorEvent *) = XSetErrorHandler (&x_error_handler);
 
+	const char *fontname = NULL;
+	int fontpx;
+
 #define _XTESTFONT(FN) \
 	{ \
 		font_err = 0; \
+		fontname = FN; \
 		_fibfont = XLoadFont (dpy, FN); \
 		XSetFont (dpy, _fib_gc, _fibfont); \
 		XSync (dpy, False); \
@@ -1992,29 +2094,42 @@ int x_fib_show (Display *dpy, Window parent, int x, int y, double scalefactor) {
 	if (getenv ("XJFONT")) _XTESTFONT (getenv ("XJFONT"));
 	if (font_err && strlen (_fib_cfg_custom_font) > 0) _XTESTFONT (_fib_cfg_custom_font);
 	if (scalefactor >= 2.5) {
+		fontpx = 18;
 		if (font_err) _XTESTFONT ("-*-helvetica-medium-r-normal-*-18-*-*-*-*-*-*-*");
 		if (font_err) _XTESTFONT ("-*-verdana-medium-r-normal-*-18-*-*-*-*-*-*-*");
 		if (font_err) _XTESTFONT ("-misc-fixed-medium-r-normal-*-20-*-*-*-*-*-*-*");
 		if (font_err) _XTESTFONT ("-misc-fixed-medium-r-normal-*-18-*-*-*-*-*-*-*");
 	} else if (scalefactor >= 2) {
+		fontpx = 16;
 		if (font_err) _XTESTFONT ("-*-helvetica-medium-r-normal-*-16-*-*-*-*-*-*-*");
 		if (font_err) _XTESTFONT ("-*-verdana-medium-r-normal-*-16-*-*-*-*-*-*-*");
 		if (font_err) _XTESTFONT ("-misc-fixed-medium-r-normal-*-18-*-*-*-*-*-*-*");
 		if (font_err) _XTESTFONT ("-misc-fixed-medium-r-normal-*-16-*-*-*-*-*-*-*");
     } else if (scalefactor >= 1.5) {
+		fontpx = 14;
 		if (font_err) _XTESTFONT ("-*-helvetica-medium-r-normal-*-14-*-*-*-*-*-*-*");
 		if (font_err) _XTESTFONT ("-*-verdana-medium-r-normal-*-14-*-*-*-*-*-*-*");
 		if (font_err) _XTESTFONT ("-misc-fixed-medium-r-normal-*-15-*-*-*-*-*-*-*");
 		if (font_err) _XTESTFONT ("-misc-fixed-medium-r-normal-*-14-*-*-*-*-*-*-*");
 	} else {
+		fontpx = 12;
 		if (font_err) _XTESTFONT ("-*-helvetica-medium-r-normal-*-12-*-*-*-*-*-*-*");
 		if (font_err) _XTESTFONT ("-*-verdana-medium-r-normal-*-12-*-*-*-*-*-*-*");
 		if (font_err) _XTESTFONT ("-misc-fixed-medium-r-normal-*-13-*-*-*-*-*-*-*");
 		if (font_err) _XTESTFONT ("-misc-fixed-medium-r-normal-*-12-*-*-*-*-*-*-*");
 	}
-	if (font_err) _fibfont = None;
+	if (font_err) {
+		_fibfont = None;
+		fontname = NULL;
+	}
 	XSync (dpy, False);
 	XSetErrorHandler (handler);
+
+#ifdef X_HAVE_UTF8_STRING
+	_fibfontset = fib_create_fontset (dpy, fontname, fontpx);
+#else
+	(void)fontname; (void)fontpx;
+#endif
 
 	if (_fib_font_height == 0) { // 1st time only
 		query_font_geometry (dpy, _fib_gc, "D ", &_fib_dir_indent, NULL, NULL, NULL);
@@ -2137,6 +2252,10 @@ void x_fib_close (Display *dpy) {
 	_pathbtn = NULL;
 	if (_fibfont != None) XUnloadFont (dpy, _fibfont);
 	_fibfont = None;
+#ifdef X_HAVE_UTF8_STRING
+	if (_fibfontset) XFreeFontSet (dpy, _fibfontset);
+	_fibfontset = NULL;
+#endif
 	free (_placelist);
 	_placelist = NULL;
 	_dircount = 0;

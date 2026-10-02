@@ -93,6 +93,21 @@ VST2 program support requires saving state of all programs in memory, which is v
 Although VST3 officially supports CV (Control Voltage) tagged audio ports,
 at the moment no host supports such feature and thus it is not possible to validate it.
 
+## VST3 class IDs across platforms
+
+By default a DAF VST3 has a different class ID string on Windows than on Linux and macOS.
+DAF writes the same 16 class ID bytes everywhere, but on Windows the VST3 SDK reads the first 8 of
+them as the fields of a COM GUID, which byte-swaps them in the string. A project saved on Windows
+then cannot find the plugin on Linux or macOS, and vice versa. CLAP, VST2 and AU are not affected.
+
+Defining `DAF_VST3_CROSS_PLATFORM_UID` in `DafPluginInfo.h` lays the Windows class IDs out so that
+their string matches the one on Linux and macOS. It is off by default, and recommended for new
+plugins only:
+
+> **Warning:** turning `DAF_VST3_CROSS_PLATFORM_UID` on changes the Windows class IDs of a plugin
+> that has already shipped. Every existing Windows session using it stops finding the plugin.
+> Linux and macOS class IDs are the same with or without it.
+
 ## AU host-resize
 
 AU v2 has no size negotiation of its own: the host simply resizes the view the plugin handed it,

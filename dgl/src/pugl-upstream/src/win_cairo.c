@@ -68,8 +68,11 @@ puglWinCairoClose(PuglView* view)
   PuglInternals* const       impl    = view->impl;
   PuglWinCairoSurface* const surface = (PuglWinCairoSurface*)impl->surface;
 
+  // The context holds a reference to the surface, so release it first
+  cairo_destroy(surface->cr);
   cairo_surface_destroy(surface->surface);
 
+  surface->cr      = NULL;
   surface->surface = NULL;
 }
 
@@ -83,6 +86,7 @@ puglWinCairoOpen(PuglView* view)
       cairo_surface_status(surface->surface) ||
       !(surface->cr = cairo_create(surface->surface)) ||
       cairo_status(surface->cr)) {
+    puglWinCairoClose(view);
     return PUGL_CREATE_CONTEXT_FAILED;
   }
 
@@ -106,8 +110,9 @@ puglWinCairoEnter(PuglView* view, const PuglExposeEvent* expose)
 {
   PuglStatus st = PUGL_SUCCESS;
 
-  if (expose && !(st = puglWinCairoCreateDrawContext(view))) {
-    st = puglWinCairoOpen(view);
+  if (expose && !(st = puglWinCairoCreateDrawContext(view)) &&
+      (st = puglWinCairoOpen(view))) {
+    puglWinCairoDestroyDrawContext(view);
   }
 
   return st ? st : puglWinEnter(view, expose);

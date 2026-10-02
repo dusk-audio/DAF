@@ -90,6 +90,8 @@ public:
 
    /**
       Change global font size.
+      This rebuilds the font atlas with only the default font at the new size, which destroys any
+      font the subclass added; the subclass must add those again afterwards.
     */
     void setFontSize(float fontSize);
 
@@ -106,6 +108,18 @@ protected:
       the font atlas at a new size (io.Fonts->Clear() / AddFont... / Build(),
       then rebuildFontTexture()): inside onImGuiDisplay the draw lists and the
       font stack already hold ImFont pointers into the old atlas.
+
+      When the window's scale factor has changed since the last frame, this widget has already
+      followed it before this is called:
+      - The style sizes (those ImGuiStyle::ScaleAllSizes scales) are rescaled from the old factor
+        to the new one, including sizes the subclass set; colours and every other style setting
+        are left alone. Scaling starts from the sizes as the subclass last set them rather than
+        from the previous result, so repeated changes do not drift.
+      - The font atlas is rebuilt at the new factor only if it holds nothing but the default font
+        this widget added (from the constructor or setFontSize()). As soon as the subclass adds or
+        merges a font of its own, the atlas is left alone, so its ImFont pointers stay valid; it
+        is then up to the subclass to rebuild its fonts here when getScaleFactor() differs from
+        the factor it built them for, and to call rebuildFontTexture().
       The default implementation does nothing.
     */
     virtual void onImGuiPrepareFrame() {}

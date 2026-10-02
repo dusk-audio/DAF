@@ -21,6 +21,8 @@
 #include "Sleep.hpp"
 #include "String.hpp"
 
+#include <atomic>
+
 #ifdef DAF_OS_LINUX
 # include <sys/prctl.h>
 #endif
@@ -43,12 +45,15 @@ protected:
     Thread(const char* const threadName = nullptr) noexcept
         : fLock(),
           fSignal(),
+          fHandleSignal(),
           fName(threadName),
          #ifdef PTW32_DLLPORT
           fHandle({nullptr, 0}),
          #else
           fHandle(0),
          #endif
+          fRunToken(0),
+          fLastRunToken(0),
           fShouldExit(false) {}
 
     /*
@@ -74,11 +79,7 @@ public:
      */
     bool isThreadRunning() const noexcept
     {
-       #ifdef PTW32_DLLPORT
-        return (fHandle.p != nullptr);
-       #else
-        return (fHandle != 0);
-       #endif
+        return fRunToken.load(std::memory_order_acquire) != 0;
     }
 
     /*
@@ -86,7 +87,7 @@ public:
      */
     bool shouldThreadExit() const noexcept
     {
-        return fShouldExit;
+        return fShouldExit.load(std::memory_order_acquire);
     }
 
     /*
@@ -137,7 +138,15 @@ public:
 
         const MutexLocker ml(fLock);
 
-        fShouldExit = false;
+        fShouldExit.store(false, std::memory_order_release);
+
+        // Mark the thread as running before it exists, so that a thread which finishes
+        // straight away cannot have its "done" overwritten by a late "running" from here.
+        // Every run gets its own non-zero token: an abandoned thread (see stopThread) that
+        // finishes later only clears the token it was started with, never a newer run's.
+        if (++fLastRunToken == 0)
+            ++fLastRunToken;
+        fRunToken.store(fLastRunToken, std::memory_order_release);
 
         bool ok = pthread_create(&handle, &attr, _entryPoint, this) == 0;
         pthread_attr_destroy(&attr);
@@ -150,14 +159,19 @@ public:
             pthread_attr_destroy(&attr);
        }
 
-        DAF_SAFE_ASSERT_RETURN(ok, false);
-       #ifdef PTW32_DLLPORT
-        DAF_SAFE_ASSERT_RETURN(handle.p != nullptr, false);
-       #else
-        DAF_SAFE_ASSERT_RETURN(handle != 0, false);
-       #endif
+        if (! ok)
+        {
+            fRunToken.store(0, std::memory_order_release);
+            d_safe_assert("ok", __FILE__, __LINE__);
+            return false;
+        }
+
+        // publish the handle, then let the new thread proceed past its entry point;
+        // the signal orders this write before anything the thread does in run().
+        fHandle = handle;
+        fHandleSignal.signal();
+
         pthread_detach(handle);
-        _copyFrom(handle);
 
         // wait for thread to start
         fSignal.wait();
@@ -203,12 +217,10 @@ public:
                 // should never happen!
                 d_stderr2("assertion failure: \"! isThreadRunning()\" in file %s, line %i", __FILE__, __LINE__);
 
-                // copy thread id so we can clear our one
-                pthread_t threadId;
-                _copyTo(threadId);
-                _init();
-
-                pthread_detach(threadId);
+                // give up on the thread: it is already detached, so just stop tracking it.
+                // Clearing the token (rather than letting the thread do it) allows a restart,
+                // and the thread's own exit will leave a newer run's token alone.
+                fRunToken.store(0, std::memory_order_release);
                 return false;
             }
         }
@@ -221,7 +233,7 @@ public:
      */
     void signalThreadShouldExit() noexcept
     {
-        fShouldExit = true;
+        fShouldExit.store(true, std::memory_order_release);
     }
 
     // -------------------------------------------------------------------
@@ -236,11 +248,20 @@ public:
     }
 
     /*
-     * Returns the Id/handle of the thread.
+     * Returns the Id/handle of the thread, or a null handle if the thread is not running.
+     * The handle is written only by startThread(), so this must not race with a startThread() call.
      */
     pthread_t getThreadId() const noexcept
     {
-        return fHandle;
+        if (isThreadRunning())
+            return fHandle;
+
+       #ifdef PTW32_DLLPORT
+        const pthread_t nullHandle = {nullptr, 0};
+        return nullHandle;
+       #else
+        return 0;
+       #endif
     }
 
     /*
@@ -289,56 +310,26 @@ public:
     // -------------------------------------------------------------------
 
 private:
-    Mutex              fLock;       // Thread lock
-    Signal             fSignal;     // Thread start wait signal
-    const String       fName;       // Thread name
-    volatile pthread_t fHandle;     // Handle for this thread
-    volatile bool      fShouldExit; // true if thread should exit
-
-    /*
-     * Init pthread type.
-     */
-    void _init() noexcept
-    {
-       #ifdef PTW32_DLLPORT
-        fHandle.p = nullptr;
-        fHandle.x = 0;
-       #else
-        fHandle = 0;
-       #endif
-    }
-
-    /*
-     * Copy our pthread type from another var.
-     */
-    void _copyFrom(const pthread_t& handle) noexcept
-    {
-       #ifdef PTW32_DLLPORT
-        fHandle.p = handle.p;
-        fHandle.x = handle.x;
-       #else
-        fHandle = handle;
-       #endif
-    }
-
-    /*
-     * Copy our pthread type to another var.
-     */
-    void _copyTo(volatile pthread_t& handle) const noexcept
-    {
-       #ifdef PTW32_DLLPORT
-        handle.p = fHandle.p;
-        handle.x = fHandle.x;
-       #else
-        handle = fHandle;
-       #endif
-    }
+    Mutex                 fLock;          // Thread lock, serialises startThread() and stopThread()
+    Signal                fSignal;        // Thread start wait signal
+    Signal                fHandleSignal;  // Handle published, the new thread may proceed
+    const String          fName;          // Thread name
+    pthread_t             fHandle;        // Handle for this thread, written by startThread() only
+    std::atomic<uint32_t> fRunToken;      // non-zero while running, unique per run
+    uint32_t              fLastRunToken;  // last token handed out, guarded by fLock
+    std::atomic<bool>     fShouldExit;    // true if thread should exit
 
     /*
      * Thread entry point.
      */
     void _runEntryPoint() noexcept
     {
+        // wait until startThread() has stored our handle
+        fHandleSignal.wait();
+
+        // startThread() holds fLock until we report ready, so this is our own run's token
+        uint32_t runToken = fRunToken.load(std::memory_order_acquire);
+
         if (fName.isNotEmpty())
             setCurrentThreadName(fName);
 
@@ -349,8 +340,9 @@ private:
             run();
         } catch(...) {}
 
-        // done
-        _init();
+        // done. Only clear our own token, stopThread() may have given up on us and started anew.
+        // This must be the last access to *this, the owner may destroy us as soon as it sees it.
+        fRunToken.compare_exchange_strong(runToken, 0, std::memory_order_acq_rel, std::memory_order_relaxed);
     }
 
     /*

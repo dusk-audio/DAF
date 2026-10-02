@@ -116,6 +116,7 @@ Window::PrivateData::PrivateData(Application& a, Window* const s)
       followsPuglScaleFactor(true),
       usesScheduledRepaints(false),
       usesSizeRequest(false),
+      grabsFocusOnClick(false),
       scaleFactor(DGL_NAMESPACE::getScaleFactor(view)),
       autoScaling(false),
       autoScaleFactor(1.0),
@@ -153,6 +154,7 @@ Window::PrivateData::PrivateData(Application& a, Window* const s, PrivateData* c
       followsPuglScaleFactor(ppData->followsPuglScaleFactor),
       usesScheduledRepaints(false),
       usesSizeRequest(false),
+      grabsFocusOnClick(false),
       scaleFactor(ppData->scaleFactor),
       autoScaling(false),
       autoScaleFactor(1.0),
@@ -192,6 +194,7 @@ Window::PrivateData::PrivateData(Application& a, Window* const s,
       followsPuglScaleFactor(d_isZero(scale)),
       usesScheduledRepaints(false),
       usesSizeRequest(false),
+      grabsFocusOnClick(false),
       scaleFactor(scale != 0.0 ? scale : DGL_NAMESPACE::getScaleFactor(view)),
       autoScaling(false),
       autoScaleFactor(1.0),
@@ -234,6 +237,7 @@ Window::PrivateData::PrivateData(Application& a, Window* const s,
       followsPuglScaleFactor(d_isZero(scale)),
       usesScheduledRepaints(_usesScheduledRepaints),
       usesSizeRequest(_usesSizeRequest),
+      grabsFocusOnClick(false),
       scaleFactor(scale != 0.0 ? scale : DGL_NAMESPACE::getScaleFactor(view)),
       autoScaling(false),
       autoScaleFactor(1.0),
@@ -466,6 +470,49 @@ void Window::PrivateData::setResizable(const bool resizable)
     DGL_DBG("Window setResizable called\n");
 
     puglSetResizable(view, resizable);
+}
+
+// -----------------------------------------------------------------------
+
+bool Window::PrivateData::setScaleFactor(const double newScaleFactor)
+{
+    DAF_SAFE_ASSERT_RETURN(newScaleFactor > 0.0, false);
+
+    /* The host now owns the scale factor. Stop following pugl's, or the next configure event
+       (Wayland) would put pugl's factor back and report a second change while the window keeps
+       the host-scaled size. This applies even when the factor is unchanged: it is still the
+       host's choice from here on. */
+    followsPuglScaleFactor = false;
+
+    if (d_isEqual(scaleFactor, newScaleFactor))
+        return false;
+
+    const double oldScaleFactor = scaleFactor;
+    scaleFactor = newScaleFactor;
+
+    /* An auto-scaling window is sized as its unscaled minimum times the scale factor, and pugl was
+       handed that product as the minimum size. Both now carry the old factor: rescale them by the
+       ratio between the two factors, so it lands exactly once whatever size the user left the
+       window at. The configure event that follows derives autoScaleFactor from the new size.
+       Windows that do not auto-scale leave their size to the application, which is told about the
+       new factor through onScaleFactorChanged below. */
+    if (autoScaling && view != nullptr && minWidth != 0 && minHeight != 0 && d_isNotZero(oldScaleFactor))
+    {
+        puglSetGeometryConstraints(view,
+                                   d_roundToUnsignedInt(minWidth * newScaleFactor),
+                                   d_roundToUnsignedInt(minHeight * newScaleFactor),
+                                   keepAspectRatio);
+
+        const double ratio = newScaleFactor / oldScaleFactor;
+        const Size<uint> size(self->getSize());
+
+        if (size.isValid())
+            self->setSize(d_roundToUnsignedInt(size.getWidth() * ratio),
+                          d_roundToUnsignedInt(size.getHeight() * ratio));
+    }
+
+    self->onScaleFactorChanged(scaleFactor);
+    return true;
 }
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -1140,8 +1187,9 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
         {
            #if defined(DGL_USING_X11)
             puglX11ForwardKeyToParent(view, ev.press, event->key.keycode, event->key.state, ev.time);
-           #elif defined(DAF_OS_MAC)
-            // The Cocoa view passes the NSEvent up its responder chain on this status.
+           #elif defined(DAF_OS_MAC) || defined(DAF_OS_WINDOWS)
+            // The Cocoa view passes the NSEvent up its responder chain on this status,
+            // and the Win32 view sends the key message on to the host's top-level window.
             return PUGL_UNSUPPORTED;
            #endif
         }
@@ -1191,6 +1239,20 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
             ev.pos = Point<double>(event->button.x, event->button.y);
         }
         ev.absolutePos = ev.pos;
+
+       #ifdef DAF_OS_WINDOWS
+        // Win32 never gives a child window the keyboard on a click, and a CLAP or VST2 host has no
+        // focus API to do it either, so an embedded UI would never see a key. Where the plugin
+        // wrapper asked for it (grabsFocusOnClick), take the focus on a primary click, as a native
+        // control would; keys the UI does not use still go to the host, see PUGL_KEY_PRESS above.
+        // Elsewhere the focus stays the host's to give, VST3 having IPlugView::onFocus for it.
+        // Done before dispatching, so a modal child that claims the focus back in onPuglMouse
+        // keeps it.
+        if (ev.press && event->button.button == 0 && pData->isEmbed && pData->grabsFocusOnClick
+            && ! puglHasFocus(view))
+            puglGrabFocus(view);
+       #endif
+
         pData->onPuglMouse(ev);
         break;
     }

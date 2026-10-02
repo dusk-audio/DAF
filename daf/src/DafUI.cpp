@@ -87,10 +87,9 @@ START_NAMESPACE_DAF
 /* ------------------------------------------------------------------------------------------------------------
  * get global scale factor */
 
-#ifdef DAF_OS_MAC
-double getDesktopScaleFactor(uintptr_t parentWindowHandle);
-#else
-static double getDesktopScaleFactor(const uintptr_t parentWindowHandle)
+// declared in DafUIPrivateData.hpp, defined in DafUI_macOS.mm on macOS
+#ifndef DAF_OS_MAC
+double getDesktopScaleFactor(const uintptr_t parentWindowHandle)
 {
     // allow custom scale for testing
     if (const char* const scale = getenv("DAF_SCALE_FACTOR"))

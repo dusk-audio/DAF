@@ -278,6 +278,9 @@ START_NAMESPACE_DGL
 #  pragma GCC diagnostic push
 #  pragma GCC diagnostic ignored "-Wsign-conversion"
 # endif
+// Nothing in DGL reads PUGL_REFRESH_RATE, and the XRRGetScreenInfo query that fills it in on realize
+// can make the X server re-probe its outputs, delaying every UI open by up to hundreds of ms.
+# define USE_XRANDR 0
 # include "pugl-upstream/src/x11.c"
 # if defined(__GNUC__) && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 6))
 #  pragma GCC diagnostic pop

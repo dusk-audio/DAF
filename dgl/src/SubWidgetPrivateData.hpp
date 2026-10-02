@@ -26,7 +26,7 @@ START_NAMESPACE_DGL
 struct SubWidget::PrivateData {
     SubWidget* const self;
     Widget* const selfw;
-    Widget* const parentWidget;
+    Widget* parentWidget; // nulled if the parent widget is destroyed first
     Point<int> absolutePos;
     Point<int> margin;
     bool needsFullViewportForDrawing; // needed for widgets drawing out of bounds

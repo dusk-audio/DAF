@@ -358,10 +358,17 @@ public:
       You can add more than one, and remove them at anytime with removeIdleCallback().
       This can be used to perform some action at a regular interval with relatively low frequency.
 
-      Callbacks must be removed with removeIdleCallback() before the callback
-      object is destroyed. Callbacks with timer frequency 0 are registered on
-      the Application, and the Window destructor does not remove them, so a
-      forgotten callback will dangle.
+      If providing a timer frequency, there are a few things to note:
+       1. There is a platform-specific limit to the number of supported timers, and overhead associated with each,
+          so you should create only a few timers and perform several tasks in one if necessary.
+       2. This timer frequency is not guaranteed to have a resolution better than 10ms
+          (the maximum timer resolution on Windows) and may be rounded up if it is too short.
+          On X11 and MacOS, a resolution of about 1ms can usually be relied on.
+
+      The callback is not owned or tracked beyond this, so it MUST be removed with removeIdleCallback()
+      before the callback object is destroyed, and while this window still exists.
+      A callback without a timer frequency is registered on the Application rather than on this window,
+      and destroying the window does not remove it, so a forgotten one is called through a dangling pointer.
     */
     bool addIdleCallback(IdleCallback* callback, uint timerFrequencyInMs = 0);
 

@@ -29,12 +29,22 @@ endif
 # ---------------------------------------------------------------------------------------------------------------------
 
 MANUAL_TESTS  =
-UNIT_TESTS    = AudioUnitBufferList Color Point
+UNIT_TESTS    = AudioUnitBufferList Color ImGuiKnobs Point StateParser
+
+# ImGuiKnobs builds Dear ImGui itself, headless, and includes the knobs the way DearImGui.cpp does.
+../build/tests/ImGuiKnobs.cpp.o: BUILD_CXX_FLAGS += -I../widgets/imgui
 
 # Build-time checks: the object compiling is the test, so it is never linked or run.
 # StaticTarget is compiled as a plugin, so it needs a DafPluginInfo.h of its own.
 BUILD_CHECKS  = StaticTarget
 ../build/tests/StaticTarget.cpp.o: BUILD_CXX_FLAGS += -Istatic-target
+
+# format wrappers compiled into the test, which then acts as the host (see plugin-wrappers/)
+WRAPPER_TESTS = CLAPWrapper LADSPAWrapper LV2Wrapper VST2Wrapper VST3Wrapper
+../build/tests/%Wrapper.cpp.o: BUILD_CXX_FLAGS += -Iplugin-wrappers -I../daf
+ifeq ($(LINUX),true)
+../build/tests/%Wrapper$(APP_EXT): LINK_FLAGS += -ldl
+endif
 
 ifeq ($(HAVE_CAIRO),true)
 MANUAL_TESTS += Demo.cairo
@@ -48,14 +58,18 @@ MANUAL_TESTS += NanoSubWidgets
 endif
 
 ifneq ($(WASM),true)
-UNIT_TESTS   += Application
+UNIT_TESTS   += Application Thread
+UNIT_TESTS   += $(WRAPPER_TESTS)
 ifeq ($(HAVE_CAIRO),true)
 UNIT_TESTS   += Window.cairo
 endif
 ifeq ($(HAVE_OPENGL),true)
+UNIT_TESTS   += NanoSubWidgetsClip
 UNIT_TESTS   += Window.opengl
 endif
 ifeq ($(HAVE_STUB),true)
+UNIT_TESTS   += KnobEventHandler.stub
+UNIT_TESTS   += Widget.stub
 UNIT_TESTS   += Window.stub
 endif
 ifeq ($(HAVE_VULKAN),true)
@@ -185,6 +199,18 @@ clean:
 ../build/tests/NanoSubWidgets$(APP_EXT): ../build/tests/NanoSubWidgets.cpp.o ../build/libdgl-opengl.a
 	@echo "Linking NanoSubWidgets (OpenGL)"
 	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) $(OPENGL_LIBS) -o $@
+
+../build/tests/NanoSubWidgetsClip$(APP_EXT): ../build/tests/NanoSubWidgetsClip.cpp.o ../build/libdgl-opengl.a
+	@echo "Linking NanoSubWidgetsClip (OpenGL)"
+	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) $(OPENGL_LIBS) -o $@
+
+../build/tests/KnobEventHandler.stub$(APP_EXT): ../build/tests/KnobEventHandler.cpp.stub.o ../build/libdgl-stub.a
+	@echo "Linking KnobEventHandler (Stub)"
+	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) -o $@
+
+../build/tests/Widget.stub$(APP_EXT): ../build/tests/Widget.cpp.stub.o ../build/libdgl-stub.a
+	@echo "Linking Widget (Stub)"
+	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) -o $@
 
 # ---------------------------------------------------------------------------------------------------------------------
 

@@ -52,6 +52,19 @@ Widget::PrivateData::PrivateData(Widget* const s, Widget* const pw)
 
 Widget::PrivateData::~PrivateData()
 {
+    // detach any subwidgets that outlive us, so they do not keep pointers to freed memory.
+    // a detached subtree is no longer part of any top-level widget's tree, and that widget would not
+    // reach it to clear its pointer when destroyed later, so the subtree loses its top-level widget now
+    FOR_EACH_SUBWIDGET(it)
+    {
+        SubWidget* const subwidget(*it);
+
+        subwidget->pData->parentWidget = nullptr;
+        static_cast<Widget*>(subwidget)->pData->parentWidget = nullptr;
+
+        clearTopLevelWidget(subwidget);
+    }
+
     subWidgets.clear();
     std::free(name);
 }
@@ -232,11 +245,22 @@ void Widget::PrivateData::giveFocusChangedEventForSubWidgets(const FocusEvent& e
 
 TopLevelWidget* Widget::PrivateData::findTopLevelWidget(Widget* const pw)
 {
+    if (pw == nullptr)
+        return nullptr;
     if (pw->pData->topLevelWidget != nullptr)
         return pw->pData->topLevelWidget;
     if (pw->pData->parentWidget != nullptr)
         return findTopLevelWidget(pw->pData->parentWidget);
     return nullptr;
+}
+
+void Widget::PrivateData::clearTopLevelWidget(Widget* const w)
+{
+    PrivateData* const pData(w->pData);
+    pData->topLevelWidget = nullptr;
+
+    for (std::list<SubWidget*>::iterator it = pData->subWidgets.begin(); it != pData->subWidgets.end(); ++it)
+        clearTopLevelWidget(*it);
 }
 
 // -----------------------------------------------------------------------

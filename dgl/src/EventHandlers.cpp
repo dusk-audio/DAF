@@ -491,8 +491,10 @@ struct KnobEventHandler::PrivateData {
         if (d_isZero(movDiff))
             return true;
 
+        // valueTmp is in the log domain if usingLog, so convert it back before adding the linear delta
         const float divisor = (ev.mod & kModifierControl) ? accel * 10.f : accel;
-        valueTmp += (maximum - minimum) / divisor * static_cast<float>(movDiff);
+        valueTmp = (usingLog ? invlogscale(valueTmp) : valueTmp)
+                 + ((maximum - minimum) / divisor * static_cast<float>(movDiff));
 
         if (usingLog)
             valueTmp = logscale(valueTmp);
@@ -579,6 +581,12 @@ struct KnobEventHandler::PrivateData {
             {
                 const float rest = std::fmod(value2, step);
                 value2 = value2 - rest + (rest > step/2.0f ? step : 0.0f);
+
+                // rounding to the step can leave the range if its ends are not multiples of the step
+                if (value2 < minimum)
+                    value2 = minimum;
+                else if (value2 > maximum)
+                    value2 = maximum;
             }
         }
 

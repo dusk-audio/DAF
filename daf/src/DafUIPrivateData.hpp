@@ -81,6 +81,11 @@ START_NAMESPACE_DAF
 int daf_webview_start(int argc, char* argv[]);
 #endif
 
+/* Scale factor a UI window is created with when the host gave none (0), for the given parent window.
+   Defined in DafUI.cpp, or DafUI_macOS.mm on macOS. Plugin wrappers predicting the size of a UI that
+   does not exist yet must use the same factor. May return 0 where it cannot be known in advance. */
+double getDesktopScaleFactor(uintptr_t parentWindowHandle);
+
 // --------------------------------------------------------------------------------------------------------------------
 // Plugin Application, will set class name based on plugin details
 
@@ -147,6 +152,12 @@ public:
     {
         if (pData->view == nullptr)
             return;
+
+       #if defined(DAF_PLUGIN_TARGET_CLAP) || defined(DAF_PLUGIN_TARGET_VST2)
+        // These formats have no way for the host to hand the editor the keyboard focus, so on
+        // Windows the window takes it itself on a click. Other formats leave it to the host.
+        pData->grabsFocusOnClick = true;
+       #endif
 
         // this is called just before creating UI, ensuring proper context to it
         if (pData->initPost())
@@ -228,6 +239,12 @@ public:
         puglBackendEnter(pData->view);
         static_cast<DGL_NAMESPACE::Widget*>(ui)->setSize(widgetSize);
         puglBackendLeave(pData->view);
+    }
+
+    // scale factor given by the host after creation, returns false if unchanged
+    bool setScaleFactorFromHost(const double scaleFactor)
+    {
+        return pData->setScaleFactor(scaleFactor);
     }
 
     // used for temporary windows (VST/CLAP get size without active/visible view)

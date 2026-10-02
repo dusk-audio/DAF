@@ -37,6 +37,8 @@
  */
 
 #include "DafPluginInternal.hpp"
+#include "DafPluginStateParser.hpp"
+#include "DafPluginStateUpdates.hpp"
 #include "../DafPluginUtils.hpp"
 #include "../extra/ScopedPointer.hpp"
 
@@ -61,6 +63,13 @@
 #include <string>
 #include <vector>
 
+#if DAF_PLUGIN_WANT_STATE && DAF_VST3_USES_SEPARATE_CONTROLLER
+# include <ctime>
+# include <memory>
+# include <mutex>
+# include <random>
+#endif
+
 START_NAMESPACE_DAF
 
 // Optional block-control policy for ports preserving JUCE-style automation.
@@ -84,8 +93,76 @@ static constexpr const writeMidiFunc writeMidiCallback = nullptr;
 #if ! DAF_PLUGIN_WANT_PARAMETER_VALUE_CHANGE_REQUEST
 static constexpr const requestParameterValueChangeFunc requestParameterValueChangeCallback = nullptr;
 #endif
+#if ! DAF_PLUGIN_WANT_STATE
+static constexpr const updateStateValueFunc updateStateValueCallback = nullptr;
+#endif
 
 typedef std::map<const String, String> StringMap;
+
+#if DAF_PLUGIN_WANT_STATE && DAF_VST3_USES_SEPARATE_CONTROLLER
+// --------------------------------------------------------------------------------------------------------------------
+// "state updates pending" flags of the components in this process
+
+/* With a separate edit controller, Plugin::updateStateValue() values are queued on the component, which only gets
+ * to the main thread when the controller forwards it the view's idle. A component and its controller only talk
+ * through host messages and may even live in different processes, so the controller cannot simply look.
+ * Each component registers a flag here and sends its ID to the controller once, from the main thread. A controller
+ * in the same process finds the flag and forwards the idle only while it is set; one that cannot find it (another
+ * process) keeps forwarding every idle. Setting the flag is a lock-free atomic store, safe from any thread.
+ */
+class Vst3StateUpdateFlags
+{
+public:
+    typedef std::shared_ptr<std::atomic<bool>> Flag;
+
+    static int64_t add(const Flag& flag)
+    {
+        Registry& reg(registry());
+        const std::lock_guard<std::mutex> cml(reg.mutex);
+        // unique in this process, and random enough not to name a flag here when sent from another one
+        const int64_t id = static_cast<int64_t>(reg.salt + ++reg.counter);
+        reg.flags[id] = flag;
+        return id;
+    }
+
+    static void remove(const int64_t id)
+    {
+        Registry& reg(registry());
+        const std::lock_guard<std::mutex> cml(reg.mutex);
+        reg.flags.erase(id);
+    }
+
+    static Flag find(const int64_t id)
+    {
+        Registry& reg(registry());
+        const std::lock_guard<std::mutex> cml(reg.mutex);
+        const std::map<int64_t, Flag>::const_iterator it = reg.flags.find(id);
+        return it != reg.flags.end() ? it->second : Flag();
+    }
+
+private:
+    struct Registry {
+        std::mutex mutex;
+        std::map<int64_t, Flag> flags;
+        uint64_t salt;
+        uint64_t counter;
+
+        Registry()
+            : salt(0),
+              counter(0)
+        {
+            std::random_device rd;
+            salt = (static_cast<uint64_t>(rd()) << 32) ^ rd() ^ static_cast<uint64_t>(std::time(nullptr));
+        }
+    };
+
+    static Registry& registry()
+    {
+        static Registry reg;
+        return reg;
+    }
+};
+#endif
 
 // --------------------------------------------------------------------------------------------------------------------
 // custom v3_tuid compatible type
@@ -120,11 +197,36 @@ static constexpr const uint32_t daf_id_brand = d_cconst(STRINGIFY(DAF_PLUGIN_BRA
 static constexpr const uint32_t daf_id_brand = 0;
 #endif
 
-static daf_tuid daf_tuid_class = { daf_id_entry, daf_id_clas, 0, daf_id_brand };
-static daf_tuid daf_tuid_component = { daf_id_entry, daf_id_comp, 0, daf_id_brand };
-static daf_tuid daf_tuid_controller = { daf_id_entry, daf_id_ctrl, 0, daf_id_brand };
-static daf_tuid daf_tuid_processor = { daf_id_entry, daf_id_proc, 0, daf_id_brand };
-static daf_tuid daf_tuid_view = { daf_id_entry, daf_id_view, 0, daf_id_brand };
+// The uids are stored as four native (little-endian) words, so their bytes are the same everywhere.
+// The VST3 SDK reads the first 8 bytes of a uid as a COM GUID on Windows (a 32-bit and two 16-bit
+// little-endian fields), so by default the same plugin shows a different class id string on Windows
+// than elsewhere. DAF_VST3_CROSS_PLATFORM_UID swaps those fields on Windows so the string matches the
+// one on Linux and macOS. Off by default: it changes the Windows ids of already-shipped plugins.
+#if defined(DAF_VST3_CROSS_PLATFORM_UID) && V3_COM_COMPAT
+static inline constexpr
+uint32_t daf_tuid_guid_data1(const uint32_t v) noexcept
+{
+    return ((v & 0x000000ffU) << 24) | ((v & 0x0000ff00U) << 8) | ((v & 0x00ff0000U) >> 8) | ((v & 0xff000000U) >> 24);
+}
+
+static inline constexpr
+uint32_t daf_tuid_guid_data23(const uint32_t v) noexcept
+{
+    return ((v & 0x00ff00ffU) << 8) | ((v & 0xff00ff00U) >> 8);
+}
+
+# define DAF_TUID(kind) { daf_tuid_guid_data1(daf_id_entry), daf_tuid_guid_data23(kind), 0, daf_id_brand }
+#else
+# define DAF_TUID(kind) { daf_id_entry, kind, 0, daf_id_brand }
+#endif
+
+static daf_tuid daf_tuid_class = DAF_TUID(daf_id_clas);
+static daf_tuid daf_tuid_component = DAF_TUID(daf_id_comp);
+static daf_tuid daf_tuid_controller = DAF_TUID(daf_id_ctrl);
+static daf_tuid daf_tuid_processor = DAF_TUID(daf_id_proc);
+static daf_tuid daf_tuid_view = DAF_TUID(daf_id_view);
+
+#undef DAF_TUID
 
 // --------------------------------------------------------------------------------------------------------------------
 // Utility functions
@@ -631,7 +733,7 @@ class PluginVst3
 
 public:
     PluginVst3(v3_host_application** const host, const bool isComponent)
-        : fPlugin(this, writeMidiCallback, requestParameterValueChangeCallback, nullptr),
+        : fPlugin(this, writeMidiCallback, requestParameterValueChangeCallback, updateStateValueCallback),
           fComponentHandler(nullptr),
         #if DAF_PLUGIN_HAS_UI
          #if DAF_VST3_USES_SEPARATE_CONTROLLER
@@ -714,6 +816,17 @@ public:
             const String& dkey(fPlugin.getStateKey(i));
             fStateMap[dkey] = fPlugin.getStateDefaultValue(i);
         }
+
+       #if DAF_VST3_USES_SEPARATE_CONTROLLER
+        fStateUpdatesPendingId = 0;
+        fStateUpdatesPendingIdSent = false;
+
+        if (isComponent)
+        {
+            fStateUpdatesPending = std::make_shared<std::atomic<bool>>(false);
+            fStateUpdatesPendingId = Vst3StateUpdateFlags::add(fStateUpdatesPending);
+        }
+       #endif
        #endif
 
        #if !DAF_PLUGIN_HAS_UI
@@ -724,6 +837,11 @@ public:
 
     ~PluginVst3()
     {
+       #if DAF_PLUGIN_WANT_STATE && DAF_VST3_USES_SEPARATE_CONTROLLER
+        if (fStateUpdatesPendingId != 0)
+            Vst3StateUpdateFlags::remove(fStateUpdatesPendingId);
+       #endif
+
         if (fCachedParameterValues != nullptr)
         {
             delete[] fCachedParameterValues;
@@ -987,6 +1105,13 @@ public:
         else
             fPlugin.deactivateIfNeeded();
 
+       #if DAF_PLUGIN_WANT_STATE && ! DAF_PLUGIN_HAS_UI
+        // activate() is a common place for Plugin::updateStateValue(). With a UI, its idle takes the updates
+        // to the view and the host; without one this is the only main-thread call there is (the spec puts
+        // setActive on the UI thread), and with no view to message, only the "modified" flag is left to set.
+        applyStateUpdates();
+       #endif
+
         return V3_OK;
     }
 
@@ -998,160 +1123,76 @@ public:
      */
     v3_result setState(v3_bstream** const stream)
     {
+       #if DAF_PLUGIN_WANT_STATE
+        // settle earlier updates first, so they cannot overwrite the state being loaded
+        mergeStateUpdates();
+       #endif
+
        #if DAF_PLUGIN_HAS_UI
         const bool connectedToUI = fConnectionFromCtrlToView != nullptr && fConnectedToUI;
        #endif
         bool componentValuesChanged = false;
-        struct PendingState { char type; String key, value; };
-        std::vector<PendingState> pending;
-        String key, value;
-        bool empty = true;
-        bool hasValue = false;
-        bool fillingKey = true; // if filling key or value
-        char queryingType = 'i'; // can be 'n', 's' or 'p' (none, states, parameters)
+        PluginStateParser parser;
 
-        char buffer[512], orig;
-        buffer[sizeof(buffer)-1] = '\xff';
+        // 64 KiB per host call, on the heap; tokens spanning reads are joined by the parser
+        std::vector<char> buffer(65536);
         v3_result res;
 
-        for (int32_t terminated = 0, read; terminated == 0;)
+        for (bool terminated = false; ! terminated;)
         {
-            read = -1;
-            res = v3_cpp_obj(stream)->read(stream, buffer, sizeof(buffer)-1, &read);
+            int32_t read = -1;
+            res = v3_cpp_obj(stream)->read(stream, buffer.data(), static_cast<int32_t>(buffer.size()), &read);
             DAF_SAFE_ASSERT_INT_RETURN(res == V3_OK, res, res);
-            DAF_SAFE_ASSERT_INT_RETURN(read > 0, read, V3_INTERNAL_ERR);
+            DAF_SAFE_ASSERT_INT_RETURN(read >= 0 && read <= static_cast<int32_t>(buffer.size()), read, V3_INTERNAL_ERR);
 
             if (read == 0)
-                return empty ? V3_INVALID_ARG : V3_OK;
-
-            empty = false;
-            for (int32_t i = 0; i < read; ++i)
             {
-                // found terminator, stop here
-                if (buffer[i] == '\xfe')
-                {
-                    if ((queryingType != 'i' && queryingType != 'n' && queryingType != 'x')
-                        || !fillingKey || hasValue || !key.isEmpty() || !value.isEmpty())
-                        return V3_INVALID_ARG;
-                    terminated = 1;
+                // getState() has a fast path for plugins with no parameters and no states:
+                // it writes a single null byte and never emits the '\xfe' terminator.
+                // Accept exactly that stream here; an empty or genuinely truncated state still fails.
+                if (parser.isLoneEmptyKey())
                     break;
-                }
 
-                // store character at read position
-                orig = buffer[read];
+                return V3_INVALID_ARG;
+            }
 
-                // place null character to create valid string
-                buffer[read] = '\0';
-
-                // append to temporary vars
-                if (fillingKey)
-                {
-                    key += buffer + i;
-                }
-                else
-                {
-                    value += buffer + i;
-                    hasValue = true;
-                }
-
-                // increase buffer offset by length of string
-                i += std::strlen(buffer + i);
-
-                // restore read character
-                buffer[read] = orig;
-
-                // The null character placed above bounds strlen(), so the offset now points either at a real
-                // null inside the chunk or exactly at `read`. The latter means the string is cut in half by
-                // the chunk boundary and continues in the next read, so do not look at buffer[read] itself:
-                // that byte is past the valid data and holds stale or uninitialized garbage.
-                if (i != read)
-                {
-                    // special keys
-                    if (key == "__daf_state_begin__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i' || queryingType == 'n',
-                                                       queryingType, V3_INTERNAL_ERR);
-                        queryingType = 's';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-                    if (key == "__daf_state_end__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 's', queryingType, V3_INTERNAL_ERR);
-                        queryingType = 'n';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-                    if (key == "__daf_parameters_begin__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i' || queryingType == 'n',
-                                                       queryingType, V3_INTERNAL_ERR);
-                        queryingType = 'p';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-                    if (key == "__daf_parameters_end__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'p', queryingType, V3_INTERNAL_ERR);
-                        queryingType = 'x';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-
-                    // no special key, swap between reading real key and value
-                    fillingKey = !fillingKey;
-
-                    // if there is no value yet keep reading until we have one
-                    if (! hasValue)
-                        continue;
-
-                    if (key == "__daf_program__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i', queryingType, V3_INTERNAL_ERR);
-                        pending.push_back({queryingType, key, value});
-                        queryingType = 'n';
-                    }
-                    else pending.push_back({queryingType, key, value});
-
-                    key.clear();
-                    value.clear();
-                    hasValue = false;
-                }
+            std::size_t consumed = 0;
+            switch (parser.parse(buffer.data(), static_cast<std::size_t>(read), consumed))
+            {
+            case PluginStateParser::kStatusNeedMoreData:
+                break;
+            case PluginStateParser::kStatusTerminated:
+                terminated = true;
+                break;
+            case PluginStateParser::kStatusInvalidTerminator:
+                return V3_INVALID_ARG;
+            case PluginStateParser::kStatusInvalidSection:
+                return V3_INTERNAL_ERR;
             }
         }
 
         bool parameterSnapshot = false;
        #if DAF_PLUGIN_WANT_STATE
-        for (const auto& item : pending)
+        for (const PluginStateParser::Entry& item : parser.entries)
         {
-            if (item.type != 's' || !fPlugin.wantStateKey(item.key)) continue;
-            if (!fPlugin.validateStateValue(item.key, item.value)) return V3_INVALID_ARG;
-            parameterSnapshot = parameterSnapshot || fPlugin.isParameterSnapshotState(item.key);
+            if (item.type != 's' || !fPlugin.wantStateKey(item.key.c_str())) continue;
+            if (!fPlugin.validateStateValue(item.key.c_str(), item.value.c_str())) return V3_INVALID_ARG;
+            parameterSnapshot = parameterSnapshot || fPlugin.isParameterSnapshotState(item.key.c_str());
         }
        #endif
-        for (const auto& item : pending)
+        for (const PluginStateParser::Entry& item : parser.entries)
         {
-            key = item.key;
-            value = item.value;
-            queryingType = item.type;
-            if (parameterSnapshot && (queryingType == 'p' || key == "__daf_program__")) continue;
-                    if (key == "__daf_program__")
+            const char* const key = item.key.c_str();
+            const char* const value = item.value.c_str();
+            const char queryingType = item.type;
+            const bool isProgram = item.key == "__daf_program__";
+            if (parameterSnapshot && (queryingType == 'p' || isProgram)) continue;
+                    if (isProgram)
                     {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i', queryingType, V3_INTERNAL_ERR);
-                        queryingType = 'n';
-
-                        d_debug("found program '%s'", value.buffer());
+                        d_debug("found program '%s'", value);
 
                       #if DAF_PLUGIN_WANT_PROGRAMS
-                        const int program = std::atoi(value.buffer());
+                        const int program = std::atoi(value);
                         DAF_SAFE_ASSERT_CONTINUE(program >= 0);
 
                         fCurrentProgram = static_cast<uint32_t>(program);
@@ -1168,13 +1209,14 @@ public:
                     }
                     else if (queryingType == 's')
                     {
-                        d_debug("found state '%s' '%s'", key.buffer(), value.buffer());
+                        d_debug("found state '%s' '%s'", key, value);
 
                        #if DAF_PLUGIN_WANT_STATE
                         if (fPlugin.wantStateKey(key))
                         {
-                            fStateMap[key] = value;
+                            fStateMap[String(key)] = value;
                             fPlugin.setState(key, value);
+                            fStateUpdates.supersede(key);
 
                            #if DAF_PLUGIN_HAS_UI
                             if (connectedToUI)
@@ -1185,7 +1227,7 @@ public:
                     }
                     else if (queryingType == 'p')
                     {
-                        d_debug("found parameter '%s' '%s'", key.buffer(), value.buffer());
+                        d_debug("found parameter '%s' '%s'", key, value);
                         float fvalue;
 
                         // find parameter with this symbol, and set its value
@@ -1198,12 +1240,12 @@ public:
 
                             if (fPlugin.getParameterHints(j) & kParameterIsInteger)
                             {
-                                fvalue = std::atoi(value.buffer());
+                                fvalue = std::atoi(value);
                             }
                             else
                             {
                                 const ScopedSafeLocale ssl;
-                                fvalue = std::atof(value.buffer());
+                                fvalue = std::atof(value);
                             }
 
                             fCachedParameterValues[kVst3InternalParameterBaseCount + j] = fvalue;
@@ -1269,6 +1311,11 @@ public:
 
     v3_result getState(v3_bstream** const stream)
     {
+       #if DAF_PLUGIN_WANT_STATE
+        // save what the plugin has, even if the main thread did not get to the update yet
+        mergeStateUpdates();
+       #endif
+
         const uint32_t paramCount = fPlugin.getParameterCount();
        #if DAF_PLUGIN_WANT_STATE
         const uint32_t stateCount = fPlugin.getStateCount();
@@ -2361,6 +2408,19 @@ public:
         return V3_OK;
     }
 
+   #if DAF_PLUGIN_WANT_PROGRAMS
+    void syncCurrentProgram()
+    {
+        const int32_t program = fPlugin.getCurrentProgram();
+        if (program < 0 || static_cast<uint32_t>(program) >= fPlugin.getProgramCount()) return;
+        fCurrentProgram = static_cast<uint32_t>(program);
+        fCachedParameterValues[kVst3InternalParameterProgram] = static_cast<float>(program);
+       #if DAF_PLUGIN_HAS_UI
+        fParameterValueChangesForUI[kVst3InternalParameterProgram] = true;
+       #endif
+    }
+   #endif
+
 #if DAF_PLUGIN_HAS_UI
     // ----------------------------------------------------------------------------------------------------------------
     // v3_connection_point interface calls
@@ -2369,11 +2429,21 @@ public:
     void comp2ctrl_connect(v3_connection_point** const other)
     {
         fConnectionFromCompToCtrl = other;
+
+       #if DAF_PLUGIN_WANT_STATE
+        fStateUpdatesPendingIdSent = false;
+        fComponentStateUpdatesPending.reset();
+       #endif
     }
 
     void comp2ctrl_disconnect()
     {
         fConnectionFromCompToCtrl = nullptr;
+
+       #if DAF_PLUGIN_WANT_STATE
+        fStateUpdatesPendingIdSent = false;
+        fComponentStateUpdatesPending.reset();
+       #endif
     }
 
     v3_result comp2ctrl_notify(v3_message** const message)
@@ -2391,7 +2461,40 @@ public:
 
        #if DAF_PLUGIN_WANT_STATE
         if (std::strcmp(msgid, "state-set") == 0)
-            return notify_state(attrs);
+            return notify_state(attrs, ! fIsComponent);
+
+        // component side: a main-thread tick forwarded by the edit controller, see ctrl2view_notify
+        if (std::strcmp(msgid, "idle") == 0)
+        {
+            // from now on, a controller in this process only forwards the idle when there is something to do
+            if (! fStateUpdatesPendingIdSent && fConnectionFromCompToCtrl != nullptr)
+            {
+                fStateUpdatesPendingIdSent = true;
+                sendStateUpdatesPendingIdToController();
+            }
+
+            applyStateUpdates();
+            return V3_OK;
+        }
+
+        // edit controller side: the ID of the component's flag, see Vst3StateUpdateFlags
+        if (std::strcmp(msgid, "state-pending-id") == 0)
+        {
+            int64_t id = 0;
+            const v3_result res = v3_cpp_obj(attrs)->get_int(attrs, "id", &id);
+            DAF_SAFE_ASSERT_INT_RETURN(res == V3_OK, res, res);
+
+            // stays empty for a component in another process, which then gets every idle
+            fComponentStateUpdatesPending = Vst3StateUpdateFlags::find(id);
+            return V3_OK;
+        }
+
+        // edit controller side: the component applied state updates from the plugin
+        if (std::strcmp(msgid, "state-dirty") == 0)
+        {
+            markHostStateDirty();
+            return V3_OK;
+        }
        #endif
 
         d_stderr("comp2ctrl_notify received unknown msg '%s'", msgid);
@@ -2476,6 +2579,18 @@ public:
 
         if (std::strcmp(msgid, "idle") == 0)
         {
+           #if DAF_PLUGIN_WANT_STATE
+           #if DAF_VST3_USES_SEPARATE_CONTROLLER
+            // state updates from the plugin are queued on the component, which has no main-thread tick of its own.
+            // Pass it this one if it has updates pending, or if there is no telling (see Vst3StateUpdateFlags).
+            if (fConnectionFromCompToCtrl != nullptr &&
+                (fComponentStateUpdatesPending == nullptr || fComponentStateUpdatesPending->exchange(false)))
+                v3_cpp_obj(fConnectionFromCompToCtrl)->notify(fConnectionFromCompToCtrl, message);
+           #else
+            applyStateUpdates();
+           #endif
+           #endif
+
            #if DAF_VST3_USES_SEPARATE_CONTROLLER
             if (fParameterValueChangesForUI[kVst3InternalParameterSampleRate].exchange(false))
             {
@@ -2597,19 +2712,6 @@ public:
         return V3_NOT_IMPLEMENTED;
     }
 
-   #if DAF_PLUGIN_WANT_PROGRAMS
-    void syncCurrentProgram()
-    {
-        const int32_t program = fPlugin.getCurrentProgram();
-        if (program < 0 || static_cast<uint32_t>(program) >= fPlugin.getProgramCount()) return;
-        fCurrentProgram = static_cast<uint32_t>(program);
-        fCachedParameterValues[kVst3InternalParameterProgram] = static_cast<float>(program);
-       #if DAF_PLUGIN_HAS_UI
-        fParameterValueChangesForUI[kVst3InternalParameterProgram] = true;
-       #endif
-    }
-   #endif
-
    #if DAF_PLUGIN_WANT_STATE
     void syncParameterSnapshot()
     {
@@ -2640,7 +2742,8 @@ public:
             v3_cpp_obj(fComponentHandler)->restart_component(fComponentHandler, V3_RESTART_PARAM_VALUES_CHANGED);
     }
 
-    v3_result notify_state(v3_attribute_list** const attrs)
+    // fromComponent: on the edit controller, for a state update the plugin made, see applyStateUpdates
+    v3_result notify_state(v3_attribute_list** const attrs, const bool fromComponent = false)
     {
         int64_t keyLength = -1;
         int64_t valueLength = -1;
@@ -2697,7 +2800,14 @@ public:
         {
             const String dkey(key);
             fStateMap[dkey] = value;
+
+            // an earlier Plugin::updateStateValue() must not put its value back later
+            if (! fromComponent)
+                fStateUpdates.supersede(key);
         }
+
+        if (fromComponent && fConnectionFromCtrlToView != nullptr && fConnectedToUI)
+            sendStateSetToUI(key, value);
 
         std::free(key16);
         std::free(value16);
@@ -2726,6 +2836,16 @@ public:
     // ----------------------------------------------------------------------------------------------------------------
 
 private:
+   #if DAF_PLUGIN_WANT_STATE
+    // Plugin::updateStateValue() lands here: constructed before the plugin and destroyed after it,
+    // so it exists whenever the plugin can call that
+    PluginStateUpdates fStateUpdates;
+   #if DAF_VST3_USES_SEPARATE_CONTROLLER
+    // component: raised with every update, see Vst3StateUpdateFlags; created in the constructor body
+    Vst3StateUpdateFlags::Flag fStateUpdatesPending;
+   #endif
+   #endif
+
     // Plugin
     PluginExporter fPlugin;
 
@@ -2777,6 +2897,12 @@ private:
    #endif
    #if DAF_PLUGIN_WANT_STATE
     StringMap fStateMap;
+   #if DAF_VST3_USES_SEPARATE_CONTROLLER
+    int64_t fStateUpdatesPendingId;
+    bool fStateUpdatesPendingIdSent;
+    // edit controller: the component's flag, once it sent the ID and lives in this process
+    Vst3StateUpdateFlags::Flag fComponentStateUpdatesPending;
+   #endif
    #endif
    #if DAF_PLUGIN_WANT_TIMEPOS
     TimePosition fTimePosition;
@@ -3346,7 +3472,9 @@ private:
         v3_cpp_obj_unref(message);
     }
 
-    void sendStateSetToUI(const char* const key, const char* const value) const
+    // target: 1 towards the edit controller (and on to the component), 2 towards the view
+    void sendStateSet(v3_connection_point** const connection, const int64_t target,
+                      const char* const key, const char* const value) const
     {
         v3_message** const message = createMessage("state-set");
         DAF_SAFE_ASSERT_RETURN(message != nullptr,);
@@ -3354,15 +3482,51 @@ private:
         v3_attribute_list** const attrlist = v3_cpp_obj(message)->get_attributes(message);
         DAF_SAFE_ASSERT_RETURN(attrlist != nullptr,);
 
-        v3_cpp_obj(attrlist)->set_int(attrlist, "__daf_msg_target__", 2);
+        v3_cpp_obj(attrlist)->set_int(attrlist, "__daf_msg_target__", target);
         v3_cpp_obj(attrlist)->set_int(attrlist, "key:length", std::strlen(key));
         v3_cpp_obj(attrlist)->set_int(attrlist, "value:length", std::strlen(value));
         v3_cpp_obj(attrlist)->set_string(attrlist, "key", ScopedUTF16String(key));
         v3_cpp_obj(attrlist)->set_string(attrlist, "value", ScopedUTF16String(value));
-        v3_cpp_obj(fConnectionFromCtrlToView)->notify(fConnectionFromCtrlToView, message);
+        v3_cpp_obj(connection)->notify(connection, message);
 
         v3_cpp_obj_unref(message);
     }
+
+    void sendStateSetToUI(const char* const key, const char* const value) const
+    {
+        sendStateSet(fConnectionFromCtrlToView, 2, key, value);
+    }
+
+   #if DAF_VST3_USES_SEPARATE_CONTROLLER && DAF_PLUGIN_WANT_STATE
+    void sendStateDirtyToController() const
+    {
+        v3_message** const message = createMessage("state-dirty");
+        DAF_SAFE_ASSERT_RETURN(message != nullptr,);
+
+        v3_attribute_list** const attrlist = v3_cpp_obj(message)->get_attributes(message);
+        DAF_SAFE_ASSERT_RETURN(attrlist != nullptr,);
+
+        v3_cpp_obj(attrlist)->set_int(attrlist, "__daf_msg_target__", 1);
+        v3_cpp_obj(fConnectionFromCompToCtrl)->notify(fConnectionFromCompToCtrl, message);
+
+        v3_cpp_obj_unref(message);
+    }
+
+    void sendStateUpdatesPendingIdToController() const
+    {
+        v3_message** const message = createMessage("state-pending-id");
+        DAF_SAFE_ASSERT_RETURN(message != nullptr,);
+
+        v3_attribute_list** const attrlist = v3_cpp_obj(message)->get_attributes(message);
+        DAF_SAFE_ASSERT_RETURN(attrlist != nullptr,);
+
+        v3_cpp_obj(attrlist)->set_int(attrlist, "__daf_msg_target__", 1);
+        v3_cpp_obj(attrlist)->set_int(attrlist, "id", fStateUpdatesPendingId);
+        v3_cpp_obj(fConnectionFromCompToCtrl)->notify(fConnectionFromCompToCtrl, message);
+
+        v3_cpp_obj_unref(message);
+    }
+   #endif
 
     void sendReadyToUI() const
     {
@@ -3381,6 +3545,106 @@ private:
 
     // ----------------------------------------------------------------------------------------------------------------
     // DAF callbacks
+
+   #if DAF_PLUGIN_WANT_STATE
+    // any thread but the audio one; the rest happens in applyStateUpdates on the main thread
+    bool updateState(const char* const key, const char* const value)
+    {
+        if (! fStateUpdates.update(fPlugin, key, value))
+            return false;
+
+       #if DAF_VST3_USES_SEPARATE_CONTROLLER
+        // only an atomic store: no message from here, this thread may not be the main one
+        if (fStateUpdatesPending != nullptr)
+            fStateUpdatesPending->store(true);
+       #endif
+
+        return true;
+    }
+
+    static bool updateStateValueCallback(void* const ptr, const char* const key, const char* const value)
+    {
+        return static_cast<PluginVst3*>(ptr)->updateState(key, value);
+    }
+
+    // Main thread only: the UI idle, see ctrl2view_notify and comp2ctrl_notify.
+    void applyStateUpdates()
+    {
+        PluginStateUpdates::Map updates;
+        bool markDirty = false;
+        if (! fStateUpdates.takeForMainThread(updates, markDirty))
+            return;
+
+        for (PluginStateUpdates::Map::const_iterator cit=updates.begin(), cite=updates.end(); cit != cite; ++cit)
+        {
+            const String& key(cit->first);
+            const String& value(cit->second);
+
+            fStateMap[key] = value;
+
+           #if DAF_PLUGIN_HAS_UI
+            if (! isStateForUI(fPlugin, key))
+                continue;
+
+           #if DAF_VST3_USES_SEPARATE_CONTROLLER
+            // the view talks to the edit controller, which forwards the value from there
+            if (fIsComponent)
+            {
+                if (fConnectionFromCompToCtrl != nullptr)
+                    sendStateSet(fConnectionFromCompToCtrl, 1, key, value);
+                continue;
+            }
+           #endif
+
+            if (fConnectionFromCtrlToView != nullptr && fConnectedToUI)
+                sendStateSetToUI(key, value);
+           #endif
+        }
+
+        // not for updates a state save or load took first: the host has those, or loaded over them
+        if (! markDirty)
+            return;
+
+       #if DAF_VST3_USES_SEPARATE_CONTROLLER
+        // only the edit controller has the component handler
+        if (fIsComponent)
+        {
+            if (fConnectionFromCompToCtrl != nullptr)
+                sendStateDirtyToController();
+            return;
+        }
+       #endif
+
+        markHostStateDirty();
+    }
+
+    // getState() and setState(), which some hosts call off their main thread: only the state map takes the
+    // updates there, the UI and the host's "modified" flag get them from applyStateUpdates() later.
+    void mergeStateUpdates()
+    {
+        PluginStateUpdates::Map updates;
+        if (! fStateUpdates.takeForStateMap(updates))
+            return;
+
+        for (PluginStateUpdates::Map::const_iterator cit=updates.begin(), cite=updates.end(); cit != cite; ++cit)
+            fStateMap[cit->first] = cit->second;
+    }
+
+    void markHostStateDirty()
+    {
+        if (fComponentHandler == nullptr)
+            return;
+
+        v3_component_handler2** handler2 = nullptr;
+        if (v3_cpp_obj_query_interface(fComponentHandler, v3_component_handler2_iid, &handler2) != V3_OK)
+            return;
+        if (handler2 == nullptr)
+            return;
+
+        v3_cpp_obj(handler2)->set_dirty(handler2, true);
+        v3_cpp_obj_unref(handler2);
+    }
+   #endif
 
    #if DAF_PLUGIN_WANT_PARAMETER_VALUE_CHANGE_REQUEST
     bool requestParameterValueChange(const uint32_t index, float)
@@ -5319,6 +5583,7 @@ bool ENTRYFNNAME(ENTRYFNNAMEARGS)
         d_nextPluginIsDummy = false;
         d_nextCanRequestParameterValueChanges = false;
 
+        // word 2 lies outside the GUID fields, so DAF_VST3_CROSS_PLATFORM_UID leaves it as is
         daf_tuid_class[2] = daf_tuid_component[2] = daf_tuid_controller[2]
             = daf_tuid_processor[2] = daf_tuid_view[2] = sPlugin->getUniqueId();
     }

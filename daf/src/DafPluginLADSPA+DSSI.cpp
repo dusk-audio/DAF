@@ -646,13 +646,22 @@ static const struct DescriptorInitializer
                     portRangeHints[port].HintDescriptor |= LADSPA_HINT_DEFAULT_MAXIMUM;
                 else
                 {
-                    const float middleValue =  ranges.min/2.0f + ranges.max/2.0f;
-                    const float middleLow   = (ranges.min/2.0f + middleValue/2.0f)/2.0f + middleValue/2.0f;
-                    const float middleHigh  = (ranges.max/2.0f + middleValue/2.0f)/2.0f + middleValue/2.0f;
+                    // hosts compute LOW, MIDDLE and HIGH at 1/4, 1/2 and 3/4 of the range, geometrically
+                    // for logarithmic ports (see ladspa.h); pick the one nearest the default on that scale.
+                    const bool logScale = (hints & (kParameterIsLogarithmic|kParameterIsBoolean)) == kParameterIsLogarithmic
+                                       && ranges.min > 0.0f && ranges.max > 0.0f;
 
-                    /**/ if (defValue < middleLow)
+                    const double lower = logScale ? std::log(static_cast<double>(ranges.min)) : ranges.min;
+                    const double upper = logScale ? std::log(static_cast<double>(ranges.max)) : ranges.max;
+                    const double value = logScale ? std::log(static_cast<double>(defValue))   : defValue;
+
+                    // halfway between LOW and MIDDLE, and between MIDDLE and HIGH
+                    const double lowMiddle  = lower * 0.625 + upper * 0.375;
+                    const double middleHigh = lower * 0.375 + upper * 0.625;
+
+                    /**/ if (value < lowMiddle)
                         portRangeHints[port].HintDescriptor |= LADSPA_HINT_DEFAULT_LOW;
-                    else if (defValue > middleHigh)
+                    else if (value > middleHigh)
                         portRangeHints[port].HintDescriptor |= LADSPA_HINT_DEFAULT_HIGH;
                     else
                         portRangeHints[port].HintDescriptor |= LADSPA_HINT_DEFAULT_MIDDLE;

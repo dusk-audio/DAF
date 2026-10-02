@@ -23,6 +23,8 @@
  */
 
 #include "DafPluginInternal.hpp"
+#include "DafPluginStateParser.hpp"
+#include "DafPluginStateUpdates.hpp"
 #include "extra/ScopedPointer.hpp"
 
 #ifndef DAF_PLUGIN_CLAP_ID
@@ -369,11 +371,19 @@ public:
             *width /= scaleFactor;
             *height /= scaleFactor;
            #endif
+            fReportedWidth = *width;
+            fReportedHeight = *height;
             return true;
         }
 
         double scaleFactor = fScaleFactor;
        #if defined(DAF_UI_DEFAULT_WIDTH) && defined(DAF_UI_DEFAULT_HEIGHT)
+       #ifndef DAF_OS_MAC
+        // A host that never called set_scale gets a window created at the desktop scale factor
+        // (see UI::PrivateData::createNextWindow), so predict the size with that same factor.
+        if (d_isZero(scaleFactor))
+            scaleFactor = getDesktopScaleFactor(fParentWindow);
+       #endif
         if (d_isZero(scaleFactor))
             scaleFactor = 1.0;
         *width = DAF_UI_DEFAULT_WIDTH * scaleFactor;
@@ -393,6 +403,8 @@ public:
         *height /= scaleFactor;
        #endif
 
+        fReportedWidth = *width;
+        fReportedHeight = *height;
         return true;
     }
 
@@ -522,6 +534,18 @@ public:
         {
             createUI();
             fHostGui->resize_hints_changed(fHost);
+
+            // Should the window have come out at another size than get_size predicted, a parent on
+            // a monitor with another scale factor being one way, ask the host to match it.
+            if (fReportedWidth != 0 && fReportedHeight != 0)
+            {
+                const uint32_t reportedWidth = fReportedWidth;
+                const uint32_t reportedHeight = fReportedHeight;
+                uint32_t width, height;
+
+                if (getSize(&width, &height) && (width != reportedWidth || height != reportedHeight))
+                    fHostGui->request_resize(fHost, width, height);
+            }
         }
 
         return true;
@@ -694,6 +718,11 @@ private:
     uint fNotifiedMinHeight = 0;
     bool fNotifiedKeepAspect = false;
     bool fNotifiedAny = false;
+
+    // Last size get_size answered with, 0 if never asked. Before the UI exists that answer is a
+    // prediction, which setParent checks against the window it then creates.
+    mutable uint32_t fReportedWidth = 0;
+    mutable uint32_t fReportedHeight = 0;
    #if DAF_CLAP_USING_HOST_TIMER
     clap_id fTimerId;
     const clap_host_timer_support_t* const fHostTimer;
@@ -1271,9 +1300,23 @@ public:
             fTimePosition.playing = (transport->flags & CLAP_TRANSPORT_IS_PLAYING) != 0 &&
                                     (transport->flags & CLAP_TRANSPORT_IS_WITHIN_PRE_ROLL) == 0;
 
-            fTimePosition.frame = process->steady_time >= 0 ? process->steady_time : 0;
-
             fTimePosition.bpmValid = (transport->flags & CLAP_TRANSPORT_HAS_TEMPO) != 0 && transport->tempo > 0.0;
+
+            // frame is the transport position, not steady_time (which never stops or jumps).
+            // prefer the seconds timeline; failing that, derive it from beats at the current tempo.
+            {
+                double transportSeconds = 0.0;
+
+                if ((transport->flags & CLAP_TRANSPORT_HAS_SECONDS_TIMELINE) != 0)
+                    transportSeconds = static_cast<double>(transport->song_pos_seconds) / CLAP_SECTIME_FACTOR;
+                else if ((transport->flags & CLAP_TRANSPORT_HAS_BEATS_TIMELINE) != 0 && fTimePosition.bpmValid)
+                    transportSeconds = static_cast<double>(transport->song_pos_beats) / CLAP_BEATTIME_FACTOR
+                                     * 60.0 / transport->tempo;
+
+                fTimePosition.frame = transportSeconds > 0.0
+                                    ? static_cast<uint64_t>(transportSeconds * fPlugin.getSampleRate() + 0.5)
+                                    : 0;
+            }
             if (fTimePosition.bpmValid)
                 fTimePosition.bbt.beatsPerMinute = transport->tempo;
             else
@@ -1525,11 +1568,14 @@ public:
         return true;
     }
 
-    // Intentionally empty. Latency reporting used to be deferred to here, but
-    // clap_host_latency::changed is [main-thread & being-activated], so it now happens
-    // in activate() and nothing else needs a main-thread callback.
+    // Latency reporting used to be deferred to here, but clap_host_latency::changed is
+    // [main-thread & being-activated], so it now happens in activate().
+    // What remains is finishing Plugin::updateStateValue() calls, see updateState().
     void onMainThread()
     {
+       #if DAF_PLUGIN_WANT_STATE
+        applyStateUpdates(true);
+       #endif
     }
 
     // ----------------------------------------------------------------------------------------------------------------
@@ -2101,6 +2147,11 @@ public:
 
     bool stateSave(const clap_ostream_t* const stream)
     {
+       #if DAF_PLUGIN_WANT_STATE
+        // save what the plugin has, even if the main-thread callback for it did not run yet
+        applyStateUpdates(false);
+       #endif
+
         const uint32_t paramCount = fPlugin.getParameterCount();
        #if DAF_PLUGIN_WANT_STATE
         const uint32_t stateCount = fPlugin.getStateCount();
@@ -2207,29 +2258,23 @@ public:
 
     bool stateLoad(const clap_istream_t* const stream)
     {
+       #if DAF_PLUGIN_WANT_STATE
+        // settle earlier updates first, so they cannot overwrite the state being loaded
+        applyStateUpdates(false);
+       #endif
+
        #if DAF_PLUGIN_HAS_UI
         ClapUI* const ui = fUI.get();
        #endif
-        struct PendingState { char type; String key, value; };
-        std::vector<PendingState> pending;
-        String key, value;
-        bool hasValue = false;
-        bool fillingKey = true; // if filling key or value
-        // parser state: 'i' initial (nothing read yet), 'n' between sections (program and/or states
-        // done), 's' inside the states section, 'p' inside the parameters section, 'x' parameters
-        // section closed. Only 'i', 'n' and 'x' are valid places for the stream to end.
-        char queryingType = 'i';
+        PluginStateParser parser;
 
-        char buffer[512];
+        // 64 KiB per host call, on the heap; tokens spanning reads are joined by the parser
+        std::vector<char> buffer(65536);
 
-        for (int32_t terminated = 0; terminated == 0;)
+        for (bool terminated = false; ! terminated;)
         {
-            const int32_t read = stream->read(stream, buffer, sizeof(buffer)-1);
-            DAF_SAFE_ASSERT_INT_RETURN(read >= 0 && read < static_cast<int32_t>(sizeof(buffer)), read, false);
-
-            // place null character right after the chunk, so the string scans below stay inside the data
-            // just read; at most sizeof(buffer)-1 bytes are requested, so this never writes past the buffer
-            buffer[read] = '\0';
+            const int64_t read = stream->read(stream, buffer.data(), buffer.size());
+            DAF_SAFE_ASSERT_INT_RETURN(read >= 0 && read <= static_cast<int64_t>(buffer.size()), static_cast<int>(read), false);
 
             if (read == 0)
             {
@@ -2240,135 +2285,39 @@ public:
                 // What matters is what the stream contains, not how many parameters or states
                 // this build has, so that state saved by a differently configured build of the
                 // same plugin still loads.
-                if (queryingType == 'i'
-                    && ! fillingKey
-                    && ! hasValue
-                    && key.isEmpty()
-                    && value.isEmpty())
+                if (parser.isLoneEmptyKey())
                     break;
 
                 return false;
             }
 
-            for (int32_t i = 0; i < read; ++i)
+            std::size_t consumed = 0;
+            switch (parser.parse(buffer.data(), static_cast<std::size_t>(read), consumed))
             {
-                // found terminator, stop here
-                if (buffer[i] == '\xfe')
+            case PluginStateParser::kStatusNeedMoreData:
+                break;
+            case PluginStateParser::kStatusTerminated:
+            {
+                // The writer may append one NUL after the terminator.
+                // Reject all other trailing bytes, including later chunks,
+                // before committing any staged state.
+                const std::size_t remaining = static_cast<std::size_t>(read) - consumed;
+                if (remaining > 1 || (remaining == 1 && buffer[consumed] != '\0'))
+                    return false;
+                char tail[2];
+                const int64_t tailRead = stream->read(stream, tail, sizeof(tail));
+                if (tailRead != 0)
                 {
-                    // Which sections the stream carries depends on the build that wrote it, not
-                    // on this build's parameter and state counts, so every state that closes all
-                    // the sections it opened is valid here: 'i' (nothing but the terminator),
-                    // 'n' (program and/or states done) and 'x' (parameters done).
-                    // A stream stopping mid-section ('s' or 'p') or mid key/value pair is not.
-                    const bool validTerminalState = queryingType == 'i'
-                                                 || queryingType == 'n'
-                                                 || queryingType == 'x';
-                    if (! validTerminalState
-                        || ! fillingKey
-                        || hasValue
-                        || ! key.isEmpty()
-                        || ! value.isEmpty())
+                    if (remaining != 0 || tailRead != 1 || tail[0] != '\0'
+                        || stream->read(stream, tail, 1) != 0)
                         return false;
-                    // The writer may append one NUL after the terminator.
-                    // Reject all other trailing bytes, including later chunks,
-                    // before committing any staged state.
-                    const int32_t remaining = read - i - 1;
-                    if (remaining > 1 || (remaining == 1 && buffer[i + 1] != '\0'))
-                        return false;
-                    char tail[2];
-                    const int64_t tailRead = stream->read(stream, tail, sizeof(tail));
-                    if (tailRead != 0)
-                    {
-                        if (remaining != 0 || tailRead != 1 || tail[0] != '\0'
-                            || stream->read(stream, tail, 1) != 0)
-                            return false;
-                    }
-                    terminated = 1;
-                    break;
                 }
-
-                // append to temporary vars
-                if (fillingKey)
-                {
-                    key += buffer + i;
-                }
-                else
-                {
-                    value += buffer + i;
-                    hasValue = true;
-                }
-
-                // increase buffer offset by length of string
-                i += std::strlen(buffer + i);
-
-                // The null character placed after the chunk bounds strlen(), so the offset now points either at a real
-                // null inside the chunk or exactly at `read`. The latter means the string is cut in half by
-                // the chunk boundary and continues in the next read, so do not look at buffer[read] itself:
-                // that byte is past the valid data and holds stale or uninitialized garbage.
-                if (i != read)
-                {
-                    // special keys
-                    if (key == "__daf_state_begin__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i' || queryingType == 'n',
-                                                       queryingType, false);
-                        queryingType = 's';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-                    if (key == "__daf_state_end__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 's', queryingType, false);
-                        queryingType = 'n';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-                    if (key == "__daf_parameters_begin__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i' || queryingType == 'n',
-                                                       queryingType, false);
-                        queryingType = 'p';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-                    if (key == "__daf_parameters_end__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'p', queryingType, false);
-                        queryingType = 'x';
-                        key.clear();
-                        value.clear();
-                        hasValue = false;
-                        continue;
-                    }
-
-                    // no special key, swap between reading real key and value
-                    fillingKey = !fillingKey;
-
-                    // if there is no value yet keep reading until we have one
-                    if (! hasValue)
-                        continue;
-
-                    if (key == "__daf_program__")
-                    {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i', queryingType, false);
-                        pending.push_back({queryingType, key, value});
-                        queryingType = 'n';
-                    }
-                    else
-                    {
-                        pending.push_back({queryingType, key, value});
-                    }
-
-                    key.clear();
-                    value.clear();
-                    hasValue = false;
-                }
+                terminated = true;
+                break;
+            }
+            case PluginStateParser::kStatusInvalidTerminator:
+            case PluginStateParser::kStatusInvalidSection:
+                return false;
             }
         }
 
@@ -2376,31 +2325,29 @@ public:
         // parameter snapshot is authoritative over the redundant legacy program/parameter sections.
         bool parameterSnapshot = false;
        #if DAF_PLUGIN_WANT_STATE
-        for (const auto& item : pending)
+        for (const PluginStateParser::Entry& item : parser.entries)
         {
-            if (item.type != 's' || !fPlugin.wantStateKey(item.key))
+            if (item.type != 's' || !fPlugin.wantStateKey(item.key.c_str()))
                 continue;
-            if (!fPlugin.validateStateValue(item.key, item.value))
+            if (!fPlugin.validateStateValue(item.key.c_str(), item.value.c_str()))
                 return false;
-            parameterSnapshot = parameterSnapshot || fPlugin.isParameterSnapshotState(item.key);
+            parameterSnapshot = parameterSnapshot || fPlugin.isParameterSnapshotState(item.key.c_str());
         }
        #endif
-        for (const auto& item : pending)
+        for (const PluginStateParser::Entry& item : parser.entries)
         {
-            key = item.key;
-            value = item.value;
-            queryingType = item.type;
-            if (parameterSnapshot && (queryingType == 'p' || key == "__daf_program__"))
+            const char* const key = item.key.c_str();
+            const char* const value = item.value.c_str();
+            const char queryingType = item.type;
+            const bool isProgram = item.key == "__daf_program__";
+            if (parameterSnapshot && (queryingType == 'p' || isProgram))
                 continue;
-                    if (key == "__daf_program__")
+                    if (isProgram)
                     {
-                        DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i', queryingType, false);
-                        queryingType = 'n';
-
-                        d_debug("found program '%s'", value.buffer());
+                        d_debug("found program '%s'", value);
 
                       #if DAF_PLUGIN_WANT_PROGRAMS
-                        const int program = std::atoi(value.buffer());
+                        const int program = std::atoi(value);
                         DAF_SAFE_ASSERT_CONTINUE(program >= 0);
 
                         fCurrentProgram = static_cast<uint32_t>(program);
@@ -2414,12 +2361,12 @@ public:
                     }
                     else if (queryingType == 's')
                     {
-                        d_debug("found state '%s' '%s'", key.buffer(), value.buffer());
+                        d_debug("found state '%s' '%s'", key, value);
 
                        #if DAF_PLUGIN_WANT_STATE
                         if (fPlugin.wantStateKey(key))
                         {
-                            fStateMap[key] = value;
+                            fStateMap[String(key)] = value;
                             fPlugin.setState(key, value);
 
                            #if DAF_PLUGIN_HAS_UI
@@ -2431,7 +2378,7 @@ public:
                     }
                     else if (queryingType == 'p')
                     {
-                        d_debug("found parameter '%s' '%s'", key.buffer(), value.buffer());
+                        d_debug("found parameter '%s' '%s'", key, value);
                         float fvalue;
 
                         // find parameter with this symbol, and set its value
@@ -2444,12 +2391,12 @@ public:
 
                             if (fPlugin.getParameterHints(j) & kParameterIsInteger)
                             {
-                                fvalue = std::atoi(value.buffer());
+                                fvalue = std::atoi(value);
                             }
                             else
                             {
                                 const ScopedSafeLocale ssl;
-                                fvalue = std::atof(value.buffer());
+                                fvalue = std::atof(value);
                             }
 
                             fCachedParameters.values[j] = fvalue;
@@ -2552,6 +2499,9 @@ public:
         {
             const String dkey(key);
             fStateMap[dkey] = value;
+
+            // an earlier Plugin::updateStateValue() must not put its value back later
+            fStateUpdates.supersede(key);
         }
 
         if (snapshot)
@@ -2581,6 +2531,12 @@ public:
     // ----------------------------------------------------------------------------------------------------------------
 
 private:
+   #if DAF_PLUGIN_WANT_STATE
+    // Plugin::updateStateValue() lands here: constructed before the plugin and destroyed after it,
+    // so it exists whenever the plugin (or a UI created along with it) can call that
+    PluginStateUpdates fStateUpdates;
+   #endif
+
     // Plugin and UI
     PluginExporter fPlugin;
    #if DAF_PLUGIN_HAS_UI
@@ -2631,7 +2587,6 @@ private:
    #if DAF_PLUGIN_WANT_TIMEPOS
     TimePosition fTimePosition;
    #endif
-
     struct HostExtensions {
         const clap_host_t* const host;
         const clap_host_params_t* params;
@@ -2913,9 +2868,46 @@ private:
    #endif
 
    #if DAF_PLUGIN_WANT_STATE
-    bool updateState(const char*, const char*)
+    // any thread but the audio one
+    bool updateState(const char* const key, const char* const value)
     {
+        if (! fStateUpdates.update(fPlugin, key, value))
+            return false;
+
+        // the state map, the UI and clap_host_state are main-thread only, continue in onMainThread()
+        fHost->request_callback(fHost);
         return true;
+    }
+
+    // main thread, as are all of clap_plugin_state. A host that is saving or loading state at the time
+    // needs no telling: what it saves already has the update, and what it loads replaces it.
+    void applyStateUpdates(const bool hostNeedsTelling)
+    {
+        PluginStateUpdates::Map updates;
+        bool markDirty = false;
+        if (! fStateUpdates.takeForMainThread(updates, markDirty))
+            return;
+
+       #if DAF_PLUGIN_HAS_UI
+        ClapUI* const ui = fUI.get();
+       #endif
+
+        for (PluginStateUpdates::Map::const_iterator cit=updates.begin(), cite=updates.end(); cit != cite; ++cit)
+        {
+            const String& key(cit->first);
+            const String& value(cit->second);
+
+            fStateMap[key] = value;
+
+           #if DAF_PLUGIN_HAS_UI
+            if (ui != nullptr && isStateForUI(fPlugin, key))
+                ui->setStateFromPlugin(key, value);
+           #endif
+        }
+
+        if (hostNeedsTelling && markDirty &&
+            fHostExtensions.state != nullptr && fHostExtensions.state->mark_dirty != nullptr)
+            fHostExtensions.state->mark_dirty(fHost);
     }
 
     static bool updateStateValueCallback(void* const ptr, const char* const key, const char* const value)

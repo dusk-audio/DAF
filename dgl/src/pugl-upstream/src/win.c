@@ -735,6 +735,83 @@ constrainAspect(const PuglView* const view,
   }
 }
 
+/*
+  Handing keys an embedded view does not use to the host.
+
+  The key goes to the top-level window the view sits in, not to its direct
+  parent: hosts nest editors in container windows whose default window
+  procedure ignores key messages, and handle their shortcuts at the top level.
+
+  It is sent, not posted. A posted copy would travel through the host's
+  message loop a second time, where accelerator tables and hooks have already
+  seen the original, and it could only be handled after the view returned.
+  Sending runs the host's handler while the original message is still being
+  processed, so GetKeyState and GetMessageTime describe the right key. Across
+  threads, SMTO_ABORTIFHUNG and a timeout keep a hung host from blocking the
+  editor. Nothing touches the view after the send, since the host may close
+  the editor in response to the key (Escape, say).
+
+  Two guards keep a host that hands keys back to the focused child, as some
+  wrappers do, from bouncing a key between itself and the view forever:
+
+  - While a key is being sent on, puglWinForwardingKeys is nonzero on this
+    thread, and any key message reaching a view then is dropped instead of
+    dispatched or sent again. This catches a synchronous echo whatever the
+    host did to the message.
+
+  - The forwarded copy carries PUGL_WIN_FORWARDED_KEY in lParam, a bit that
+    Windows reserves and never sets in key messages, so a copy the host posts
+    back later, outside the send, is recognised as one of ours and dropped.
+*/
+
+#if defined(_MSC_VER)
+#  define PUGL_WIN_THREAD_LOCAL __declspec(thread)
+#else
+#  define PUGL_WIN_THREAD_LOCAL __thread
+#endif
+
+#define PUGL_WIN_FORWARDED_KEY ((LPARAM)0x10000000) // lParam bit 28, reserved
+#define PUGL_WIN_FORWARD_TIMEOUT_MS 500U
+
+static PUGL_WIN_THREAD_LOCAL unsigned puglWinForwardingKeys = 0U;
+
+static bool
+isKeyMessage(const UINT message)
+{
+  return message == WM_KEYDOWN || message == WM_KEYUP ||
+         message == WM_SYSKEYDOWN || message == WM_SYSKEYUP;
+}
+
+static bool
+isForwardedKeyEcho(const UINT message, const LPARAM lParam)
+{
+  return isKeyMessage(message) &&
+         (puglWinForwardingKeys != 0U || (lParam & PUGL_WIN_FORWARDED_KEY));
+}
+
+static void
+forwardKeyToHost(PuglView* const view,
+                 const UINT      message,
+                 const WPARAM    wParam,
+                 const LPARAM    lParam)
+{
+  HWND target = GetAncestor(view->impl->hwnd, GA_ROOT);
+  if (!target || target == view->impl->hwnd) {
+    target = (HWND)view->parent;
+  }
+
+  DWORD_PTR result = 0;
+  ++puglWinForwardingKeys;
+  SendMessageTimeout(target,
+                     message,
+                     wParam,
+                     lParam | PUGL_WIN_FORWARDED_KEY,
+                     SMTO_NORMAL | SMTO_ABORTIFHUNG,
+                     PUGL_WIN_FORWARD_TIMEOUT_MS,
+                     &result);
+  --puglWinForwardingKeys;
+}
+
 static LRESULT
 handleMessage(PuglView* view, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -744,6 +821,12 @@ handleMessage(PuglView* view, UINT message, WPARAM wParam, LPARAM lParam)
   MINMAXINFO*     mmi       = NULL;
   void*           dummy_ptr = NULL;
   WINDOWPLACEMENT placement = {sizeof(WINDOWPLACEMENT), 0, 0, pt, pt, rect};
+
+  // A key this view already declined, handed back by the host: drop it, the
+  // view has no use for it and sending it on again would start a loop
+  if (view->parent && isForwardedKeyEcho(message, lParam)) {
+    return 0;
+  }
 
   if (InSendMessageEx(dummy_ptr)) {
     event.any.flags |= PUGL_IS_SEND_EVENT;
@@ -949,7 +1032,12 @@ handleMessage(PuglView* view, UINT message, WPARAM wParam, LPARAM lParam)
     return DefWindowProc(view->impl->hwnd, message, wParam, lParam);
   }
 
-  puglDispatchEvent(view, &event);
+  // A key an embedded view does not use goes to the host, so host shortcuts
+  // keep working while the view has the keyboard focus, see forwardKeyToHost
+  if (puglDispatchEvent(view, &event) == PUGL_UNSUPPORTED && view->parent &&
+      (event.type == PUGL_KEY_PRESS || event.type == PUGL_KEY_RELEASE)) {
+    forwardKeyToHost(view, message, wParam, lParam);
+  }
 
   return 0;
 }

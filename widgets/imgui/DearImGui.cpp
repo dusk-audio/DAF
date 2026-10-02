@@ -81,20 +81,78 @@ static void SetClipboardTextFn(void* const userData, const char* const text)
     tlw->setClipboard(nullptr, text, std::strlen(text)+1);
 }
 
+// --------------------------------------------------------------------------------------------------------------------
+// The ImGuiStyle members that ImGuiStyle::ScaleAllSizes scales, kept in step with it.
+
+#define DAF_IMGUI_SCALED_STYLE_MEMBERS(X) \
+    X(WindowPadding) X(WindowRounding) X(WindowMinSize) X(WindowBorderHoverPadding) X(ChildRounding) \
+    X(PopupRounding) X(FramePadding) X(FrameRounding) X(ItemSpacing) X(ItemInnerSpacing) X(CellPadding) \
+    X(TouchExtraPadding) X(IndentSpacing) X(ColumnsMinSpacing) X(ScrollbarSize) X(ScrollbarRounding) \
+    X(GrabMinSize) X(GrabRounding) X(LogSliderDeadzone) X(ImageBorderSize) X(TabRounding) \
+    X(TabCloseButtonMinWidthSelected) X(TabCloseButtonMinWidthUnselected) X(TabBarOverlineSize) \
+    X(SeparatorTextPadding) X(DisplayWindowPadding) X(DisplaySafeAreaPadding) X(MouseCursorScale)
+
+static inline bool isSameStyleSize(const float a, const float b) noexcept
+{
+    return a == b;
+}
+
+static inline bool isSameStyleSize(const ImVec2& a, const ImVec2& b) noexcept
+{
+    return a.x == b.x && a.y == b.y;
+}
+
+// whether the members ScaleAllSizes scales are the same in both styles; nothing else is compared
+static bool haveSameScaledSizes(const ImGuiStyle& a, const ImGuiStyle& b) noexcept
+{
+   #define DAF_IMGUI_COMPARE_MEMBER(m) if (! isSameStyleSize(a.m, b.m)) return false;
+    DAF_IMGUI_SCALED_STYLE_MEMBERS(DAF_IMGUI_COMPARE_MEMBER)
+   #undef DAF_IMGUI_COMPARE_MEMBER
+    return true;
+}
+
+// copy the members ScaleAllSizes scales from one style to another, leaving colours and the rest alone
+static void copyScaledSizes(ImGuiStyle& dst, const ImGuiStyle& src) noexcept
+{
+   #define DAF_IMGUI_COPY_MEMBER(m) dst.m = src.m;
+    DAF_IMGUI_SCALED_STYLE_MEMBERS(DAF_IMGUI_COPY_MEMBER)
+   #undef DAF_IMGUI_COPY_MEMBER
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+
 template <class BaseWidget>
 struct ImGuiWidget<BaseWidget>::PrivateData {
     ImGuiWidget<BaseWidget>* const self;
     ImGuiContext* context;
     double scaleFactor;
+    float fontSize;
     double lastFrameTime;
     uint lastModifiers;
 
-    explicit PrivateData(ImGuiWidget<BaseWidget>* const s, const float fontSize)
+    // the font this widget added to the atlas itself, nullptr if none
+    ImFont* ownFont;
+
+    // The style sizes are scaled from a reference style, which holds them at referenceScaleFactor,
+    // and not from whatever the last scaling left behind: ScaleAllSizes truncates, so scaling the
+    // current sizes back and forth would lose a pixel here and there each time. scaledStyle is the
+    // style as the last scaling left it, to tell whether the application has changed sizes since,
+    // in which case its sizes become the new reference.
+    ImGuiStyle referenceStyle;
+    double referenceScaleFactor;
+    ImGuiStyle scaledStyle;
+
+    explicit PrivateData(ImGuiWidget<BaseWidget>* const s, const float fontSize_)
         : self(s),
           context(nullptr),
           scaleFactor(s->getTopLevelWidget()->getScaleFactor()),
+          fontSize(fontSize_),
           lastFrameTime(0.0),
-          lastModifiers(0)
+          lastModifiers(0),
+          ownFont(nullptr),
+          referenceStyle(),
+          referenceScaleFactor(1.0),
+          scaledStyle()
     {
         IMGUI_CHECKVERSION();
         context = ImGui::CreateContext();
@@ -111,20 +169,9 @@ struct ImGuiWidget<BaseWidget>::PrivateData {
 
         ImGuiStyle& style(ImGui::GetStyle());
         style.ScaleAllSizes(scaleFactor);
+        scaledStyle = style;
 
-       #ifndef DGL_NO_SHARED_RESOURCES
-        using namespace daf_resources;
-        ImFontConfig fc;
-        fc.FontDataOwnedByAtlas = false;
-        fc.OversampleH = 1;
-        fc.OversampleV = 1;
-        fc.PixelSnapH = true;
-        io.Fonts->AddFontFromMemoryTTF((void*)dejavusans_ttf,
-                                       dejavusans_ttf_size,
-                                       d_roundToIntPositive(fontSize * scaleFactor),
-                                       &fc);
-        io.Fonts->Build();
-       #endif
+        buildFonts();
 
         io.GetClipboardTextFn = GetClipboardTextFn;
         io.SetClipboardTextFn = SetClipboardTextFn;
@@ -146,6 +193,86 @@ struct ImGuiWidget<BaseWidget>::PrivateData {
         ImGui_ImplOpenGL2_Shutdown();
        #endif
         ImGui::DestroyContext(context);
+    }
+
+    // (re)build the font atlas with only the default font, at fontSize * scaleFactor
+    void buildFonts()
+    {
+       #ifndef DGL_NO_SHARED_RESOURCES
+        using namespace daf_resources;
+        ImGuiIO& io(ImGui::GetIO());
+        const bool ownFontIsDefault = ownFont != nullptr && io.FontDefault == ownFont;
+        ImFontConfig fc;
+        fc.FontDataOwnedByAtlas = false;
+        fc.OversampleH = 1;
+        fc.OversampleV = 1;
+        fc.PixelSnapH = true;
+        io.Fonts->Clear();
+        ownFont = io.Fonts->AddFontFromMemoryTTF((void*)dejavusans_ttf,
+                                                 dejavusans_ttf_size,
+                                                 d_roundToIntPositive(fontSize * scaleFactor),
+                                                 &fc);
+        io.Fonts->Build();
+
+        // Clear() destroyed every font, so a default font set by the application is gone as well
+        io.FontDefault = ownFontIsDefault ? ownFont : nullptr;
+       #endif
+    }
+
+    // Whether the font atlas holds nothing but the font this widget added: a single font from a
+    // single source, and it is ours. Anything the application added or merged in makes it theirs.
+    bool atlasHoldsOnlyOwnFont() const
+    {
+       #ifndef DGL_NO_SHARED_RESOURCES
+        const ImFontAtlas* const atlas = ImGui::GetIO().Fonts;
+        return ownFont != nullptr
+            && atlas->Fonts.Size == 1
+            && atlas->Fonts[0] == ownFont
+            && atlas->Sources.Size == 1
+            && atlas->Sources[0].DstFont == ownFont
+            && atlas->Sources[0].FontDataSize == static_cast<int>(daf_resources::dejavusans_ttf_size);
+       #else
+        return false;
+       #endif
+    }
+
+    // Follow a scale factor change of the window, with the context current and no frame open.
+    // Returns true if the font atlas was rebuilt and needs uploading again.
+    bool updateScaleFactor()
+    {
+        const double newScaleFactor = self->getTopLevelWidget()->getScaleFactor();
+
+        if (d_isEqual(scaleFactor, newScaleFactor) || ! (newScaleFactor > 0.0))
+            return false;
+
+        const double oldScaleFactor = scaleFactor;
+        scaleFactor = newScaleFactor;
+
+        /* Rescale only the sizes, keeping colours and every other style setting the application
+           made. If the application changed sizes since the last scaling, they were made for the
+           old factor and become the reference; otherwise keep scaling from the reference we have,
+           so the sizes do not drift over repeated changes. */
+        ImGuiStyle& style(ImGui::GetStyle());
+
+        if (! haveSameScaledSizes(style, scaledStyle))
+        {
+            referenceStyle = style;
+            referenceScaleFactor = oldScaleFactor;
+        }
+
+        ImGuiStyle rescaled(referenceStyle);
+        rescaled.ScaleAllSizes(static_cast<float>(scaleFactor / referenceScaleFactor));
+        copyScaledSizes(style, rescaled);
+        scaledStyle = style;
+
+        /* Rebuild the font atlas only when it holds nothing but our own font. Fonts the
+           application added are its own: rebuilding would destroy them under the ImFont pointers
+           it holds. It can rebuild them at the new factor from onImGuiPrepareFrame(). */
+        if (! atlasHoldsOnlyOwnFont())
+            return false;
+
+        buildFonts();
+        return true;
     }
 
     float getDisplayX() const noexcept;
@@ -189,24 +316,11 @@ template <class BaseWidget>
 void ImGuiWidget<BaseWidget>::setFontSize(const float fontSize)
 {
     ImGui::SetCurrentContext(imData->context);
-    ImGuiIO& io(ImGui::GetIO());
 
-    const double scaleFactor = BaseWidget::getTopLevelWidget()->getScaleFactor();
-
-   #ifndef DGL_NO_SHARED_RESOURCES
-    using namespace daf_resources;
-    ImFontConfig fc;
-    fc.FontDataOwnedByAtlas = false;
-    fc.OversampleH = 1;
-    fc.OversampleV = 1;
-    fc.PixelSnapH = true;
-    io.Fonts->Clear();
-    io.Fonts->AddFontFromMemoryTTF((void*)dejavusans_ttf,
-                                   dejavusans_ttf_size,
-                                   d_roundToIntPositive(fontSize * scaleFactor),
-                                   &fc);
-    io.Fonts->Build();
-   #endif
+    // Built at the factor the style was last scaled for; should the window have changed scale
+    // since, the next frame rebuilds both at the new one.
+    imData->fontSize = fontSize;
+    imData->buildFonts();
 }
 
 template <class BaseWidget>
@@ -243,6 +357,11 @@ void ImGuiWidget<BaseWidget>::onDisplay()
     ImGuiIO& io(ImGui::GetIO());
 
     io.DeltaTime = imData->getTimeDelta();
+
+    // Pick up a scale factor change, from the host or the windowing system, here: the font atlas
+    // can only be rebuilt with the context current and outside of a frame.
+    if (imData->updateScaleFactor())
+        rebuildFontTexture();
 
     // Before the backend's NewFrame: the backend only (re)creates its font
     // texture when it has none, so a subclass that rebuilt io.Fonts here and

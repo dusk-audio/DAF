@@ -16,6 +16,7 @@
 
 #include "DafPluginInternal.hpp"
 #include "DafPluginVST.hpp"
+#include "DafPluginStateUpdates.hpp"
 #include "../DafPluginUtils.hpp"
 #include "../extra/ScopedSafeLocale.hpp"
 #include "../extra/ScopedPointer.hpp"
@@ -98,6 +99,9 @@ static constexpr const writeMidiFunc writeMidiCallback = nullptr;
 #endif
 #if ! DAF_PLUGIN_WANT_PARAMETER_VALUE_CHANGE_REQUEST
 static constexpr const requestParameterValueChangeFunc requestParameterValueChangeCallback = nullptr;
+#endif
+#if ! DAF_PLUGIN_WANT_STATE
+static constexpr const updateStateValueFunc updateStateValueCallback = nullptr;
 #endif
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -386,7 +390,7 @@ class PluginVst : public ParameterAndNotesHelper
 {
 public:
     PluginVst(const vst_host_callback audioMaster, vst_effect* const effect)
-        : fPlugin(this, writeMidiCallback, requestParameterValueChangeCallback, nullptr),
+        : fPlugin(this, writeMidiCallback, requestParameterValueChangeCallback, updateStateValueCallback),
           fAudioMaster(audioMaster),
           fEffect(effect)
     {
@@ -439,6 +443,9 @@ public:
 
        #if DAF_PLUGIN_WANT_STATE
         fStateChunk = nullptr;
+       #if ! DAF_PLUGIN_HAS_UI
+        fResumingFromProcess = false;
+       #endif
 
         for (uint32_t i=0, count=fPlugin.getStateCount(); i<count; ++i)
         {
@@ -571,6 +578,13 @@ public:
                     fPlugin.setSampleRate(sampleRate, true);
 
                 fPlugin.activate();
+
+               #if DAF_PLUGIN_WANT_STATE && ! DAF_PLUGIN_HAS_UI
+                // without a UI there is no window idle, and resume is the host's main-thread call where
+                // updates made in activate() can be taken. Not when we resumed ourselves from the audio thread.
+                if (! fResumingFromProcess)
+                    applyStateUpdates();
+               #endif
             }
             else
             {
@@ -626,6 +640,12 @@ public:
                 return 0;
             }
            #endif
+
+           #if DAF_PLUGIN_WANT_STATE
+            // the new UI gets the state map below
+            applyStateUpdates();
+           #endif
+
             fVstUI = new UIVst(fAudioMaster, fEffect, this, &fPlugin, (intptr_t)ptr, fLastScaleFactor);
 
            #if DAF_PLUGIN_WANT_FULL_STATE
@@ -666,6 +686,9 @@ public:
             break;
 
         case VST_EFFECT_OPCODE_13: // window idle
+           #if DAF_PLUGIN_WANT_STATE
+            applyStateUpdates();
+           #endif
             if (fVstUI != nullptr)
                 fVstUI->idle();
             break;
@@ -686,6 +709,9 @@ public:
         {
             if (ptr == nullptr)
                 return 0;
+
+            // save what the plugin has, even if no idle call got to the update yet
+            mergeStateUpdates();
 
             if (fStateChunk != nullptr)
             {
@@ -773,6 +799,9 @@ public:
         {
             if (value <= 1 || ptr == nullptr)
                 return 0;
+
+            // settle earlier updates first, so they cannot overwrite the state being loaded
+            mergeStateUpdates();
 
             const size_t chunkSize = static_cast<size_t>(value);
 
@@ -863,7 +892,7 @@ public:
             if (! fPlugin.isActive())
             {
                 // host has not activated the plugin yet, nasty!
-                vst_dispatcher(VST_EFFECT_OPCODE_SUSPEND, 0, 1, nullptr, 0.0f);
+                resumeFromProcess();
             }
 
             if (const HostVstEvents* const events = (const HostVstEvents*)ptr)
@@ -1005,7 +1034,7 @@ public:
         if (! fPlugin.isActive())
         {
             // host has not activated the plugin yet, nasty!
-            vst_dispatcher(VST_EFFECT_OPCODE_SUSPEND, 0, 1, nullptr, 0.0f);
+            resumeFromProcess();
         }
 
         if (sampleFrames <= 0)
@@ -1107,6 +1136,12 @@ public:
     friend class UIVst;
 
 private:
+   #if DAF_PLUGIN_WANT_STATE
+    // Plugin::updateStateValue() lands here: constructed before the plugin and destroyed after it,
+    // so it exists whenever the plugin (or a UI created along with it) can call that
+    PluginStateUpdates fStateUpdates;
+   #endif
+
     // Plugin
     PluginExporter fPlugin;
 
@@ -1143,6 +1178,24 @@ private:
     char*     fStateChunk;
     StringMap fStateMap;
    #endif
+
+   #if DAF_PLUGIN_WANT_STATE && ! DAF_PLUGIN_HAS_UI
+    bool fResumingFromProcess;
+   #endif
+
+    // ----------------------------------------------------------------------------------------------------------------
+    // resume on the audio thread, for hosts that process (or send events) before activating
+
+    void resumeFromProcess()
+    {
+       #if DAF_PLUGIN_WANT_STATE && ! DAF_PLUGIN_HAS_UI
+        fResumingFromProcess = true;
+       #endif
+        vst_dispatcher(VST_EFFECT_OPCODE_SUSPEND, 0, 1, nullptr, 0.0f);
+       #if DAF_PLUGIN_WANT_STATE && ! DAF_PLUGIN_HAS_UI
+        fResumingFromProcess = false;
+       #endif
+    }
 
     // ----------------------------------------------------------------------------------------------------------------
     // host callback
@@ -1194,11 +1247,16 @@ private:
                 if (d_isEqual(curValue, defValue))
                     continue;
 
+                curValue = defValue;
+
                #if DAF_PLUGIN_HAS_UI
                 if (fVstUI != nullptr)
-                    setParameterValueFromPlugin(i, defValue);
+                    setParameterValueFromPlugin(i, curValue);
+                else
                #endif
-                fPlugin.setParameterValue(i, defValue);
+                parameterValues[i] = curValue;
+
+                fPlugin.setParameterValue(i, curValue);
             }
             else
             {
@@ -1266,6 +1324,58 @@ private:
 
   #if DAF_PLUGIN_WANT_STATE
     // ----------------------------------------------------------------------------------------------------------------
+    // Plugin::updateStateValue(), any thread but the audio one; the rest happens in applyStateUpdates
+
+    bool updateState(const char* const key, const char* const value)
+    {
+        return fStateUpdates.update(fPlugin, key, value);
+    }
+
+    static bool updateStateValueCallback(void* const ptr, const char* const key, const char* const value)
+    {
+        return static_cast<PluginVst*>(ptr)->updateState(key, value);
+    }
+
+    // Window idle and editor open, the host's main (UI) thread.
+    void applyStateUpdates()
+    {
+        PluginStateUpdates::Map updates;
+        bool notifyHost = false;
+        if (! fStateUpdates.takeForMainThread(updates, notifyHost))
+            return;
+
+        for (PluginStateUpdates::Map::const_iterator cit=updates.begin(), cite=updates.end(); cit != cite; ++cit)
+        {
+            const String& key(cit->first);
+            const String& value(cit->second);
+
+            fStateMap[key] = value;
+
+           #if DAF_PLUGIN_HAS_UI
+            if (fVstUI != nullptr && isStateForUI(fPlugin, key))
+                fVstUI->setStateFromPlugin(key, value);
+           #endif
+        }
+
+        // audioMasterUpdateDisplay, the closest VST2 has to marking the state as modified.
+        // Not for updates a chunk save or load took first: the host has those, or loaded over them.
+        if (notifyHost)
+            hostCallback(VST_HOST_OPCODE_2A);
+    }
+
+    // Chunk get and set, which some hosts call off their main thread, where the UI must not be touched.
+    // Only the state map takes the updates here; the UI gets them on the next window idle.
+    void mergeStateUpdates()
+    {
+        PluginStateUpdates::Map updates;
+        if (! fStateUpdates.takeForStateMap(updates))
+            return;
+
+        for (PluginStateUpdates::Map::const_iterator cit=updates.begin(), cite=updates.end(); cit != cite; ++cit)
+            fStateMap[cit->first] = cit->second;
+    }
+
+    // ----------------------------------------------------------------------------------------------------------------
     // functions called from the UI side, may block
 
    #if DAF_PLUGIN_HAS_UI
@@ -1281,6 +1391,9 @@ private:
         {
             const String dkey(key);
             fStateMap[dkey] = value;
+
+            // an earlier Plugin::updateStateValue() must not put its value back on the next idle
+            fStateUpdates.supersede(key);
         }
     }
   #endif

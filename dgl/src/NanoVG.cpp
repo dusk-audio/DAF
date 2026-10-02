@@ -1097,6 +1097,18 @@ void NanoBaseWidget<BaseWidget>::displayChildren()
     }
 }
 
+template <class BaseWidget>
+bool NanoBaseWidget<BaseWidget>::getClipChildren() const noexcept
+{
+    return fClipChildren;
+}
+
+template <class BaseWidget>
+void NanoBaseWidget<BaseWidget>::setClipChildren(const bool clipChildren) noexcept
+{
+    fClipChildren = clipChildren;
+}
+
 // -----------------------------------------------------------------------
 // NanoSubWidget
 
@@ -1104,7 +1116,8 @@ template <>
 NanoBaseWidget<SubWidget>::NanoBaseWidget(Widget* const parentWidget, int flags)
     : SubWidget(parentWidget),
       NanoVG(flags),
-      fUsingParentContext(false)
+      fUsingParentContext(false),
+      fClipChildren(false)
 {
     setNeedsViewportScaling();
 }
@@ -1113,7 +1126,8 @@ template <>
 NanoBaseWidget<SubWidget>::NanoBaseWidget(NanoSubWidget* const parentWidget)
     : SubWidget(parentWidget),
       NanoVG(parentWidget->getContext()),
-      fUsingParentContext(true)
+      fUsingParentContext(true),
+      fClipChildren(false)
 {
     setSkipDrawing();
 }
@@ -1122,10 +1136,15 @@ template <>
 NanoBaseWidget<SubWidget>::NanoBaseWidget(NanoTopLevelWidget* const parentWidget)
     : SubWidget(parentWidget),
       NanoVG(parentWidget->getContext()),
-      fUsingParentContext(true)
+      fUsingParentContext(true),
+      fClipChildren(false)
 {
     setSkipDrawing();
 }
+
+// access to the scissor of the current nanovg state, defined at the end of this file after nanovg.c
+static NVGscissor getNanoVGScissor(NVGcontext* context);
+static void setNanoVGScissor(NVGcontext* context, const NVGscissor& scissor);
 
 template <>
 inline void NanoBaseWidget<SubWidget>::onDisplay()
@@ -1135,8 +1154,31 @@ inline void NanoBaseWidget<SubWidget>::onDisplay()
         NanoVG::save();
         translate(SubWidget::getAbsoluteX(), SubWidget::getAbsoluteY());
         onNanoDisplay();
+
+        if (! fClipChildren)
+        {
+            // children start from the state we were given, scissor included
+            NanoVG::restore();
+            displayChildren();
+            return;
+        }
+
+        // children start from the state we were given, but stay clipped to any scissor we set.
+        // nanovg stores the scissor already transformed, so it does not depend on our translation.
+        NVGcontext* const context = getContext();
+        NVGscissor scissor = NVGscissor();
+
+        if (context != nullptr)
+            scissor = getNanoVGScissor(context);
+
         NanoVG::restore();
+        NanoVG::save();
+
+        if (context != nullptr)
+            setNanoVGScissor(context, scissor);
+
         displayChildren();
+        NanoVG::restore();
     }
     else
     {
@@ -1156,7 +1198,8 @@ template <>
 NanoBaseWidget<TopLevelWidget>::NanoBaseWidget(Window& windowToMapTo, int flags)
     : TopLevelWidget(windowToMapTo),
       NanoVG(flags),
-      fUsingParentContext(false) {}
+      fUsingParentContext(false),
+      fClipChildren(false) {}
 
 template <>
 inline void NanoBaseWidget<TopLevelWidget>::onDisplay()
@@ -1176,13 +1219,15 @@ template <>
 NanoBaseWidget<StandaloneWindow>::NanoBaseWidget(Application& app, int flags)
     : StandaloneWindow(app),
       NanoVG(flags),
-      fUsingParentContext(false) {}
+      fUsingParentContext(false),
+      fClipChildren(false) {}
 
 template <>
 NanoBaseWidget<StandaloneWindow>::NanoBaseWidget(Application& app, Window& parentWindow, int flags)
     : StandaloneWindow(app, parentWindow),
       NanoVG(flags),
-      fUsingParentContext(false) {}
+      fUsingParentContext(false),
+      fClipChildren(false) {}
 
 template <>
 inline void NanoBaseWidget<StandaloneWindow>::onDisplay()
@@ -1214,5 +1259,21 @@ extern "C" {
 #if defined(__GNUC__) && (__GNUC__ >= 6)
 # pragma GCC diagnostic pop
 #endif
+
+// -----------------------------------------------------------------------
+
+START_NAMESPACE_DGL
+
+static NVGscissor getNanoVGScissor(NVGcontext* const context)
+{
+    return nvg__getState(context)->scissor;
+}
+
+static void setNanoVGScissor(NVGcontext* const context, const NVGscissor& scissor)
+{
+    nvg__getState(context)->scissor = scissor;
+}
+
+END_NAMESPACE_DGL
 
 // -----------------------------------------------------------------------

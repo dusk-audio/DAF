@@ -82,6 +82,99 @@ START_NAMESPACE_DAF
 // static pointer used for signal null/none action taken
 static const char* const kSelectedFileCancelled = "__daf_cancelled__";
 
+#ifdef HAVE_X11
+// Xlib error handlers are process-global, so errors raised on other displays (the host's own
+// connection, say) go on to the handler this one replaced instead of being swallowed here.
+static bool x11TopLevelQueryFailed = false;
+static Display* x11TopLevelQueryDisplay = nullptr;
+static int (*x11TopLevelPreviousHandler)(Display*, XErrorEvent*) = nullptr;
+
+static int x11TopLevelErrorHandler(Display* const display, XErrorEvent* const event)
+{
+    if (display == x11TopLevelQueryDisplay)
+    {
+        x11TopLevelQueryFailed = true;
+        return 0;
+    }
+
+    return x11TopLevelPreviousHandler != nullptr ? x11TopLevelPreviousHandler(display, event) : 0;
+}
+
+// An embedded view is a child window that the window manager knows nothing about, while portals and
+// window managers expect a top-level client window as a dialog's parent. Walk up from the view to
+// the first ancestor carrying WM_STATE (set by the window manager on managed client windows), or to
+// the root's direct child when none does, which is the closest thing to a top-level available.
+// Returns the window unchanged if the tree cannot be queried (e.g. a window destroyed mid-walk).
+static ::Window getX11TopLevelWindow(Display* const display, const ::Window window)
+{
+    if (display == nullptr || window == 0)
+        return window;
+
+    const Atom wmState = XInternAtom(display, "WM_STATE", True);
+
+    // A non-existent window is not fatal here, so keep Xlib's default handler from exiting the host
+    x11TopLevelQueryDisplay = display;
+    x11TopLevelQueryFailed = false;
+    x11TopLevelPreviousHandler = XSetErrorHandler(x11TopLevelErrorHandler);
+
+    ::Window current = window;
+    ::Window result = window;
+
+    for (int depth = 0; depth < 64; ++depth)
+    {
+        if (wmState != None)
+        {
+            Atom type = None;
+            int format = 0;
+            unsigned long numItems = 0, bytesAfter = 0;
+            unsigned char* data = nullptr;
+
+            const int status = XGetWindowProperty(display, current, wmState, 0, 0, False, AnyPropertyType,
+                                                  &type, &format, &numItems, &bytesAfter, &data);
+
+            if (data != nullptr)
+                XFree(data);
+
+            if (x11TopLevelQueryFailed || status != Success)
+                break;
+
+            if (type != None)
+            {
+                result = current;
+                break;
+            }
+        }
+
+        ::Window root = 0, parent = 0;
+        ::Window* children = nullptr;
+        uint numChildren = 0;
+
+        const Status ok = XQueryTree(display, current, &root, &parent, &children, &numChildren);
+
+        if (children != nullptr)
+            XFree(children);
+
+        if (x11TopLevelQueryFailed || ok == 0 || parent == 0)
+            break;
+
+        if (parent == root)
+        {
+            result = current;
+            break;
+        }
+
+        current = parent;
+    }
+
+    XSync(display, False);
+    XSetErrorHandler(x11TopLevelPreviousHandler);
+    x11TopLevelPreviousHandler = nullptr;
+    x11TopLevelQueryDisplay = nullptr;
+
+    return x11TopLevelQueryFailed ? window : result;
+}
+#endif
+
 #ifdef HAVE_DBUS
 static constexpr bool isHexChar(const char c) noexcept
 {
@@ -475,6 +568,14 @@ FileBrowserHandle fileBrowserCreate(const bool isEmbed,
 
     ScopedPointer<FileBrowserData> handle(new FileBrowserData(options.saving));
 
+#ifdef HAVE_X11
+    // the parent given to the portal and to libsofd must be a top-level window, see above
+    const uintptr_t x11ParentWindow = isEmbed
+                                    ? static_cast<uintptr_t>(getX11TopLevelWindow(handle->x11display,
+                                                                                  static_cast<::Window>(windowId)))
+                                    : windowId;
+#endif
+
 #ifdef DAF_OS_MAC
 # if MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_8
     // unsupported
@@ -618,8 +719,8 @@ FileBrowserHandle fileBrowserCreate(const bool isEmbed,
                 char windowIdStr[32];
                 memset(windowIdStr, 0, sizeof(windowIdStr));
                #ifdef HAVE_X11
-                if (windowId != 0)
-                    snprintf(windowIdStr, sizeof(windowIdStr)-1, "x11:%llx", (ulonglong)windowId);
+                if (x11ParentWindow != 0)
+                    snprintf(windowIdStr, sizeof(windowIdStr)-1, "x11:%llx", (ulonglong)x11ParentWindow);
                #endif
                 const char* windowIdStrPtr = windowIdStr;
 
@@ -682,7 +783,7 @@ FileBrowserHandle fileBrowserCreate(const bool isEmbed,
     x_fib_cfg_buttons(2, button2);
     x_fib_cfg_buttons(3, button3);
 
-    if (x_fib_show(x11display, windowId, 0, 0, scaleFactor + 0.5) != 0)
+    if (x_fib_show(x11display, x11ParentWindow, 0, 0, scaleFactor + 0.5) != 0)
         return nullptr;
 #endif
 
