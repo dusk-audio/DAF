@@ -923,7 +923,10 @@ public:
         }
       #endif
 
-        if (!fPlugin.isParameterOutputOrTrigger(index))
+        // A trigger is an input like any other: the press has to reach the plugin, and
+        // updateParametersFromProcessing() puts it back to its default after the block.
+        // Holding it back left the plugin never seeing the press and the cache stuck high.
+        if (!fPlugin.isParameterOutput(index))
             fPlugin.setParameterValue(index, value);
     }
 
