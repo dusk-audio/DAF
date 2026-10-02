@@ -443,6 +443,9 @@ public:
 
        #if DAF_PLUGIN_WANT_STATE
         fStateChunk = nullptr;
+       #if ! DAF_PLUGIN_HAS_UI
+        fResumingFromProcess = false;
+       #endif
 
         for (uint32_t i=0, count=fPlugin.getStateCount(); i<count; ++i)
         {
@@ -575,6 +578,13 @@ public:
                     fPlugin.setSampleRate(sampleRate, true);
 
                 fPlugin.activate();
+
+               #if DAF_PLUGIN_WANT_STATE && ! DAF_PLUGIN_HAS_UI
+                // without a UI there is no window idle, and resume is the host's main-thread call where
+                // updates made in activate() can be taken. Not when we resumed ourselves from the audio thread.
+                if (! fResumingFromProcess)
+                    applyStateUpdates();
+               #endif
             }
             else
             {
@@ -882,7 +892,7 @@ public:
             if (! fPlugin.isActive())
             {
                 // host has not activated the plugin yet, nasty!
-                vst_dispatcher(VST_EFFECT_OPCODE_SUSPEND, 0, 1, nullptr, 0.0f);
+                resumeFromProcess();
             }
 
             if (const HostVstEvents* const events = (const HostVstEvents*)ptr)
@@ -1024,7 +1034,7 @@ public:
         if (! fPlugin.isActive())
         {
             // host has not activated the plugin yet, nasty!
-            vst_dispatcher(VST_EFFECT_OPCODE_SUSPEND, 0, 1, nullptr, 0.0f);
+            resumeFromProcess();
         }
 
         if (sampleFrames <= 0)
@@ -1168,6 +1178,24 @@ private:
     char*     fStateChunk;
     StringMap fStateMap;
    #endif
+
+   #if DAF_PLUGIN_WANT_STATE && ! DAF_PLUGIN_HAS_UI
+    bool fResumingFromProcess;
+   #endif
+
+    // ----------------------------------------------------------------------------------------------------------------
+    // resume on the audio thread, for hosts that process (or send events) before activating
+
+    void resumeFromProcess()
+    {
+       #if DAF_PLUGIN_WANT_STATE && ! DAF_PLUGIN_HAS_UI
+        fResumingFromProcess = true;
+       #endif
+        vst_dispatcher(VST_EFFECT_OPCODE_SUSPEND, 0, 1, nullptr, 0.0f);
+       #if DAF_PLUGIN_WANT_STATE && ! DAF_PLUGIN_HAS_UI
+        fResumingFromProcess = false;
+       #endif
+    }
 
     // ----------------------------------------------------------------------------------------------------------------
     // host callback
