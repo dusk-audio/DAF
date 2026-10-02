@@ -184,6 +184,11 @@ struct ImGuiWidget<BaseWidget>::PrivateData {
        #endif
     }
 
+    // The renderer backend's shutdown deletes its buffers, program and font texture, so the window's
+    // graphics context must be current; the ImGuiWidget destructors make sure of it. Nothing else
+    // does on a standalone window, and without it they leaked, and on Windows every one of those
+    // entry points was reported unavailable, having been looked up for the first time with no
+    // context current.
     ~PrivateData()
     {
         ImGui::SetCurrentContext(context);
@@ -705,6 +710,9 @@ template <>
 ImGuiWidget<SubWidget>::~ImGuiWidget()
 {
     getWindow().removeIdleCallback(this);
+
+    // the renderer backend deletes its GL objects on shutdown, see PrivateData::~PrivateData
+    const Window::ScopedGraphicsContext sgc(getWindow());
     delete imData;
 }
 
@@ -743,6 +751,9 @@ template <>
 ImGuiWidget<TopLevelWidget>::~ImGuiWidget()
 {
     removeIdleCallback(this);
+
+    // the renderer backend deletes its GL objects on shutdown, see PrivateData::~PrivateData
+    const Window::ScopedGraphicsContext sgc(getWindow());
     delete imData;
 }
 
@@ -791,6 +802,9 @@ template <>
 ImGuiWidget<StandaloneWindow>::~ImGuiWidget()
 {
     Window::removeIdleCallback(this);
+
+    // the renderer backend deletes its GL objects on shutdown, see PrivateData::~PrivateData
+    const Window::ScopedGraphicsContext sgc(static_cast<Window&>(*this));
     delete imData;
 }
 

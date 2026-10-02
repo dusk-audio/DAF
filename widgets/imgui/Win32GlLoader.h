@@ -24,6 +24,12 @@ using ProcPtr = void (*)();
 
 ProcPtr procAddress(const char* name);
 
+// Whether any OpenGL context is current on the calling thread. Nothing resolves without one.
+bool hasCurrentContext();
+
+// Report, once per entry point, a call made with no OpenGL context current.
+void reportNoContext(const char* name);
+
 template <typename Fn>
 struct GlProc
 {
@@ -32,12 +38,26 @@ struct GlProc
     const char* const name;
     Fn fn = nullptr;
     bool resolutionAttempted = false;
+    bool noContextReported = false;
 
     template <typename... Args>
     auto operator()(Args... args) -> decltype(std::declval<Fn>()(args...))
     {
         if (! resolutionAttempted)
         {
+            // Without a current context wglGetProcAddress fails for every name. That says nothing
+            // about the driver, so do not give up on the entry point for good: report the call
+            // (it is a bug in the caller, and the call does nothing) and try again on the next one.
+            if (! hasCurrentContext())
+            {
+                if (! noContextReported)
+                {
+                    noContextReported = true;
+                    reportNoContext(name);
+                }
+                return decltype(std::declval<Fn>()(args...))();
+            }
+
             resolutionAttempted = true;
             fn = reinterpret_cast<Fn>(procAddress(name));
         }
