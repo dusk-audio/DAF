@@ -123,25 +123,64 @@ parentScreen(const PuglView* view)
 static NSScreen*
 viewScreen(const PuglView* view)
 {
+  // [NSWindow screen] is nil while a window is entirely off screen (or the
+  // display it was on has gone away), so every step falls through to the next.
+  NSScreen* screen = nil;
+
   if (view->impl->window) {
-    return [view->impl->window screen];
+    screen = [view->impl->window screen];
+  } else if ([view->impl->wrapperView window]) {
+    screen = [[view->impl->wrapperView window] screen];
+  } else {
+    // An embedded view that is not attached yet still belongs to whatever
+    // screen its parent is on, which need not be the one carrying the menu bar.
+    screen = parentScreen(view);
   }
 
-  if ([view->impl->wrapperView window]) {
-    return [[view->impl->wrapperView window] screen];
+  return screen ? screen : [NSScreen mainScreen];
+}
+
+/* The backing scale factor: the single source for every pixel <-> point
+   conversion in this file.
+
+   Sizes used to be converted with whichever screen was at hand: realize and
+   expose took [NSScreen mainScreen], everything else [window screen]. When the
+   two disagree (a transient 1x display, a sleeping display, a headless
+   session) a size converted to points with one factor came back as pixels with
+   the other, halved or doubled. [nil backingScaleFactor] is also 0, which
+   turned the conversions into divisions by zero.
+
+   So take the factor from the window the view lives in, which is what AppKit
+   backs the view with, and fall back in turn to the window the view will be
+   embedded in, the transient parent's window, and only then a screen. Never
+   0. */
+static double
+viewScaleFactor(const PuglView* view)
+{
+  NSWindow* window = view->impl->window;
+
+  if (!window) {
+    window = [view->impl->wrapperView window];
   }
 
-  // An embedded view that is not attached yet still belongs to whatever screen
-  // its parent is on, which need not be the one carrying the menu bar.
-  NSScreen* const parent = parentScreen(view);
+  if (!window && view->parent) {
+    window = [(NSView*)view->parent window];
+  }
 
-  return parent ? parent : [NSScreen mainScreen];
+  if (!window && view->transientParent) {
+    window = [(NSView*)view->transientParent window];
+  }
+
+  const double scaleFactor = window ? [window backingScaleFactor]
+                                    : [viewScreen(view) backingScaleFactor];
+
+  return scaleFactor > 0.0 ? scaleFactor : 1.0;
 }
 
 static NSRect
 nsRectToPoints(const PuglView* view, const NSRect rect)
 {
-  const double scaleFactor = [viewScreen(view) backingScaleFactor];
+  const double scaleFactor = viewScaleFactor(view);
 
   return NSMakeRect(rect.origin.x / scaleFactor,
                     rect.origin.y / scaleFactor,
@@ -152,7 +191,7 @@ nsRectToPoints(const PuglView* view, const NSRect rect)
 static NSRect
 nsRectFromPoints(const PuglView* view, const NSRect rect)
 {
-  const double scaleFactor = [viewScreen(view) backingScaleFactor];
+  const double scaleFactor = viewScaleFactor(view);
 
   return NSMakeRect(rect.origin.x * scaleFactor,
                     rect.origin.y * scaleFactor,
@@ -163,7 +202,7 @@ nsRectFromPoints(const PuglView* view, const NSRect rect)
 static NSPoint
 nsPointFromPoints(const PuglView* view, const NSPoint point)
 {
-  const double scaleFactor = [viewScreen(view) backingScaleFactor];
+  const double scaleFactor = viewScaleFactor(view);
 
   return NSMakePoint(point.x * scaleFactor, point.y * scaleFactor);
 }
@@ -171,7 +210,7 @@ nsPointFromPoints(const PuglView* view, const NSPoint point)
 static NSSize
 sizePoints(PuglView* view, const PuglSpan width, const PuglSpan height)
 {
-  const double scaleFactor = [viewScreen(view) backingScaleFactor];
+  const double scaleFactor = viewScaleFactor(view);
 
   return NSMakeSize(width / scaleFactor, height / scaleFactor);
 }
@@ -323,7 +362,7 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
 
 - (void)dispatchExpose:(NSRect)rect
 {
-  const double scaleFactor = [[NSScreen mainScreen] backingScaleFactor];
+  const double scaleFactor = viewScaleFactor(puglview);
 
   if (reshaped) {
     if (puglview->impl->window) {
@@ -1213,11 +1252,12 @@ puglRealize(PuglView* view)
     return st;
   }
 
-  // An embedded view is sized in the backing pixels of its parent's screen, so
-  // the conversion to points has to use that screen and not the main one.
-  NSScreen* const       embedScreen = parentScreen(view);
-  const NSScreen* const screen      = embedScreen ? embedScreen : [NSScreen mainScreen];
-  const double          scaleFactor = [screen backingScaleFactor];
+  // An embedded view is sized in the backing pixels of its parent, so the
+  // conversion to points has to use the parent's scale and screen, not the main
+  // one's. A top-level window takes the scale of the screen it will be placed
+  // on, and is checked against its own once it exists (see below).
+  const NSScreen* const screen      = viewScreen(view);
+  double                scaleFactor = viewScaleFactor(view);
 
   // Getting depth from the display mode seems tedious, just set usual values
   puglEnsureHint(view, PUGL_RED_BITS, 8);
@@ -1251,7 +1291,7 @@ puglRealize(PuglView* view)
 
   // Convert frame to points
   const NSRect framePx = NSMakeRect(pos.x, pos.y, size.width, size.height);
-  const NSRect framePt = NSMakeRect(framePx.origin.x / scaleFactor,
+  NSRect       framePt = NSMakeRect(framePx.origin.x / scaleFactor,
                                     framePx.origin.y / scaleFactor,
                                     framePx.size.width / scaleFactor,
                                     framePx.size.height / scaleFactor);
@@ -1336,6 +1376,19 @@ puglRealize(PuglView* view)
 
     ((NSWindow*)window).delegate =
       [[PuglWindowDelegate alloc] initWithPuglWindow:window];
+
+    // From here on every conversion reads the window's own backing scale. If
+    // AppKit backed the window differently from the screen predicted above,
+    // redo the conversion with the window's factor, or the configure event
+    // would report the size scaled by the ratio of the two.
+    const double windowScaleFactor = viewScaleFactor(view);
+    if (windowScaleFactor != scaleFactor) {
+      scaleFactor = windowScaleFactor;
+      framePt     = NSMakeRect(framePx.origin.x / scaleFactor,
+                               framePx.origin.y / scaleFactor,
+                               framePx.size.width / scaleFactor,
+                               framePx.size.height / scaleFactor);
+    }
 
     // Set window frame
     const NSRect screenPt = rectToScreen(screen, framePt);
@@ -1759,7 +1812,7 @@ puglApplyViewString(PuglView* const      view,
 double
 puglGetScaleFactor(const PuglView* const view)
 {
-  return [viewScreen(view) backingScaleFactor];
+  return viewScaleFactor(view);
 }
 
 PuglStatus
@@ -1794,7 +1847,7 @@ puglSetWindowSize(PuglView* const view,
   PuglInternals* const impl = view->impl;
 
   // Set wrapper view size
-  const double scaleFactor = [viewScreen(view) backingScaleFactor];
+  const double scaleFactor = viewScaleFactor(view);
   const CGSize frameSizePt = {width / scaleFactor, height / scaleFactor};
   [impl->wrapperView setFrameSize:frameSizePt];
 
