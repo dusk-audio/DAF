@@ -41,6 +41,7 @@ START_NAMESPACE_DGL
 // Forward class names
 
 class NanoVG;
+template <class BaseWidget> class NanoBaseWidget;
 
 // -----------------------------------------------------------------------
 // Helper methods
@@ -895,9 +896,12 @@ public:
 #endif
 
 private:
-    NVGcontext* const fContext;
+    NVGcontext* fContext;
     bool fInFrame;
     bool fIsSubWidget;
+
+    // deletes the context early, with the widget's window graphics context current
+    template <class BaseWidget> friend class NanoBaseWidget;
 
     DAF_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NanoVG)
 };
@@ -953,8 +957,9 @@ public:
 
    /**
       Destructor.
+      Deletes the NanoVG context, if this widget has its own, with the window graphics context current.
     */
-    ~NanoBaseWidget() override {}
+    ~NanoBaseWidget() override;
 
    /**
       Whether children sharing this widget's NanoVG context are clipped to the scissor it sets.

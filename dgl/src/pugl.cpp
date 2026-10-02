@@ -334,6 +334,37 @@ bool puglBackendLeave(PuglView* const view)
 }
 
 // --------------------------------------------------------------------------------------------------------------------
+// DGL specific, whether the view's OpenGL context is the one current on the calling thread
+
+bool puglBackendIsCurrent(PuglView* const view, const bool fallback)
+{
+   #if defined(DGL_OPENGL) && (defined(DAF_OS_MAC) || defined(DAF_OS_WINDOWS) || defined(HAVE_X11) || defined(HAVE_WAYLAND))
+    // these platforms can always be asked
+    (void)fallback;
+
+    if (view == nullptr || view->impl == nullptr)
+        return false;
+
+   #if defined(DAF_OS_MAC)
+    PuglOpenGLView* const drawView = (PuglOpenGLView*)view->impl->drawView;
+    return drawView != nil && [NSOpenGLContext currentContext] == [drawView openGLContext];
+   #elif defined(DAF_OS_WINDOWS)
+    const PuglWinGlSurface* const surface = static_cast<const PuglWinGlSurface*>(view->impl->surface);
+    return surface != nullptr && surface->hglrc != nullptr && wglGetCurrentContext() == surface->hglrc;
+   #elif defined(HAVE_X11)
+    const PuglX11GlSurface* const surface = static_cast<const PuglX11GlSurface*>(view->impl->surface);
+    return surface != nullptr && surface->ctx != nullptr && glXGetCurrentContext() == surface->ctx;
+   #else
+    const PuglWaylandGlSurface* const surface = static_cast<const PuglWaylandGlSurface*>(view->impl->surface);
+    return surface != nullptr && surface->context != EGL_NO_CONTEXT && eglGetCurrentContext() == surface->context;
+   #endif
+   #else
+    (void)view;
+    return fallback;
+   #endif
+}
+
+// --------------------------------------------------------------------------------------------------------------------
 // DGL specific, assigns backend that matches current DGL build
 
 void puglSetMatchingBackendForCurrentBuild(PuglView* const view)
@@ -359,9 +390,12 @@ void puglSetMatchingBackendForCurrentBuild(PuglView* const view)
         puglSetViewHint(view, PUGL_CONTEXT_PROFILE, PUGL_OPENGL_CORE_PROFILE);
         puglSetViewHint(view, PUGL_CONTEXT_VERSION_MAJOR, 3);
        #elif defined(DGL_USE_OPENGL3)
+        // 3.2, not 3.0: GLX and WGL ignore the profile below 3.2, so asking for 3.0 got a compatibility
+        // context everywhere but macOS, and DGL's shaders are GLSL 1.50, which needs 3.2 to begin with
         puglSetViewHint(view, PUGL_CONTEXT_API, PUGL_OPENGL_API);
         puglSetViewHint(view, PUGL_CONTEXT_PROFILE, PUGL_OPENGL_CORE_PROFILE);
         puglSetViewHint(view, PUGL_CONTEXT_VERSION_MAJOR, 3);
+        puglSetViewHint(view, PUGL_CONTEXT_VERSION_MINOR, 2);
        #elif defined(DGL_OPENGL)
         puglSetViewHint(view, PUGL_CONTEXT_API, PUGL_OPENGL_API);
         puglSetViewHint(view, PUGL_CONTEXT_PROFILE, PUGL_OPENGL_COMPATIBILITY_PROFILE);

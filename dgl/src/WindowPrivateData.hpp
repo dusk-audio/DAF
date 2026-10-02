@@ -58,7 +58,8 @@ struct Window::PrivateData : IdleCallback {
     alignas(kGraphicsContextAlign) mutable uint8_t graphicsContext[kGraphicsContextSize];
     void createContextIfNeeded();
     void destroyContext();
-    void startContext();
+    // false when there is nothing to draw with (OpenGL3 without its program); then nothing is drawn
+    bool startContext();
     void endContext();
 
     /** The top-level widgets associated with this Window. */

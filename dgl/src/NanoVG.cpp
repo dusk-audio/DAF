@@ -1109,6 +1109,21 @@ void NanoBaseWidget<BaseWidget>::setClipChildren(const bool clipChildren) noexce
     fClipChildren = clipChildren;
 }
 
+/* The GL backend deletes its buffers, program, textures and vertex array with the context, so the
+ * window's graphics context must be current then. ~NanoVG runs after this, with nothing to tell it
+ * which window it drew in, and nothing enters the context for a standalone window or a subwidget
+ * deleted outside of drawing, so the GL context is deleted here instead. */
+template <class BaseWidget>
+NanoBaseWidget<BaseWidget>::~NanoBaseWidget()
+{
+    if (NanoVG::fContext == nullptr || NanoVG::fIsSubWidget)
+        return;
+
+    const Window::ScopedGraphicsContext sgc(BaseWidget::getWindow());
+    nvgDeleteGL(NanoVG::fContext);
+    NanoVG::fContext = nullptr;
+}
+
 // -----------------------------------------------------------------------
 // NanoSubWidget
 

@@ -160,11 +160,8 @@ public:
        #endif
 
         // this is called just before creating UI, ensuring proper context to it
-        if (pData->initPost())
-        {
-            puglBackendEnter(pData->view);
+        if (pData->initPost() && puglBackendEnter(pData->view))
             pData->createContextIfNeeded();
-        }
     }
 
     ~PluginWindow() override

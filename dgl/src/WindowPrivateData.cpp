@@ -722,9 +722,8 @@ void Window::PrivateData::onPuglConfigure(const uint width, const uint height)
     }
    #endif
 
-   #ifndef DAF_TEST_WINDOW_CPP
-    createContextIfNeeded();
-   #endif
+    // No graphics context work here: pugl dispatches configure events without entering the view's
+    // context, so the context is created from the expose handler instead (see onPuglExpose).
 
     if (autoScaling)
     {
@@ -782,6 +781,14 @@ void Window::PrivateData::onPuglExpose()
 {
     // DGL_DBG("PUGL: onPuglExpose\n");
 
+   #ifndef DAF_TEST_WINDOW_CPP
+    /* Created here and not on configure, which pugl dispatches outside of the context. There,
+     * nothing of this view's is current (Windows: glCreateShader returned 0 and asserted), or a
+     * different view's or the host's context is, which would then own this window's objects.
+     */
+    createContextIfNeeded();
+   #endif
+
     /* The graphics context is current here, and this is the only event where pugl promises that,
      * so the drawing state a resize invalidates is set up now, before anything is drawn with it.
      * Once per configure event: the state persists across exposes, exactly as it did when this
@@ -796,7 +803,8 @@ void Window::PrivateData::onPuglExpose()
     puglOnDisplayPrepare(view);
 
 #ifndef DAF_TEST_WINDOW_CPP
-    startContext();
+    if (! startContext())
+        return;
 
     FOR_EACH_TOP_LEVEL_WIDGET(it)
     {

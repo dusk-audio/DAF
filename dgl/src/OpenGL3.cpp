@@ -111,9 +111,10 @@ static void notImplemented(const char* const name)
 // An OpenGL 3.2+ *core* profile has no default vertex array object: name zero is not a valid VAO there, so
 // glVertexAttribPointer and every draw call made with nothing bound fail with GL_INVALID_OPERATION and the draw
 // is dropped without any other symptom. This bites on macOS in particular, where mac_gl.m maps a core profile
-// request straight to NSOpenGLProfileVersion3_2Core with no compatibility fallback. It does NOT bite on X11,
-// because pugl asks GLX for version 3.0 and GLX ignores the profile mask below 3.2, so Linux quietly hands back
-// a compatibility context where name zero still works -- which is why this went unnoticed.
+// request straight to NSOpenGLProfileVersion3_2Core with no compatibility fallback. It used not to bite on X11
+// or Windows, because DGL asked for version 3.0 and GLX and WGL ignore the profile mask below 3.2, so they quietly
+// handed back a compatibility context where name zero still works -- which is why this went unnoticed. DGL now
+// asks for 3.2, so every desktop platform gets a core profile.
 //
 // One VAO is created per graphics context in createContextIfNeeded() and destroyed in destroyContext(). It is
 // bound at the top of every drawing helper below rather than once per frame, because NanoVG's GL3 backend binds
@@ -943,6 +944,13 @@ void Window::PrivateData::createContextIfNeeded()
     if (gl3context.program != 0)
         return;
 
+    // Everything below goes into whichever context is current, so it must be this view's. Where that
+    // cannot be asked, trust the caller. Windows in particular reports a failed wglMakeCurrent as a
+    // successful enter, and with no context current glCreateShader just returns 0. Leaving the
+    // program at zero is not an error: the next call with the context current creates it.
+    if (! puglBackendIsCurrent(view, true))
+        return;
+
 #if defined(DAF_OS_WINDOWS)
 # if defined(__GNUC__) && (__GNUC__ >= 9)
 #  pragma GCC diagnostic push
@@ -1020,8 +1028,9 @@ DGL_EXT(PFNGLGENVERTEXARRAYSPROC,          glGenVertexArrays)
     // "Summary of Deprecations and Removals" -- gl_FragColor and texture2D go in section 9, attribute and
     // varying in section 8), so a conforming core-profile compiler rejects them. Writing the GLESv2 spelling
     // under a "core" header, as this used to, is invalid GLSL even though Mesa accepts it -- which is exactly
-    // why it survived: X11 hands DGL a compatibility context, so Linux never compiled these shaders under a
-    // strict core-profile front end. Apple's does reject them, and macOS now defaults to this renderer.
+    // why it survived: X11 handed DGL a compatibility context (see the vertex array note above), so Linux never
+    // compiled these shaders under a strict core-profile front end. Apple's does reject them, and macOS now
+    // defaults to this renderer.
    #if defined(DGL_USE_GLES2)
     #define DGL_SHADER_HEADER    "#version 100\n"
     #define DGL_SHADER_IN        "attribute"    // vertex stage input
@@ -1108,15 +1117,35 @@ void Window::PrivateData::destroyContext()
     if (gl3context.program == 0)
         return;
 
-    destroyVertexArray(gl3context);
-    glDeleteBuffers(2, gl3context.buffers);
-    glDeleteProgram(gl3context.program);
+    // Called as the window goes away, where nothing has entered its context (a plugin window has
+    // already left it). The names only mean something in this view's context: deleted elsewhere,
+    // they are leaked here and may take out another context's objects.
+    const bool entered = view != nullptr && ! puglBackendIsCurrent(view, false) && puglBackendEnter(view);
+
+    if (puglBackendIsCurrent(view, true))
+    {
+        destroyVertexArray(gl3context);
+        glDeleteBuffers(2, gl3context.buffers);
+        glDeleteProgram(gl3context.program);
+    }
+
     gl3context.program = 0;
+    gl3context.vao = 0;
+
+    if (entered)
+        puglBackendLeave(view);
 }
 
-void Window::PrivateData::startContext()
+bool Window::PrivateData::startContext()
 {
     OpenGL3GraphicsContext& gl3context = reinterpret_cast<OpenGL3GraphicsContext&>(graphicsContext);
+
+    // No program means the context could not provide what this renderer needs (a pre-3.0 legacy
+    // context on Windows leaves the entry points unloaded) or it was not current yet; drawing now
+    // would call through null function pointers, so this frame is skipped.
+    if (gl3context.program == 0)
+        return false;
+
     const PuglArea size = puglGetSizeHint(view, PUGL_CURRENT_SIZE);
 
     gl3context.width = size.width;
@@ -1125,6 +1154,7 @@ void Window::PrivateData::startContext()
 
     // so that custom onDisplay() code drawing through context.bounds/buffers has a valid VAO bound too
     bindVertexArray(gl3context);
+    return true;
 }
 
 void Window::PrivateData::endContext()

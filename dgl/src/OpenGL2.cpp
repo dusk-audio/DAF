@@ -557,8 +557,9 @@ void Window::PrivateData::destroyContext()
 {
 }
 
-void Window::PrivateData::startContext()
+bool Window::PrivateData::startContext()
 {
+    return true;
 }
 
 void Window::PrivateData::endContext()

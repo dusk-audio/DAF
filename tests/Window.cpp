@@ -27,6 +27,14 @@
 #include "dgl/src/Window.cpp"
 #include "dgl/src/WindowPrivateData.cpp"
 
+#ifdef DGL_OPENGL
+// ScopedGraphicsContext creates the renderer's drawing state, which lives with the renderers this test does
+// not build; only whether the context is current matters here.
+START_NAMESPACE_DGL
+void Window::PrivateData::createContextIfNeeded() {}
+END_NAMESPACE_DGL
+#endif
+
 // --------------------------------------------------------------------------------------------------------------------
 // Window befriends the plugin wrappers' PluginWindow, which is how a host-provided scale factor reaches
 // Window::PrivateData::setScaleFactor (see UIExporter::notifyScaleFactorChanged). This translation unit
@@ -54,6 +62,14 @@ public:
     {
         return pData->followsPuglScaleFactor;
     }
+
+   #ifdef DGL_OPENGL
+    bool contextIsCurrent() const
+    {
+        USE_NAMESPACE_DGL;
+        return puglBackendIsCurrent(pData->view, false);
+    }
+   #endif
 
 protected:
     void onScaleFactorChanged(const double scaleFactor) override
@@ -171,6 +187,27 @@ int main()
         win.setScaleFactorFromHost(win.getScaleFactor() * 2.0);
         DAF_ASSERT_EQUAL(win.followsPuglScaleFactor(), false, "host scale factor stops following pugl");
     }
+
+   #ifdef DGL_OPENGL
+    // A graphics context scope opened while the context is current leaves it current: widget destructors
+    // open one to delete their GL objects, and when the plugin wrapper has entered the context for the
+    // whole UI teardown, everything deleted after them still needs it.
+    {
+        Application app(true);
+
+        DAF_NAMESPACE::PluginWindow win(app, 200, 200, 1.0);
+        {
+            const Window::ScopedGraphicsContext outer(win);
+            DAF_ASSERT_EQUAL(win.contextIsCurrent(), true, "a scope makes the context current");
+            {
+                const Window::ScopedGraphicsContext inner(win);
+                DAF_ASSERT_EQUAL(win.contextIsCurrent(), true, "a nested scope keeps the context current");
+            }
+            DAF_ASSERT_EQUAL(win.contextIsCurrent(), true, "a nested scope leaves the context to the outer one");
+        }
+        DAF_ASSERT_EQUAL(win.contextIsCurrent(), false, "the outer scope leaves the context it entered");
+    }
+   #endif
 
     // TODO
 

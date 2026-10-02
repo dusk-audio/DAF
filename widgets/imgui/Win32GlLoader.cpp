@@ -68,6 +68,21 @@ ProcPtr procAddress(const char* const name)
     return reinterpret_cast<ProcPtr> (address);
 }
 
+bool hasCurrentContext()
+{
+    return ::wglGetCurrentContext() != nullptr;
+}
+
+void reportNoContext(const char* const name)
+{
+    char message[192] {};
+    std::snprintf (message, sizeof message,
+                   "[DAF/widgets] OpenGL call without a current context: %s\n",
+                   name);
+    std::fputs (message, stderr);
+    ::OutputDebugStringA (message);
+}
+
 } }
 
 #endif

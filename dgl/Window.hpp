@@ -97,7 +97,8 @@ public:
     */
     struct ScopedGraphicsContext
     {
-        /** Constructor that will make the @a window graphics context the current one */
+        /** Constructor that will make the @a window graphics context the current one.
+            If it already is, it is left current when done, so scopes can nest. */
         explicit ScopedGraphicsContext(Window& window);
 
         /** Overloaded constructor, gives back context to its transient parent when done */

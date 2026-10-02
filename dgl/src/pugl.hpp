@@ -66,6 +66,10 @@ bool puglBackendEnter(PuglView* view);
 // DGL specific, expose backend leave
 bool puglBackendLeave(PuglView* view);
 
+// DGL specific, whether the view's OpenGL context is the one current on the calling thread.
+// Backends without such a context, and platforms where it cannot be asked, answer with fallback.
+bool puglBackendIsCurrent(PuglView* view, bool fallback);
+
 // DGL specific, assigns backend that matches current DGL build
 void puglSetMatchingBackendForCurrentBuild(PuglView* view);
 

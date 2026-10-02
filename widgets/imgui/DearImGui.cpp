@@ -177,13 +177,22 @@ struct ImGuiWidget<BaseWidget>::PrivateData {
         io.SetClipboardTextFn = SetClipboardTextFn;
         io.ClipboardUserData = s->getTopLevelWidget();
 
-       #if defined(DGL_USE_GLES2) || defined(DGL_USE_GLES3) || defined(DGL_USE_OPENGL3)
+       #if defined(DGL_USE_OPENGL3) && !(defined(DGL_USE_GLES2) || defined(DGL_USE_GLES3))
+        // DGL asks for a 3.2 core context on every platform, and a core context only has to accept
+        // GLSL 1.40 and 1.50; the backend's own default of 1.30 is rejected by some drivers there
+        ImGui_ImplOpenGL3_Init("#version 150");
+       #elif defined(DGL_USE_GLES2) || defined(DGL_USE_GLES3) || defined(DGL_USE_OPENGL3)
         ImGui_ImplOpenGL3_Init();
        #else
         ImGui_ImplOpenGL2_Init();
        #endif
     }
 
+    // The renderer backend's shutdown deletes its buffers, program and font texture, so the window's
+    // graphics context must be current; the ImGuiWidget destructors make sure of it. Nothing else
+    // does on a standalone window, and without it they leaked, and on Windows every one of those
+    // entry points was reported unavailable, having been looked up for the first time with no
+    // context current.
     ~PrivateData()
     {
         ImGui::SetCurrentContext(context);
@@ -705,6 +714,9 @@ template <>
 ImGuiWidget<SubWidget>::~ImGuiWidget()
 {
     getWindow().removeIdleCallback(this);
+
+    // the renderer backend deletes its GL objects on shutdown, see PrivateData::~PrivateData
+    const Window::ScopedGraphicsContext sgc(getWindow());
     delete imData;
 }
 
@@ -743,6 +755,9 @@ template <>
 ImGuiWidget<TopLevelWidget>::~ImGuiWidget()
 {
     removeIdleCallback(this);
+
+    // the renderer backend deletes its GL objects on shutdown, see PrivateData::~PrivateData
+    const Window::ScopedGraphicsContext sgc(getWindow());
     delete imData;
 }
 
@@ -791,6 +806,9 @@ template <>
 ImGuiWidget<StandaloneWindow>::~ImGuiWidget()
 {
     Window::removeIdleCallback(this);
+
+    // the renderer backend deletes its GL objects on shutdown, see PrivateData::~PrivateData
+    const Window::ScopedGraphicsContext sgc(static_cast<Window&>(*this));
     delete imData;
 }
 
