@@ -178,6 +178,11 @@ public:
 
         initializing = false;
         puglBackendLeave(pData->view);
+
+        // An expose that arrived while initializing deferred its reshape, see onReshape.
+        // Ask for another one so the reshape reaches the UI now that it is whole.
+        if (pData->reshapePending)
+            puglObscureView(pData->view);
     }
 
     /* Called once the UI is fully constructed and no longer initializing, to hand the widget
@@ -295,13 +300,24 @@ protected:
     {
         DAF_SAFE_ASSERT_RETURN(ui != nullptr,);
 
-        /* No initializing guard here, unlike the handlers below. Those are reachable from a
-         * configure event, which a window realized inside the UI constructor can receive while
-         * that constructor is still running, with no override in place to dispatch to yet. This
-         * one is dispatched from the expose handler instead, and an expose needs a realized,
-         * mapped window and a running event loop: the size a configure recorded during
-         * construction is delivered here afterwards, once the UI is whole.
+        /* This is dispatched from the expose handler, and an expose can arrive while the UI
+         * constructor is still running whenever something pumps the thread's messages from
+         * inside it. The Windows web view does exactly that: it waits for WebView2 to finish
+         * initialising in a GetMessage/DispatchMessage loop, which runs within UI::UI (the
+         * window and the web view are created from its member initializer list) and hands this
+         * window a WM_PAINT. At that point the UI object is raw memory, so calling the virtual
+         * uiReshape jumps through an uninitialised vtable; inside a window procedure that access
+         * violation surfaces as 0xC000041D (an exception escaping a user callback).
+         *
+         * Do not drop the size: put it back as pending, and leaveContext() requests another
+         * expose once the UI is whole, which delivers it.
          */
+        if (initializing)
+        {
+            pData->reshapePending = true;
+            return;
+        }
+
         ui->uiReshape(width, height);
     }
 
