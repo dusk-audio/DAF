@@ -177,7 +177,11 @@ struct ImGuiWidget<BaseWidget>::PrivateData {
         io.SetClipboardTextFn = SetClipboardTextFn;
         io.ClipboardUserData = s->getTopLevelWidget();
 
-       #if defined(DGL_USE_GLES2) || defined(DGL_USE_GLES3) || defined(DGL_USE_OPENGL3)
+       #if defined(DGL_USE_OPENGL3) && !(defined(DGL_USE_GLES2) || defined(DGL_USE_GLES3))
+        // DGL asks for a 3.2 core context on every platform, and a core context only has to accept
+        // GLSL 1.40 and 1.50; the backend's own default of 1.30 is rejected by some drivers there
+        ImGui_ImplOpenGL3_Init("#version 150");
+       #elif defined(DGL_USE_GLES2) || defined(DGL_USE_GLES3) || defined(DGL_USE_OPENGL3)
         ImGui_ImplOpenGL3_Init();
        #else
         ImGui_ImplOpenGL2_Init();
