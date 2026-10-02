@@ -19,7 +19,10 @@
  *
  * Plugin::updateStateValue() from activate() must ask for a main-thread callback, be in a state saved
  * before that callback, mark the state dirty from the callback unless a save or load got there first,
- * and never overwrite a state loaded after it. */
+ * and never overwrite a state loaded after it.
+ *
+ * Output parameters are reported read-only, and parameter events outside the core event space change
+ * nothing, whether they come through process() or clap_plugin_params::flush(). */
 
 #define DAF_PLUGIN_TARGET_CLAP
 #define DAF_TEST_NO_DGL
@@ -95,6 +98,28 @@ static uint32_t CLAP_ABI in_events_size(const clap_input_events_t*) { return 0; 
 static const clap_event_header_t* CLAP_ABI in_events_get(const clap_input_events_t*, uint32_t) { return nullptr; }
 static bool CLAP_ABI out_events_try_push(const clap_output_events_t*, const clap_event_header_t*) { return true; }
 
+// an input event list holding a single parameter value event
+static uint32_t CLAP_ABI param_event_size(const clap_input_events_t*) { return 1; }
+static const clap_event_header_t* CLAP_ABI param_event_get(const clap_input_events_t* const list, const uint32_t index)
+{
+    return index == 0 ? &static_cast<const clap_event_param_value_t*>(list->ctx)->header : nullptr;
+}
+
+static clap_event_param_value_t makeParamEvent(const uint16_t spaceId, const clap_id paramId, const double value)
+{
+    clap_event_param_value_t event = {};
+    event.header.size = sizeof(event);
+    event.header.space_id = spaceId;
+    event.header.type = CLAP_EVENT_PARAM_VALUE;
+    event.param_id = paramId;
+    event.note_id = event.port_index = event.channel = event.key = -1;
+    event.value = value;
+    return event;
+}
+
+// any namespace other than CLAP_CORE_EVENT_SPACE_ID, the one clap-validator uses
+static constexpr const uint16_t kForeignSpaceId = 0xb33f;
+
 static constexpr const double kSampleRate = 48000.0;
 static constexpr const uint32_t kFrames = 64;
 
@@ -104,7 +129,7 @@ struct Host {
     int64_t steadyTime;
 
     // runs one block with the given transport and returns the frame the plugin was given
-    double process(const clap_event_transport_t& transport)
+    double process(const clap_event_transport_t& transport, const clap_input_events_t* const events = nullptr)
     {
         float input[kFrames] = {};
         float output[kFrames] = {};
@@ -124,7 +149,7 @@ struct Host {
         process.audio_outputs = &audioOut;
         process.audio_inputs_count = 1;
         process.audio_outputs_count = 1;
-        process.in_events = &inEvents;
+        process.in_events = events != nullptr ? events : &inEvents;
         process.out_events = &outEvents;
 
         plugin->process(plugin, &process);
@@ -133,6 +158,20 @@ struct Host {
         double frame = -1.0;
         params->get_value(plugin, kParamOutFrame, &frame);
         return frame;
+    }
+
+    double getValue(const clap_id paramId) const
+    {
+        double value = -1.0;
+        params->get_value(plugin, paramId, &value);
+        return value;
+    }
+
+    void flush(const clap_event_param_value_t& event) const
+    {
+        const clap_input_events_t in = { const_cast<clap_event_param_value_t*>(&event), param_event_size, param_event_get };
+        const clap_output_events_t out = { nullptr, out_events_try_push };
+        params->flush(plugin, &in, &out);
     }
 };
 
@@ -170,6 +209,16 @@ int main()
 
     h.params = static_cast<const clap_plugin_params_t*>(h.plugin->get_extension(h.plugin, CLAP_EXT_PARAMS));
     DAF_ASSERT_NOT_EQUAL(h.params, nullptr, "the params extension must be available");
+
+    // output parameters are read-only, inputs are not
+    DAF_ASSERT_EQUAL(h.params->count(h.plugin), static_cast<uint32_t>(kParamCount), "every parameter must be exposed");
+    for (uint32_t i = 0; i < kParamCount; ++i)
+    {
+        clap_param_info_t info = {};
+        DAF_ASSERT_EQUAL(h.params->get_info(h.plugin, i, &info), true, "get_info must succeed");
+        DAF_ASSERT_EQUAL((info.flags & CLAP_PARAM_IS_READONLY) != 0, i >= kParamOutFrame,
+                         "exactly the output parameters must be read-only");
+    }
 
     const clap_plugin_state_t* const state =
         static_cast<const clap_plugin_state_t*>(h.plugin->get_extension(h.plugin, CLAP_EXT_STATE));
@@ -222,8 +271,30 @@ int main()
     transport = makeTransport(CLAP_TRANSPORT_IS_PLAYING);
     DAF_ASSERT_SAFE_EQUAL(h.process(transport), 0.0, "frame must be 0 without a timeline");
 
+    // a parameter event in a foreign namespace through process() changes nothing, a core one does
+    {
+        clap_event_param_value_t event = makeParamEvent(kForeignSpaceId, kParamLinearLow, 7.0);
+        const clap_input_events_t in = { &event, param_event_size, param_event_get };
+        h.process(transport, &in);
+        DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamLinearLow), 3.0, "process must ignore events outside the core space");
+
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        h.process(transport, &in);
+        DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamLinearLow), 7.0, "process must apply core parameter events");
+    }
+
     h.plugin->stop_processing(h.plugin);
     h.plugin->deactivate(h.plugin);
+
+    // the same through clap_plugin_params::flush(), here on the main thread
+    h.flush(makeParamEvent(kForeignSpaceId, kParamLinearLow, 3.0));
+    DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamLinearLow), 7.0, "flush must ignore events outside the core space");
+    h.flush(makeParamEvent(CLAP_CORE_EVENT_SPACE_ID, kParamLinearLow, 3.0));
+    DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamLinearLow), 3.0, "flush must apply core parameter events");
+
+    // and the host cannot set an output parameter at all
+    h.flush(makeParamEvent(CLAP_CORE_EVENT_SPACE_ID, kParamOutFrame, 5.0));
+    DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamOutFrame), 0.0, "flush must ignore events for output parameters");
 
     // the main-thread callback marks the state dirty, and a save has the value
     DAF_ASSERT_EQUAL(h.plugin->activate(h.plugin, kSampleRate, 1, kFrames), true, "activate must succeed");

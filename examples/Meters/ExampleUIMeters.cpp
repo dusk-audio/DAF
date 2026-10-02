@@ -35,10 +35,10 @@ class ExampleUIMeters : public UI
 public:
     ExampleUIMeters()
         : UI(128, 512),
-          // default color is green
-          fColor(93, 231, 61),
-          // which is value 0
-          fColorValue(0),
+          // default color is blue
+          fColor(82, 238, 248),
+          // which is value 1
+          fColorValue(METER_COLOR_BLUE),
           // init meter values to 0
           fOutLeft(0.0f),
           fOutRight(0.0f)
