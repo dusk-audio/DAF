@@ -246,11 +246,16 @@ struct PuglInternalsImpl {
   bool configured;         ///< At least one xdg_surface.configure has been acked
   bool visible;            ///< puglShow() called, puglHide() not called since
   bool needsRedisplay;     ///< A redraw was requested while a frame callback was pending
+  bool geometryDirty;      ///< Size or scale changed and has not gone out with a buffer yet
   bool frameCallbackWorks; ///< A frame callback has come back at least once
 };
 
 /// Semi-public entry point used by the graphics backends to size their drawables
 PUGL_API PuglArea
 puglWaylandGetBufferSize(const PuglView* view);
+
+/// Semi-public entry point the graphics backends call right before a commit that attaches a buffer
+PUGL_API void
+puglWaylandApplyGeometry(PuglView* view);
 
 #endif // PUGL_SRC_WAYLAND_H

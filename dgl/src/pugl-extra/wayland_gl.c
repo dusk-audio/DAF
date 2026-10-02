@@ -408,7 +408,9 @@ puglWaylandGlLeave(PuglView* const view, const PuglExposeEvent* const expose)
   surface->entered   = false;
 
   if (expose && entered) {
-    // This is what commits the wl_surface, frame callback request included
+    /* This is what commits the wl_surface, frame callback request included, so any new size and
+       scale go out right before it, in the same commit as the buffer drawn for them */
+    puglWaylandApplyGeometry(view);
     eglSwapBuffers(surface->display, surface->surface);
   }
 

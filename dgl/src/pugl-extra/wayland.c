@@ -350,15 +350,28 @@ puglWaylandUpdateScale(PuglView* const view)
   return impl->scale != oldScale || impl->bufferScale != oldBuffer;
 }
 
-/// Push the current logical size and scale down to the compositor
-static void
+/**
+   Push the current logical size and scale down to the compositor, if they changed.
+
+   Called by the graphics backends right before the commit that attaches a buffer (cairo's attach
+   and commit, the GL backend's eglSwapBuffers), and from nowhere else.  All of this is
+   double-buffered surface state that takes effect on the next commit, and the first commit on a new
+   xdg_surface is the bufferless one that asks for the initial configure: a window geometry applied
+   there describes a rectangle on a 0x0 surface, which mutter rejects ("Client provided invalid
+   window geometry ... Working around.").  The buffer scale and viewport destination likewise belong
+   with the buffer they describe.  puglWaylandSetSize() therefore only marks the geometry dirty, and
+   the stub backend, which never attaches a buffer, never sends it at all.
+*/
+void
 puglWaylandApplyGeometry(PuglView* const view)
 {
   PuglInternals* const impl = view->impl;
 
-  if (!impl->wlSurface) {
+  if (!impl->wlSurface || !impl->geometryDirty) {
     return;
   }
+
+  impl->geometryDirty = false;
 
   const bool canSetBufferScale =
     wl_surface_get_version(impl->wlSurface) >=
@@ -445,10 +458,9 @@ puglWaylandSetSize(PuglView* const view, const PuglArea logicalRequest)
   // Renormalise so the buffer is exactly the logical size times the scale
   pixels = puglWaylandLogicalToPixels(logical, impl->scale);
 
-  impl->size        = pixels;
-  impl->logicalSize = logical;
-
-  puglWaylandApplyGeometry(view);
+  impl->size          = pixels;
+  impl->logicalSize   = logical;
+  impl->geometryDirty = true;
 
   return oldSize.width != pixels.width || oldSize.height != pixels.height;
 }
@@ -3154,6 +3166,7 @@ puglWaylandDestroyViewSurface(PuglInternals* const impl)
   }
 
   impl->configured               = false;
+  impl->geometryDirty            = false;
   impl->frameCallbackWorks       = false;
   impl->needsRedisplay           = false;
   impl->numEnteredOutputs        = 0U;
