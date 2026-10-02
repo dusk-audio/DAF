@@ -199,6 +199,9 @@ struct Window::PrivateData : IdleCallback {
 
     void focus();
 
+    /** Whether any visible widget of this window wants the keyboard focus, see Widget::wantsKeyboardFocus. */
+    bool anyWidgetWantsKeyboardFocus();
+
     void setResizable(bool resizable);
 
     /** Change the scale factor from outside the windowing system, as a plugin host does.

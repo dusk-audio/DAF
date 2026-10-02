@@ -47,6 +47,11 @@ TopLevelWidget::PrivateData::~PrivateData()
     window.pData->topLevelWidgets.remove(self);
 }
 
+bool TopLevelWidget::PrivateData::anyVisibleWantsKeyboardFocus()
+{
+    return selfw->pData->anyVisibleWantsKeyboardFocus();
+}
+
 bool TopLevelWidget::PrivateData::keyboardEvent(const KeyboardEvent& ev)
 {
     // ignore event if we are not visible

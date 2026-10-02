@@ -464,6 +464,11 @@ void Window::focus()
     pData->focus();
 }
 
+bool Window::anyWidgetWantsKeyboardFocus()
+{
+    return pData->anyWidgetWantsKeyboardFocus();
+}
+
 #ifdef DGL_USE_FILE_BROWSER
 bool Window::openFileBrowser(const FileBrowserOptions& options)
 {

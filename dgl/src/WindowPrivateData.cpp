@@ -461,6 +461,19 @@ void Window::PrivateData::focus()
     puglGrabFocus(view);
 }
 
+bool Window::PrivateData::anyWidgetWantsKeyboardFocus()
+{
+#ifndef DAF_TEST_WINDOW_CPP
+    FOR_EACH_TOP_LEVEL_WIDGET(it)
+    {
+        if ((*it)->pData->anyVisibleWantsKeyboardFocus())
+            return true;
+    }
+#endif
+
+    return false;
+}
+
 // -----------------------------------------------------------------------
 
 void Window::PrivateData::setResizable(const bool resizable)

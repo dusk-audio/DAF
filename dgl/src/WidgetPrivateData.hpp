@@ -51,6 +51,9 @@ struct Widget::PrivateData {
     bool giveScrollEventForSubWidgets(ScrollEvent& ev);
     void giveFocusChangedEventForSubWidgets(const FocusEvent& ev);
 
+    // whether this widget, if visible, or any of its visible subwidgets wants the keyboard focus
+    bool anyVisibleWantsKeyboardFocus();
+
     static TopLevelWidget* findTopLevelWidget(Widget* const w);
     static void clearTopLevelWidget(Widget* const w);
 

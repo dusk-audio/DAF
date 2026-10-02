@@ -411,6 +411,14 @@ void ImGuiWidget<BaseWidget>::onDisplay()
 }
 
 template <class BaseWidget>
+bool ImGuiWidget<BaseWidget>::wantsKeyboardFocus()
+{
+    ImGui::SetCurrentContext(imData->context);
+
+    return ImGui::GetIO().WantTextInput;
+}
+
+template <class BaseWidget>
 bool ImGuiWidget<BaseWidget>::onKeyboard(const Widget::KeyboardEvent& event)
 {
     if (BaseWidget::onKeyboard(event))

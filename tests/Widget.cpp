@@ -22,6 +22,22 @@
 
 // --------------------------------------------------------------------------------------------------------------------
 
+struct KeyboardWantingSubWidget : DGL_NAMESPACE::SubWidget
+{
+    bool wants;
+
+    explicit KeyboardWantingSubWidget(DGL_NAMESPACE::Widget* const parent)
+        : SubWidget(parent),
+          wants(false) {}
+
+    bool wantsKeyboardFocus() override
+    {
+        return wants;
+    }
+};
+
+// --------------------------------------------------------------------------------------------------------------------
+
 int main()
 {
     using DGL_NAMESPACE::Application;
@@ -95,6 +111,42 @@ int main()
         SubWidget* const child = new SubWidget(parent);
         delete child;
         delete parent;
+    }
+
+    // the window asks every visible widget whether it wants the keyboard focus
+    {
+        DAF_ASSERT_EQUAL(win.anyWidgetWantsKeyboardFocus(), false, "a window without widgets wants nothing");
+
+        TopLevelWidget tlw(win);
+        SubWidget parent(&tlw);
+        KeyboardWantingSubWidget field(&parent);
+        KeyboardWantingSubWidget other(&tlw);
+
+        DAF_ASSERT_EQUAL(tlw.wantsKeyboardFocus(), false, "a plain widget does not want the keyboard");
+        DAF_ASSERT_EQUAL(win.anyWidgetWantsKeyboardFocus(), false, "nothing wants the keyboard yet");
+
+        field.wants = true;
+        DAF_ASSERT_EQUAL(parent.wantsKeyboardFocus(), false, "a widget answers for itself only");
+        DAF_ASSERT_EQUAL(win.anyWidgetWantsKeyboardFocus(), true, "a nested subwidget is asked");
+
+        field.hide();
+        DAF_ASSERT_EQUAL(win.anyWidgetWantsKeyboardFocus(), false, "a hidden widget is not asked");
+
+        field.show();
+        parent.hide();
+        DAF_ASSERT_EQUAL(win.anyWidgetWantsKeyboardFocus(), false, "a hidden parent hides its children");
+
+        parent.show();
+        tlw.hide();
+        DAF_ASSERT_EQUAL(win.anyWidgetWantsKeyboardFocus(), false, "a hidden top-level widget hides its tree");
+
+        tlw.show();
+        field.wants = false;
+        other.wants = true;
+        DAF_ASSERT_EQUAL(win.anyWidgetWantsKeyboardFocus(), true, "a later sibling is asked too");
+
+        other.wants = false;
+        DAF_ASSERT_EQUAL(win.anyWidgetWantsKeyboardFocus(), false, "the answer follows the widgets");
     }
 
     return 0;
