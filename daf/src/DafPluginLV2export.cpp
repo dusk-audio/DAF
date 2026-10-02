@@ -1060,7 +1060,7 @@ void lv2_generate_ttl(const char* const basename)
             {
                 pluginString += "    doap:license <" +  license + "> ;\n\n";
             }
-            // String contaning quotes, use as-is
+            // String containing quotes, use as-is
             else if (license.contains('"'))
             {
                 pluginString += "    doap:license \"\"\"" +  license + "\"\"\" ;\n\n";
@@ -1413,13 +1413,13 @@ void lv2_generate_ttl(const char* const basename)
         jsString += " postRun:function(m){\n";
         jsString += " var cn=e.icon.attr('mod-instance').replaceAll('/','_');\n";
         jsString += " var cnl=m.lengthBytesUTF8(cn) + 1;\n";
-        jsString += " var cna=m._malloc(cnl);\n";
-        jsString += " m.stringToUTF8(cn, cna, cnl);\n";
+        jsString += " var can=m._malloc(cnl);\n";
+        jsString += " m.stringToUTF8(cn, can, cnl);\n";
         jsString += " e.icon.find('canvas')[0].id=cn;\n";
         jsString += " var a=m.addFunction(function(i,v){f.set_port_value(ps[i],v);},'vif');\n";
         jsString += " var b=m.addFunction(function(u,v){f.patch_set(m.UTF8ToString(u),'s',m.UTF8ToString(v));},'vpp');\n";
-        jsString += " var h=m._modgui_init(cna,a,b);\n";
-        jsString += " m._free(cna);\n";
+        jsString += " var h=m._modgui_init(can,a,b);\n";
+        jsString += " m._free(can);\n";
         jsString += " e.data.h=h;\n";
         jsString += " e.data.m=m;\n";
         jsString += " for(var u in e.data.p.p){\n";

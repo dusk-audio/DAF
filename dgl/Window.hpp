@@ -103,7 +103,7 @@ public:
         /** Overloaded constructor, gives back context to its transient parent when done */
         explicit ScopedGraphicsContext(Window& window, Window& transientParentWindow);
 
-        /** Desstructor for clearing current context, if not done yet */
+        /** Destructor for clearing current context, if not done yet */
         ~ScopedGraphicsContext();
 
         /** Early context clearing, useful for standalone windows not created by you. */
@@ -358,12 +358,10 @@ public:
       You can add more than one, and remove them at anytime with removeIdleCallback().
       This can be used to perform some action at a regular interval with relatively low frequency.
 
-      If providing a timer frequency, there are a few things to note:
-       1. There is a platform-specific limit to the number of supported timers, and overhead associated with each,
-          so you should create only a few timers and perform several tasks in one if necessary.
-       2. This timer frequency is not guaranteed to have a resolution better than 10ms
-          (the maximum timer resolution on Windows) and may be rounded up if it is too short.
-          On X11 and MacOS, a resolution of about 1ms can usually be relied on.
+      Callbacks must be removed with removeIdleCallback() before the callback
+      object is destroyed. Callbacks with timer frequency 0 are registered on
+      the Application, and the Window destructor does not remove them, so a
+      forgotten callback will dangle.
     */
     bool addIdleCallback(IdleCallback* callback, uint timerFrequencyInMs = 0);
 

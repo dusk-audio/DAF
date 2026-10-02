@@ -29,7 +29,7 @@
 START_NAMESPACE_DAF
 
 // -----------------------------------------------------------------------
-// Maxmimum values
+// Maximum values
 
 static const uint32_t kMaxMidiEvents = 512;
 
@@ -410,7 +410,7 @@ public:
 
 #if defined(DAF_RUNTIME_TESTING) && defined(__GNUC__) && !defined(__clang__)
         /* Run-time testing build.
-         * Verify that virtual functions are overriden if parameters, programs or states are in use.
+         * Verify that virtual functions are overridden if parameters, programs or states are in use.
          * This does not work on all compilers, but we use it purely as informational check anyway. */
         if (fData->parameterCount != 0)
         {

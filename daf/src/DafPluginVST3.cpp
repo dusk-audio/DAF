@@ -4040,7 +4040,7 @@ struct daf_edit_controller : v3_edit_controller_cpp {
         // check if already terminated
         DAF_SAFE_ASSERT_RETURN(controller->initialized, V3_INVALID_ARG);
 
-        // mark as uninitialzed
+        // mark as uninitialized
         controller->initialized = false;
        #endif
 
