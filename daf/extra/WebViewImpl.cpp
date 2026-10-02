@@ -1407,9 +1407,11 @@ static bool gtk3(Display* const display,
             int x = 0, y = 0, rootX = 0, rootY = 0;
             uint width = 0, height = 0, border = 0, depth = 0;
 
-            if (! XGetGeometry(_display, _wid, &root, &x, &y, &width, &height, &border, &depth))
-                return;
-            if (! XTranslateCoordinates(_display, _wid, root, 0, 0, &rootX, &rootY, &ignored))
+            // the plug can go away behind our back, keep a BadWindow/BadDrawable from the default handler
+            webview_x11_trap_begin(_display);
+            const bool ok = XGetGeometry(_display, _wid, &root, &x, &y, &width, &height, &border, &depth) &&
+                            XTranslateCoordinates(_display, _wid, root, 0, 0, &rootX, &rootY, &ignored);
+            if (webview_x11_trap_end(_display) || ! ok)
                 return;
 
             XEvent event;
