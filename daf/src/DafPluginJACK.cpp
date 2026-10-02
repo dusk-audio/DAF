@@ -151,7 +151,10 @@ public:
               sendNoteCallback,
               nullptr, // window size
               nullptr, // file request
-              nullptr, // bundle
+              // main() below found the bundle (the .app on macOS, the directory holding "resources"
+              // elsewhere); without it the UI looks for its resources beside the binary, which inside
+              // an .app is Contents/MacOS/resources rather than Contents/Resources
+              d_nextBundlePath,
               fPlugin.getInstancePointer(),
               0.0),
 #endif
