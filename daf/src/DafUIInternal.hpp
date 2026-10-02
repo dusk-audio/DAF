@@ -207,7 +207,12 @@ public:
 
        #if DAF_UI_USE_WEB_VIEW
         if (uiData->webview != nullptr)
+        {
+           #ifdef DAF_OS_WINDOWS
+            UI::PrivateData::webViewDispatchThreadMessages();
+           #endif
             webViewIdle(uiData->webview);
+        }
        #endif
 
         ui->uiIdle();

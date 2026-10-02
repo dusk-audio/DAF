@@ -258,6 +258,34 @@ PluginWindow& UI::PrivateData::createNextWindow(UI* const ui, uint width, uint h
     return uiData->window.getObject();
 }
 
+#if DAF_UI_USE_WEB_VIEW && defined(DAF_OS_WINDOWS) && DAF_UI_IS_STANDALONE
+void UI::PrivateData::webViewDispatchThreadMessages()
+{
+    /* WebView2 does its UI-thread work (navigation, showing its child window, script results)
+     * through messages for windows of its own, which are neither our window nor its children.
+     * pugl only dispatches messages for its own windows, so in a standalone, where nothing else
+     * runs a message loop, those messages were never delivered: navigation never committed and
+     * the web view stayed blank. Inside a plugin host this is the host's job, and its loop does it.
+     *
+     * Dispatch whatever is queued for this thread. The count is bounded because input such as
+     * mouse movement can keep the queue from ever draining, and a WM_QUIT is put back for the
+     * outer loop to see.
+     */
+    MSG msg;
+    for (int i = 0; i < 256 && PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE); ++i)
+    {
+        if (msg.message == WM_QUIT)
+        {
+            PostQuitMessage(static_cast<int>(msg.wParam));
+            break;
+        }
+
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+}
+#endif
+
 #if DAF_UI_USE_WEB_VIEW
 void UI::PrivateData::webViewMessageCallback(void* const arg, char* const msg)
 {

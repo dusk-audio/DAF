@@ -495,6 +495,9 @@ struct UI::PrivateData {
     static PluginWindow& createNextWindow(UI* ui, uint width, uint height);
    #if DAF_UI_USE_WEB_VIEW
     static void webViewMessageCallback(void* arg, char* msg);
+   #if defined(DAF_OS_WINDOWS) && DAF_UI_IS_STANDALONE
+    static void webViewDispatchThreadMessages();
+   #endif
    #endif
 };
 
