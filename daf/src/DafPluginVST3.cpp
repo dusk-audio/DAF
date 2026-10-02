@@ -65,6 +65,7 @@
 
 #if DAF_PLUGIN_WANT_STATE && DAF_VST3_USES_SEPARATE_CONTROLLER
 # include <ctime>
+# include <memory>
 # include <mutex>
 # include <random>
 #endif
