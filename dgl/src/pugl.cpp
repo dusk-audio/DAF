@@ -390,9 +390,12 @@ void puglSetMatchingBackendForCurrentBuild(PuglView* const view)
         puglSetViewHint(view, PUGL_CONTEXT_PROFILE, PUGL_OPENGL_CORE_PROFILE);
         puglSetViewHint(view, PUGL_CONTEXT_VERSION_MAJOR, 3);
        #elif defined(DGL_USE_OPENGL3)
+        // 3.2, not 3.0: GLX and WGL ignore the profile below 3.2, so asking for 3.0 got a compatibility
+        // context everywhere but macOS, and DGL's shaders are GLSL 1.50, which needs 3.2 to begin with
         puglSetViewHint(view, PUGL_CONTEXT_API, PUGL_OPENGL_API);
         puglSetViewHint(view, PUGL_CONTEXT_PROFILE, PUGL_OPENGL_CORE_PROFILE);
         puglSetViewHint(view, PUGL_CONTEXT_VERSION_MAJOR, 3);
+        puglSetViewHint(view, PUGL_CONTEXT_VERSION_MINOR, 2);
        #elif defined(DGL_OPENGL)
         puglSetViewHint(view, PUGL_CONTEXT_API, PUGL_OPENGL_API);
         puglSetViewHint(view, PUGL_CONTEXT_PROFILE, PUGL_OPENGL_COMPATIBILITY_PROFILE);

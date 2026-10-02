@@ -111,9 +111,10 @@ static void notImplemented(const char* const name)
 // An OpenGL 3.2+ *core* profile has no default vertex array object: name zero is not a valid VAO there, so
 // glVertexAttribPointer and every draw call made with nothing bound fail with GL_INVALID_OPERATION and the draw
 // is dropped without any other symptom. This bites on macOS in particular, where mac_gl.m maps a core profile
-// request straight to NSOpenGLProfileVersion3_2Core with no compatibility fallback. It does NOT bite on X11,
-// because pugl asks GLX for version 3.0 and GLX ignores the profile mask below 3.2, so Linux quietly hands back
-// a compatibility context where name zero still works -- which is why this went unnoticed.
+// request straight to NSOpenGLProfileVersion3_2Core with no compatibility fallback. It used not to bite on X11
+// or Windows, because DGL asked for version 3.0 and GLX and WGL ignore the profile mask below 3.2, so they quietly
+// handed back a compatibility context where name zero still works -- which is why this went unnoticed. DGL now
+// asks for 3.2, so every desktop platform gets a core profile.
 //
 // One VAO is created per graphics context in createContextIfNeeded() and destroyed in destroyContext(). It is
 // bound at the top of every drawing helper below rather than once per frame, because NanoVG's GL3 backend binds
@@ -1027,8 +1028,9 @@ DGL_EXT(PFNGLGENVERTEXARRAYSPROC,          glGenVertexArrays)
     // "Summary of Deprecations and Removals" -- gl_FragColor and texture2D go in section 9, attribute and
     // varying in section 8), so a conforming core-profile compiler rejects them. Writing the GLESv2 spelling
     // under a "core" header, as this used to, is invalid GLSL even though Mesa accepts it -- which is exactly
-    // why it survived: X11 hands DGL a compatibility context, so Linux never compiled these shaders under a
-    // strict core-profile front end. Apple's does reject them, and macOS now defaults to this renderer.
+    // why it survived: X11 handed DGL a compatibility context (see the vertex array note above), so Linux never
+    // compiled these shaders under a strict core-profile front end. Apple's does reject them, and macOS now
+    // defaults to this renderer.
    #if defined(DGL_USE_GLES2)
     #define DGL_SHADER_HEADER    "#version 100\n"
     #define DGL_SHADER_IN        "attribute"    // vertex stage input
