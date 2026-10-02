@@ -3,11 +3,11 @@
 [![cmake](https://github.com/dusk-audio/DAF/actions/workflows/cmake.yml/badge.svg)](https://github.com/dusk-audio/DAF/actions/workflows/cmake.yml)
 [![wayland](https://github.com/dusk-audio/DAF/actions/workflows/wayland.yml/badge.svg)](https://github.com/dusk-audio/DAF/actions/workflows/wayland.yml)
 
-**DAF is a fork of the excellent [DISTRHO Plugin Framework (DPF)](https://github.com/DISTRHO/DPF)
-by Filipe Coelho and contributors.** Nearly all of the code here is theirs, it is very good, and
-this fork exists only because [Dusk Audio](https://github.com/dusk-audio) needed to move faster on
-a few platform-specific fixes than an upstream contribution cycle allows. If you are choosing a
-plugin framework, go get DPF.
+**DAF is an independent audio plugin framework, originally derived from the excellent
+[DISTRHO Plugin Framework (DPF)](https://github.com/DISTRHO/DPF) by Filipe Coelho and
+contributors.** Its foundation is their work, and it is very good. [Dusk Audio](https://github.com/dusk-audio)
+took the code to move faster on platform-specific fixes than an upstream contribution cycle allows,
+and has developed it as its own framework since.
 
 This tree was taken from [DISTRHO/DPF](https://github.com/DISTRHO/DPF) at `4238e1c7` (2025-10-23)
 and has been maintained independently since. It adds native Wayland support, MSVC/arm64 build
