@@ -371,8 +371,6 @@ static inline sofd_dirent_t* sofd_readdir (DIR *dir) { return readdir (dir); }
 #include <X11/keysym.h>
 #include <X11/Xos.h>
 
-#include <locale.h>
-#include <strings.h>
 
 #if defined(__linux__) || defined(__linux)
 #define HAVE_MNTENT
@@ -1979,29 +1977,20 @@ static int x_error_handler (Display *d, XErrorEvent *e) {
 }
 
 #ifdef X_HAVE_UTF8_STRING
-static int fib_is_utf8_locale (const char *name) {
-	const char *dot = name ? strchr (name, '.') : NULL;
-	if (!dot) return 0;
-	++dot;
-	return !strncasecmp (dot, "UTF-8", 5) || !strncasecmp (dot, "utf8", 4);
-}
-
 /* Create a font set for drawing UTF-8 text, from the core font picked in
  * x_fib_show plus a generic fallback of the same pixel size for the character
  * sets that font does not cover.
  *
  * A font set covers the character sets of the locale it is created in, and
- * keeps using that locale's converters afterwards. The host's locale is
- * often "C", whose font sets only cover ISO 8859-1, so unless LC_CTYPE
- * already names a UTF-8 locale it is switched to one for the duration of
- * XCreateFontSet and then restored. setlocale() is process-wide, so another
- * thread doing LC_CTYPE-dependent work in that window (multibyte conversion,
- * ctype classification) could see the UTF-8 locale; this happens once per
- * dialog, on the UI thread, and only LC_CTYPE is touched. If no UTF-8 locale
- * is installed the font set is created in the current locale, which still
- * draws what it can, and if none can be created at all, or it cannot draw
- * plain ASCII, the caller keeps the core font. Glyphs from character sets
- * no installed font covers are left out (see XCreateFontSet's def_string). */
+ * keeps using that locale's converters afterwards. The locale is left as the
+ * host set it: setlocale() is process-wide, and Xlib looks the locale up with
+ * setlocale(LC_CTYPE, NULL), which a thread-local uselocale() does not change.
+ * Under a UTF-8 LC_CTYPE every installed charset can be drawn; under "C" the
+ * set covers ISO 8859-1, so Latin-1 names still draw correctly and others
+ * fall back to the font set's default string. If no set can be created at
+ * all, or it cannot draw plain ASCII, the caller keeps the core font. Glyphs
+ * from character sets no installed font covers are left out (see
+ * XCreateFontSet's def_string). */
 static XFontSet fib_create_fontset (Display *dpy, const char *fontname, int pixelsize) {
 	char base[512];
 	if (fontname) {
@@ -2012,20 +2001,6 @@ static XFontSet fib_create_fontset (Display *dpy, const char *fontname, int pixe
 				pixelsize, pixelsize);
 	}
 
-	char *oldlocale = NULL;
-	const char *curlocale = setlocale (LC_CTYPE, NULL);
-	if (curlocale && !fib_is_utf8_locale (curlocale)) {
-		static const char *const utf8locales[] = { "C.UTF-8", "C.utf8", "en_US.UTF-8", "en_US.utf8" };
-		unsigned int i;
-		oldlocale = strdup (curlocale);
-		for (i = 0; oldlocale && i < sizeof(utf8locales) / sizeof(utf8locales[0]); ++i) {
-			if (setlocale (LC_CTYPE, utf8locales[i])) {
-				if (XSupportsLocale ()) break;
-				setlocale (LC_CTYPE, oldlocale);
-			}
-		}
-	}
-
 	XFontSet fs = NULL;
 	if (XSupportsLocale ()) {
 		char **missing = NULL;
@@ -2033,11 +2008,6 @@ static XFontSet fib_create_fontset (Display *dpy, const char *fontname, int pixe
 		char *defstr = NULL;
 		fs = XCreateFontSet (dpy, base, &missing, &nmissing, &defstr);
 		if (missing) XFreeStringList (missing);
-	}
-
-	if (oldlocale) {
-		setlocale (LC_CTYPE, oldlocale);
-		free (oldlocale);
 	}
 
 	// make sure the set can draw plain text, or keep the core font
