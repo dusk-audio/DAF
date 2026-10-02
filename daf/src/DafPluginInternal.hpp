@@ -29,7 +29,7 @@
 START_NAMESPACE_DAF
 
 // -----------------------------------------------------------------------
-// Maxmimum values
+// Maximum values
 
 static const uint32_t kMaxMidiEvents = 512;
 

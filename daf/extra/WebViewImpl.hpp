@@ -50,7 +50,7 @@ struct WebViewOptions {
     } offset;
 
    /**
-      Set some JavaScript to evalute on every new page load.
+      Set some JavaScript to evaluate on every new page load.
     */
     const char* initialJS;
 

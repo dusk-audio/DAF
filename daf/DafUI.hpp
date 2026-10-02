@@ -96,7 +96,7 @@ public:
       There are situations where an UI supports resizing but the plugin host does not, so this could return false.
 
       You might want to add a resize handle for such cases, so the user is still allowed to resize the window.
-      (programatically resizing a window is always possible, but the same is not true for the window manager)
+      (programmatically resizing a window is always possible, but the same is not true for the window manager)
     */
     bool isResizable() const noexcept;
 

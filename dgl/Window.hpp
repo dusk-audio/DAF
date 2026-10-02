@@ -103,7 +103,7 @@ public:
         /** Overloaded constructor, gives back context to its transient parent when done */
         explicit ScopedGraphicsContext(Window& window, Window& transientParentWindow);
 
-        /** Desstructor for clearing current context, if not done yet */
+        /** Destructor for clearing current context, if not done yet */
         ~ScopedGraphicsContext();
 
         /** Early context clearing, useful for standalone windows not created by you. */

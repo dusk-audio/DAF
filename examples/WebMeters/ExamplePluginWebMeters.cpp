@@ -188,7 +188,7 @@ protected:
         if (index != 0) return;
 
         fColor = value;
-    }
+    }   
 
    /**
       Change an internal state.
