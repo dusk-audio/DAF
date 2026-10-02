@@ -210,9 +210,22 @@ PluginWindow& UI::PrivateData::createNextWindow(UI* const ui, uint width, uint h
             path += "/resources";
         }
 
+       #ifdef DAF_OS_WINDOWS
+        // A Windows path is not a URL path: "C:\dir\resources" pasted after "file://" reads as host "C:"
+        // followed by percent-encoded backslashes, which WebView2 refuses, leaving the view blank.
+        // Use forward slashes and give a drive path the empty authority a file URL needs
+        // (file:///C:/dir/resources). A UNC path (\\server\share) already starts with the "//"
+        // that introduces its host (file://server/share).
+        path.replace('\\', '/');
         path.urlEncode();
-
-        // TODO convert win32 paths to web
+        if (path.startsWith("//"))
+            path = "file:" + path;
+        else
+            path = "file:///" + path;
+       #else
+        path.urlEncode();
+        path = "file://" + path;
+       #endif
 
         WebViewOptions opts;
         opts.initialJS = ""
@@ -228,7 +241,7 @@ PluginWindow& UI::PrivateData::createNextWindow(UI* const ui, uint width, uint h
         ;
         opts.callback = webViewMessageCallback;
         opts.callbackPtr = uiData;
-        uiData->webview = webViewCreate("file://" + path + "/index.html",
+        uiData->webview = webViewCreate(path + "/index.html",
                                         uiData->winId != 0 ? uiData->winId : uiData->window->getNativeWindowHandle(),
                                         width,
                                         height,
