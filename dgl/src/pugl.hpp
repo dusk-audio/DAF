@@ -123,6 +123,16 @@ void puglWin32ShowCentered(PuglView* view);
 // would otherwise offer the UI the key it just declined, and could send it on again.
 bool puglWin32IsForwardingKey();
 
+// win32 specific, hand the keyboard focus back to the window that had it before this view took it
+// Falls back to the top-level window the view sits in when that window is gone or refuses it.
+void puglWin32ReturnFocus(PuglView* view);
+
+// win32 specific, whether a mouse button is held down right now
+bool puglWin32IsMouseButtonDown();
+
+// win32 specific, whether the top-level window this view sits in is the active window
+bool puglWin32IsInActiveWindow(const PuglView* view);
+
 // On Unix, HAVE_X11 and HAVE_WAYLAND can both be defined: the two sets of development files
 // coexist happily and most desktop distributions ship both. The order of the arms below is
 // therefore a deliberate policy, not an accident:
