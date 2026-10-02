@@ -1012,7 +1012,8 @@ public:
             if (busDirection == V3_INPUT)
             {
                #if DAF_PLUGIN_WANT_MIDI_INPUT
-                DAF_SAFE_ASSERT_RETURN(busId == 0, V3_INVALID_ARG);
+                if (busId != 0)
+                    return V3_INVALID_ARG;
                #else
                 d_stderr("invalid bus, line %d", __LINE__);
                 return V3_INVALID_ARG;
@@ -1021,7 +1022,8 @@ public:
             else
             {
                #if DAF_PLUGIN_WANT_MIDI_OUTPUT
-                DAF_SAFE_ASSERT_RETURN(busId == 0, V3_INVALID_ARG);
+                if (busId != 0)
+                    return V3_INVALID_ARG;
                #else
                 d_stderr("invalid bus, line %d", __LINE__);
                 return V3_INVALID_ARG;
@@ -1809,10 +1811,13 @@ public:
             for (int32_t i = 0, count = v3_cpp_obj(inparamsptr)->get_param_count(inparamsptr); i < count; ++i)
             {
                 v3_param_value_queue** const queue = v3_cpp_obj(inparamsptr)->get_param_data(inparamsptr, i);
-                DAF_SAFE_ASSERT_BREAK(queue != nullptr);
+                if (queue == nullptr)
+                    continue;
 
+                // an unknown ID (the validator sends kNoParamId) only skips its own queue, not the rest
                 const v3_param_id rindex = v3_cpp_obj(queue)->get_param_id(queue);
-                DAF_SAFE_ASSERT_UINT_BREAK(rindex < fVst3ParameterCount, rindex);
+                if (rindex >= fVst3ParameterCount)
+                    continue;
 
                #if DAF_VST3_HAS_INTERNAL_PARAMETERS
                 if (rindex < kVst3InternalParameterCount)
@@ -1877,10 +1882,13 @@ public:
             for (int32_t i = 0, count = v3_cpp_obj(inparamsptr)->get_param_count(inparamsptr); i < count; ++i)
             {
                 v3_param_value_queue** const queue = v3_cpp_obj(inparamsptr)->get_param_data(inparamsptr, i);
-                DAF_SAFE_ASSERT_BREAK(queue != nullptr);
+                if (queue == nullptr)
+                    continue;
 
+                // an unknown ID (the validator sends kNoParamId) only skips its own queue, not the rest
                 const v3_param_id rindex = v3_cpp_obj(queue)->get_param_id(queue);
-                DAF_SAFE_ASSERT_UINT_BREAK(rindex < fVst3ParameterCount, rindex);
+                if (rindex >= fVst3ParameterCount)
+                    continue;
 
                #if DAF_VST3_HAS_INTERNAL_PARAMETERS
                 if (rindex < kVst3InternalParameterCount)
@@ -3295,15 +3303,16 @@ private:
     // ----------------------------------------------------------------------------------------------------------------
     // helper functions called during process, cannot block
 
+    // A host may pass no output parameter changes (the spec allows it, and the validator does it on
+    // purpose). Trigger resets and the cache and UI updates below still happen then; only reporting
+    // to the host is skipped, and changes that are only ever reported are kept for a later block.
     void updateParametersFromProcessing(v3_param_changes** const outparamsptr, const int32_t offset)
     {
-        DAF_SAFE_ASSERT_RETURN(outparamsptr != nullptr,);
-
         float curValue, defValue;
         double normalized;
 
        #if DAF_VST3_USES_SEPARATE_CONTROLLER
-        for (v3_param_id i=kVst3InternalParameterBufferSize; i<=kVst3InternalParameterSampleRate; ++i)
+        for (v3_param_id i=kVst3InternalParameterBufferSize; outparamsptr != nullptr && i<=kVst3InternalParameterSampleRate; ++i)
         {
             if (! fParameterValuesChangedDuringProcessing[i].exchange(false))
                 continue;
@@ -3404,7 +3413,7 @@ private:
        #if DAF_PLUGIN_WANT_LATENCY
         const uint32_t latency = fPlugin.getLatency();
 
-        if (fLastKnownLatency != latency)
+        if (fLastKnownLatency != latency && outparamsptr != nullptr)
         {
             fLastKnownLatency = latency;
 
@@ -3420,6 +3429,9 @@ private:
                                             const double normalized,
                                             const int32_t offset = 0)
     {
+        if (outparamsptr == nullptr)
+            return true;
+
         int32_t index = 0;
         v3_param_value_queue** const queue = v3_cpp_obj(outparamsptr)->add_param_data(outparamsptr,
                                                                                       &paramId, &index);
@@ -4021,9 +4033,10 @@ struct daf_midi_mapping : v3_midi_mapping_cpp {
 
     static v3_result V3_API get_midi_controller_assignment(void*, const int32_t bus, const int16_t channel, const int16_t cc, v3_param_id* const id)
     {
-        DAF_SAFE_ASSERT_INT_RETURN(bus == 0, bus, V3_FALSE);
-        DAF_SAFE_ASSERT_INT_RETURN(channel >= 0 && channel < 16, channel, V3_FALSE);
-        DAF_SAFE_ASSERT_INT_RETURN(cc >= 0 && cc < 130, cc, V3_FALSE);
+        // hosts may ask about any bus, channel and controller (the validator goes past the end), so
+        // anything outside what is mapped is a plain "no assignment", not an error
+        if (bus != 0 || channel < 0 || channel >= 16 || cc < 0 || cc >= 130)
+            return V3_FALSE;
 
         *id = kVst3InternalParameterMidiCC_start + channel * 130 + cc;
         return V3_TRUE;
