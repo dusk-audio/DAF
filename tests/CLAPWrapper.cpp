@@ -96,7 +96,25 @@ static bool hasStatus(const std::string& data, const char* const value)
 
 static uint32_t CLAP_ABI in_events_size(const clap_input_events_t*) { return 0; }
 static const clap_event_header_t* CLAP_ABI in_events_get(const clap_input_events_t*, uint32_t) { return nullptr; }
-static bool CLAP_ABI out_events_try_push(const clap_output_events_t*, const clap_event_header_t*) { return true; }
+// A trigger's return to its default is a value change the host has to see: a host that is told the
+// parameter is still pressed may act on it again. Counted, with the value last reported, so the
+// trigger tests can assert both that the reset arrived and that it carried the default.
+static uint32_t gTriggerReports = 0;
+static double gTriggerLastReport = -1.0;
+
+static bool CLAP_ABI out_events_try_push(const clap_output_events_t*, const clap_event_header_t* const event)
+{
+    if (event->type == CLAP_EVENT_PARAM_VALUE)
+    {
+        const clap_event_param_value_t* const param = reinterpret_cast<const clap_event_param_value_t*>(event);
+        if (param->param_id == kParamTrigger)
+        {
+            ++gTriggerReports;
+            gTriggerLastReport = param->value;
+        }
+    }
+    return true;
+}
 
 // an input event list holding a single parameter value event
 static uint32_t CLAP_ABI param_event_size(const clap_input_events_t*) { return 1; }
@@ -240,6 +258,44 @@ int main()
 
     DAF_ASSERT_EQUAL(h.plugin->start_processing(h.plugin), true, "start_processing must succeed");
 
+    // --- triggers ---------------------------------------------------------------------------------
+    //
+    // A trigger is an action, not a state. The press is delivered to the plugin: to setParameterValue,
+    // where a plugin that acts as it arrives consumes it, and in the parameter's own value, where a
+    // plugin that reads it on its next run consumes it. Then the value returns to its default and the
+    // host is told, so that a host does not take the parameter for still pressed. Both entry points
+    // must leave the same observable state -- that is what clap-validator's flush-versus-process
+    // comparison and its state-reproducibility tests check, because the values they compare are read
+    // back through get_value and a trigger is never part of a saved state.
+    {
+        const clap_event_transport_t stopped = makeTransport(0);
+
+        // through process(): the run in the same call presents the press
+        clap_event_param_value_t press = makeParamEvent(CLAP_CORE_EVENT_SPACE_ID, kParamTrigger, 1.0);
+        const clap_input_events_t pressList = { &press, param_event_size, param_event_get };
+        h.process(stopped, &pressList);
+        DAF_ASSERT_EQUAL(gTriggerSetterPresses, 1, "a process press must reach setParameterValue");
+        DAF_ASSERT_EQUAL(gTriggerRunPresses, 1, "a process press must reach the run in the same call");
+        DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamTrigger), 0.0,
+                              "the host must read a trigger at its default after the run");
+        DAF_ASSERT_EQUAL(gTriggerReports, 1, "the reset to the default must be reported to the host");
+        DAF_ASSERT_SAFE_EQUAL(gTriggerLastReport, 0.0, "the reported reset must carry the trigger's default");
+
+        // through flush(): there is no run in this call to present the press to, so it waits for the
+        // next one. The press reached the setter immediately -- that part is the plugin's to act on --
+        // and the host still reads the default, because a pulse is not a value the host can hold.
+        h.flush(makeParamEvent(CLAP_CORE_EVENT_SPACE_ID, kParamTrigger, 1.0));
+        DAF_ASSERT_EQUAL(gTriggerSetterPresses, 2, "a flush press must reach setParameterValue");
+        DAF_ASSERT_EQUAL(gTriggerRunPresses, 1, "flush has no run to present the press to");
+        DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamTrigger), 0.0, "flush must leave the trigger at its default");
+
+        h.process(stopped);
+        DAF_ASSERT_EQUAL(gTriggerRunPresses, 2, "the run after a flush press must see it");
+        DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamTrigger), 0.0, "the run after a flush press must leave the default");
+        DAF_ASSERT_EQUAL(gTriggerReports, 2, "the flush press's reset must be reported exactly once");
+        DAF_ASSERT_SAFE_EQUAL(gTriggerLastReport, 0.0, "the flush press's reset must carry the default");
+    }
+
     // steady_time has been counting for a while, and has nothing to do with the song position
     h.steadyTime = 1000000;
 
@@ -326,6 +382,36 @@ int main()
     DAF_ASSERT_EQUAL(hasStatus(saveState(h.plugin, state), "active-2"), true,
                      "an update before a load must not overwrite the loaded state");
     h.plugin->deactivate(h.plugin);
+
+    // The same press while the plugin is deactivated: flush has no run to present it to, and the host
+    // still reads the default. A plugin that acts in its setter has already acted; one that reads the
+    // value on its next run gets it there, because the pulse stays pending until a run can consume it.
+    // Nothing about the two calls differs from the active case.
+    {
+        const uint32_t setterPresses = gTriggerSetterPresses;
+        const uint32_t runPresses = gTriggerRunPresses;
+        const uint32_t reports = gTriggerReports;
+
+        h.flush(makeParamEvent(CLAP_CORE_EVENT_SPACE_ID, kParamTrigger, 1.0));
+        DAF_ASSERT_EQUAL(gTriggerSetterPresses, setterPresses + 1,
+                         "a flush press while deactivated must reach setParameterValue");
+        DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamTrigger), 0.0,
+                              "a flush press while deactivated must leave the trigger at its default");
+
+        DAF_ASSERT_EQUAL(h.plugin->activate(h.plugin, kSampleRate, 1, kFrames), true, "activate must succeed");
+        DAF_ASSERT_EQUAL(h.plugin->start_processing(h.plugin), true, "start_processing must succeed");
+        h.process(makeTransport(0));
+        DAF_ASSERT_EQUAL(gTriggerRunPresses, runPresses + 1,
+                         "the run after a deactivated flush press must see it");
+        DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamTrigger), 0.0,
+                              "the run after a deactivated flush press must leave the default");
+        DAF_ASSERT_EQUAL(gTriggerReports, reports + 1,
+                         "the deactivated flush press's reset must be reported exactly once");
+        DAF_ASSERT_SAFE_EQUAL(gTriggerLastReport, 0.0,
+                              "the deactivated flush press's reset must carry the default");
+        h.plugin->stop_processing(h.plugin);
+        h.plugin->deactivate(h.plugin);
+    }
 
     h.plugin->destroy(h.plugin);
     clap_entry.deinit();

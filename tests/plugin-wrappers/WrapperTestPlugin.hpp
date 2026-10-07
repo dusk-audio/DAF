@@ -50,6 +50,13 @@ enum WrapperTestParameters {
 static uint32_t gOutputParameterWrites = 0;
 #endif
 
+// The two places a trigger parameter can be consumed: the setter, for a plugin that acts on the press
+// as it arrives, and run(), for a plugin that reads the value on its next block. A wrapper owes a
+// press to both -- the setter sees it once per press, and the next run sees it in the parameter's
+// value before that value returns to its default -- so the tests count them separately.
+static uint32_t gTriggerSetterPresses = 0;
+static uint32_t gTriggerRunPresses = 0;
+
 #if DAF_PLUGIN_WANT_STATE
 static constexpr const char* const kWrapperTestStateKey = "file";
 #endif
@@ -202,6 +209,11 @@ protected:
             ++gOutputParameterWrites;
        #endif
 
+        // Presses only: a wrapper resetting the value to its default after the run is not a second
+        // press. VST2 and VST3 have always done that; CLAP does now too.
+        if (index == kParamTrigger && value >= 0.5f)
+            ++gTriggerSetterPresses;
+
         fParameters[index] = value;
     }
 
@@ -209,6 +221,12 @@ protected:
     {
         if (outputs[0] != inputs[0])
             std::memcpy(outputs[0], inputs[0], sizeof(float)*frames);
+
+        // A block with no frames must not consume anything: every plugin here has to return early on
+        // one, and a wrapper that retired a trigger around such a run would drop the press instead of
+        // presenting it to this one.
+        if (frames != 0 && fParameters[kParamTrigger] >= 0.5f)
+            ++gTriggerRunPresses;
 
        #if DAF_PLUGIN_WANT_TIMEPOS
         const TimePosition& timePos(getTimePosition());
