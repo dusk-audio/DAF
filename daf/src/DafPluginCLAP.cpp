@@ -1255,7 +1255,16 @@ public:
                 // Applied once only, though: a held-back event is re-reported later but must not be
                 // re-set, because a trigger parameter fires on every set it receives.
                 if (i >= fEventQueue.appliedFromUI)
+                {
                     fPlugin.setParameterValue(event.index, event.value);
+
+                    // The host is told the trigger is pressed, so the cache has to say so too: once
+                    // retireTriggerValues() returns it to its default, flushParameters() reports only
+                    // a value that differs from the cache, and a cache still at the default would
+                    // swallow the reset and leave the host holding the press.
+                    if (fPlugin.isParameterTrigger(event.index))
+                        fCachedParameters.values[event.index] = fPlugin.getParameterValue(event.index);
+                }
                 break;
             default:
                 continue;

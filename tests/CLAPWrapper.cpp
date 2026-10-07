@@ -97,8 +97,10 @@ static bool hasStatus(const std::string& data, const char* const value)
 static uint32_t CLAP_ABI in_events_size(const clap_input_events_t*) { return 0; }
 static const clap_event_header_t* CLAP_ABI in_events_get(const clap_input_events_t*, uint32_t) { return nullptr; }
 // A trigger's return to its default is a value change the host has to see: a host that is told the
-// parameter is still pressed may act on it again. Counted so the trigger tests can assert on it.
+// parameter is still pressed may act on it again. Counted, with the value last reported, so the
+// trigger tests can assert both that the reset arrived and that it carried the default.
 static uint32_t gTriggerReports = 0;
+static double gTriggerLastReport = -1.0;
 
 static bool CLAP_ABI out_events_try_push(const clap_output_events_t*, const clap_event_header_t* const event)
 {
@@ -106,7 +108,10 @@ static bool CLAP_ABI out_events_try_push(const clap_output_events_t*, const clap
     {
         const clap_event_param_value_t* const param = reinterpret_cast<const clap_event_param_value_t*>(event);
         if (param->param_id == kParamTrigger)
+        {
             ++gTriggerReports;
+            gTriggerLastReport = param->value;
+        }
     }
     return true;
 }
@@ -274,6 +279,7 @@ int main()
         DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamTrigger), 0.0,
                               "the host must read a trigger at its default after the run");
         DAF_ASSERT_EQUAL(gTriggerReports, 1, "the reset to the default must be reported to the host");
+        DAF_ASSERT_SAFE_EQUAL(gTriggerLastReport, 0.0, "the reported reset must carry the trigger's default");
 
         // through flush(): there is no run in this call to present the press to, so it waits for the
         // next one. The press reached the setter immediately -- that part is the plugin's to act on --
@@ -287,6 +293,7 @@ int main()
         DAF_ASSERT_EQUAL(gTriggerRunPresses, 2, "the run after a flush press must see it");
         DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamTrigger), 0.0, "the run after a flush press must leave the default");
         DAF_ASSERT_EQUAL(gTriggerReports, 2, "the flush press's reset must be reported exactly once");
+        DAF_ASSERT_SAFE_EQUAL(gTriggerLastReport, 0.0, "the flush press's reset must carry the default");
     }
 
     // steady_time has been counting for a while, and has nothing to do with the song position
@@ -400,6 +407,8 @@ int main()
                               "the run after a deactivated flush press must leave the default");
         DAF_ASSERT_EQUAL(gTriggerReports, reports + 1,
                          "the deactivated flush press's reset must be reported exactly once");
+        DAF_ASSERT_SAFE_EQUAL(gTriggerLastReport, 0.0,
+                              "the deactivated flush press's reset must carry the default");
         h.plugin->stop_processing(h.plugin);
         h.plugin->deactivate(h.plugin);
     }
