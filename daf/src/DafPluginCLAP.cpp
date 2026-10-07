@@ -1542,6 +1542,10 @@ public:
             fPlugin.run(audioInputs, audioOutputs, frames);
            #endif
 
+            // the run has presented any pending trigger press to the plugin; its value returns to the
+            // default the host reads back, and flushParameters() below reports that change
+            retireTriggerValues(frames);
+
             flushParameters(nullptr, process->out_events, frames - 1);
 
             fOutputEvents = nullptr;
@@ -1643,9 +1647,26 @@ public:
         return true;
     }
 
+    // clap_plugin_params::get_value. A trigger's pulse is an action, not a value: it is delivered to
+    // the plugin -- to setParameterValue, and in the parameter's own value for the run that consumes
+    // it -- and the parameter is at its default both before and after. Reporting the pulse here would
+    // hand the host a value it has no way to restore: clap-validator saves what get_value reports and
+    // reloads it into a fresh instance, where a trigger is at its default because a trigger is never
+    // part of a saved state, and the two then differ. The plugin's own value keeps the pulse until
+    // retireTriggerValues() completes it after the run, so a plugin that consumes triggers in run()
+    // still sees the press.
     bool getParameterValue(const clap_id param_id, double* const value) const
     {
-        *value = fPlugin.getParameterValue(param_id);
+        float paramValue = fPlugin.getParameterValue(param_id);
+
+        if (fPlugin.isParameterTrigger(param_id))
+        {
+            const float defValue = fPlugin.getParameterDefault(param_id);
+            if (! d_isEqual(paramValue, defValue))
+                paramValue = defValue;
+        }
+
+        *value = paramValue;
         return true;
     }
 
@@ -1810,6 +1831,39 @@ public:
             clapEvent.param_id = i;
             clapEvent.value = value;
             out->try_push(out, &clapEvent.header);
+        }
+    }
+
+    // DAF's trigger contract: a trigger holds its value until a run() has had the chance to consume
+    // it, and returns to its default after that run. VST2 and VST3 have always enforced it by setting
+    // the value back through the plugin's own setter; CLAP left it to the plugin, which only works
+    // for one that resets the value itself. That gap is what clap-validator sees: after a flush there
+    // is no run to complete the pulse, and a plugin that reads its trigger in run() (rather than
+    // acting in setParameterValue) never saw it complete at all.
+    //
+    // The reset goes through the setter, as in the other wrappers, so a run-consuming plugin observes
+    // the release as well, and a setter-consuming one sees a value it has already spent and ignores.
+    // It runs before flushParameters()'s reporting pass below, which is what tells the host the
+    // parameter is back at its default.
+    //
+    // A block with no frames cannot present the press to run() -- every plugin here has to return
+    // early on one -- so the pulse stays pending until a run with frames can consume it. get_value()
+    // reports the trigger's default throughout, so nothing is exposed by waiting.
+    void retireTriggerValues(const uint32_t frames)
+    {
+        if (frames == 0)
+            return;
+
+        for (uint32_t i=0; i<fCachedParameters.numParams; ++i)
+        {
+            if (! fPlugin.isParameterTrigger(i))
+                continue;
+
+            const float defValue = fPlugin.getParameterDefault(i);
+            if (d_isEqual(fPlugin.getParameterValue(i), defValue))
+                continue;
+
+            fPlugin.setParameterValue(i, defValue);
         }
     }
 
