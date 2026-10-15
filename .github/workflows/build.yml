@@ -73,6 +73,14 @@ jobs:
       if: ${{ runner.os == 'Linux' }}
       run: |
         xvfb-run make -C tests run
+    - name: Cocoa retired-view regression
+      if: ${{ runner.os == 'macOS' }}
+      env:
+        CFLAGS: -Werror
+        CXXFLAGS: -Werror
+      run: |
+        make -C tests ../build/tests/CocoaRetiredView USE_WEB_VIEW=false -j5
+        ./build/tests/CocoaRetiredView
     # gnu++98 dropped: this fork's C++ floor is C++11 (std::atomic in the CLAP wrapper)
     - name: As C++11 mode
       env:
