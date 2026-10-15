@@ -31,6 +31,10 @@ endif
 MANUAL_TESTS  =
 UNIT_TESTS    = AudioUnitBufferList Color HostKeyFilter ImGuiKnobs Point StateParser
 
+ifeq ($(MACOS),true)
+UNIT_TESTS   += CocoaRetiredView
+endif
+
 # ImGuiKnobs builds Dear ImGui itself, headless, and includes the knobs the way DearImGui.cpp does.
 ../build/tests/ImGuiKnobs.cpp.o: BUILD_CXX_FLAGS += -I../widgets/imgui
 

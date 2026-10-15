@@ -360,8 +360,35 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
   bool                       reshaped;
 }
 
+// AppKit can retain a removed view while native events still target it.
+- (void)detachPuglView
+{
+  puglview = NULL;
+  if (trackingArea != nil) {
+    [self removeTrackingArea:trackingArea];
+    [trackingArea release];
+    trackingArea = nil;
+  }
+  for (NSTimer* timer in [userTimers allValues]) {
+    [timer invalidate];
+  }
+  [userTimers removeAllObjects];
+}
+
+- (void)dealloc
+{
+  [self detachPuglView];
+  [markedText release];
+  [userTimers release];
+  [super dealloc];
+}
+
 - (void)dispatchExpose:(NSRect)rect
 {
+  if (!puglview) {
+    return;
+  }
+
   const double scaleFactor = viewScaleFactor(puglview);
 
   if (reshaped) {
@@ -373,7 +400,7 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
     reshaped = false;
   }
 
-  if (![[puglview->impl->drawView window] isVisible]) {
+  if (!puglview || ![[puglview->impl->drawView window] isVisible]) {
     return;
   }
 
@@ -396,6 +423,10 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
 
 - (NSSize)intrinsicContentSize
 {
+  if (!puglview) {
+    return NSMakeSize(NSViewNoInstrinsicMetric, NSViewNoInstrinsicMetric);
+  }
+
   const PuglArea defaultSize = puglview->sizeHints[PUGL_DEFAULT_SIZE];
 
   return puglIsValidArea(defaultSize)
@@ -410,13 +441,13 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
 
 - (BOOL)acceptsFirstResponder
 {
-  return YES;
+  return puglview != NULL;
 }
 
 - (BOOL)acceptsFirstMouse:(NSEvent*)event
 {
   (void)event;
-  return YES;
+  return puglview != NULL;
 }
 
 - (void)setReshaped
@@ -528,6 +559,12 @@ keySymToSpecial(const NSEvent* const ev)
   if (trackingArea != nil) {
     [self removeTrackingArea:trackingArea];
     [trackingArea release];
+    trackingArea = nil;
+  }
+
+  if (!puglview) {
+    [super updateTrackingAreas];
+    return;
   }
 
   const int opts = (NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved |
@@ -542,6 +579,10 @@ keySymToSpecial(const NSEvent* const ev)
 
 - (NSPoint)eventLocation:(NSEvent*)event
 {
+  if (!puglview) {
+    return NSZeroPoint;
+  }
+
   return nsPointFromPoints(
     puglview, [self convertPoint:[event locationInWindow] fromView:nil]);
 }
@@ -570,26 +611,46 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 
 - (void)mouseEntered:(NSEvent*)event
 {
+  if (!puglview) {
+    return;
+  }
+
   handleCrossing(self, event, PUGL_POINTER_IN);
-  [puglview->impl->cursor set];
-  puglview->impl->mouseTracked = true;
+  if (puglview) {
+    [puglview->impl->cursor set];
+    puglview->impl->mouseTracked = true;
+  }
 }
 
 - (void)mouseExited:(NSEvent*)event
 {
+  if (!puglview) {
+    return;
+  }
+
   [[NSCursor arrowCursor] set];
   handleCrossing(self, event, PUGL_POINTER_OUT);
-  puglview->impl->mouseTracked = false;
+  if (puglview) {
+    puglview->impl->mouseTracked = false;
+  }
 }
 
 - (void)cursorUpdate:(NSEvent*)event
 {
+  if (!puglview) {
+    return;
+  }
+
   (void)event;
   [puglview->impl->cursor set];
 }
 
 - (void)mouseMoved:(NSEvent*)event
 {
+  if (!puglview) {
+    return;
+  }
+
   const NSPoint         wloc = [self eventLocation:event];
   const NSPoint         rloc = [NSEvent mouseLocation];
   const PuglMotionEvent ev   = {
@@ -625,6 +686,10 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 
 - (void)mouseDown:(NSEvent*)event
 {
+  if (!puglview) {
+    return;
+  }
+
   const NSPoint         wloc = [self eventLocation:event];
   const NSPoint         rloc = [NSEvent mouseLocation];
   const PuglButtonEvent ev   = {
@@ -646,6 +711,10 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 
 - (void)mouseUp:(NSEvent*)event
 {
+  if (!puglview) {
+    return;
+  }
+
   const NSPoint         wloc = [self eventLocation:event];
   const NSPoint         rloc = [NSEvent mouseLocation];
   const PuglButtonEvent ev   = {
@@ -687,6 +756,10 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 
 - (void)scrollWheel:(NSEvent*)event
 {
+  if (!puglview) {
+    return;
+  }
+
   const NSPoint wloc = [self eventLocation:event];
   const NSPoint rloc = [NSEvent mouseLocation];
 
@@ -728,6 +801,10 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 
 - (void)keyDown:(NSEvent*)event
 {
+  if (!puglview) {
+    return;
+  }
+
   if (puglview->hints[PUGL_IGNORE_KEY_REPEAT] && [event isARepeat]) {
     return;
   }
@@ -754,8 +831,11 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 
   PuglEvent pressEvent;
   pressEvent.key = ev;
-  if (puglDispatchEvent(puglview, &pressEvent) == PUGL_UNSUPPORTED &&
-      puglview->parent) {
+  const PuglStatus status = puglDispatchEvent(puglview, &pressEvent);
+  if (!puglview) {
+    return;
+  }
+  if (status == PUGL_UNSUPPORTED && puglview->parent) {
     [[self nextResponder] keyDown:event];
     return;
   }
@@ -767,6 +847,10 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 
 - (void)keyUp:(NSEvent*)event
 {
+  if (!puglview) {
+    return;
+  }
+
   const NSPoint   wloc  = [self eventLocation:event];
   const NSPoint   rloc  = [NSEvent mouseLocation];
   const PuglKey   spec  = keySymToSpecial(event);
@@ -789,8 +873,11 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 
   PuglEvent releaseEvent;
   releaseEvent.key = ev;
-  if (puglDispatchEvent(puglview, &releaseEvent) == PUGL_UNSUPPORTED &&
-      puglview->parent) {
+  const PuglStatus status = puglDispatchEvent(puglview, &releaseEvent);
+  if (!puglview) {
+    return;
+  }
+  if (status == PUGL_UNSUPPORTED && puglview->parent) {
     [[self nextResponder] keyUp:event];
   }
 }
@@ -866,6 +953,10 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 
 - (void)insertText:(id)string replacementRange:(NSRange)replacement
 {
+  if (!puglview) {
+    return;
+  }
+
   (void)replacement;
 
   NSEvent* const  event = [NSApp currentEvent];
@@ -908,6 +999,9 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
     PuglEvent textEvent;
     textEvent.text = ev;
     puglDispatchEvent(puglview, &textEvent);
+    if (!puglview) {
+      return;
+    }
   }
 }
 
@@ -919,6 +1013,10 @@ flagDiffers(const uint32_t lhs, const uint32_t rhs, const uint32_t mask)
 
 - (void)flagsChanged:(NSEvent*)event
 {
+  if (!puglview) {
+    return;
+  }
+
   const uint32_t mods    = getModifiers(event);
   PuglKey        special = PUGL_KEY_NONE;
 
@@ -956,7 +1054,9 @@ flagDiffers(const uint32_t lhs, const uint32_t rhs, const uint32_t mask)
     puglDispatchEvent(puglview, &keyEvent);
   }
 
-  puglview->impl->mods = mods;
+  if (puglview) {
+    puglview->impl->mods = mods;
+  }
 }
 
 - (BOOL)preservesContentInLiveResize
@@ -966,22 +1066,38 @@ flagDiffers(const uint32_t lhs, const uint32_t rhs, const uint32_t mask)
 
 - (void)viewWillStartLiveResize
 {
+  if (!puglview) {
+    return;
+  }
+
   puglDispatchSimpleEvent(puglview, PUGL_LOOP_ENTER);
 }
 
 - (void)viewDidEndLiveResize
 {
+  if (!puglview) {
+    return;
+  }
+
   puglDispatchSimpleEvent(puglview, PUGL_LOOP_LEAVE);
 }
 
 - (void)viewWillDraw
 {
+  if (!puglview) {
+    return;
+  }
+
   puglDispatchSimpleEvent(puglview, PUGL_UPDATE);
   [super viewWillDraw];
 }
 
 - (void)timerTick:(NSTimer*)userTimer
 {
+  if (!puglview) {
+    return;
+  }
+
   const NSNumber*      userInfo = userTimer.userInfo;
   const PuglTimerEvent ev       = {PUGL_TIMER, 0U, userInfo.unsignedLongValue};
 
@@ -1424,6 +1540,7 @@ puglUnrealize(PuglView* const view)
   }
 
   puglDispatchSimpleEvent(view, PUGL_UNREALIZE);
+  [impl->wrapperView detachPuglView];
 
   if (view->backend) {
     view->backend->destroy(view);
@@ -1491,6 +1608,9 @@ void
 puglFreeViewInternals(PuglView* view)
 {
   if (view) {
+    if (view->impl && view->impl->wrapperView) {
+      [view->impl->wrapperView detachPuglView];
+    }
     if (view->backend) {
       view->backend->destroy(view);
     }
@@ -1498,7 +1618,6 @@ puglFreeViewInternals(PuglView* view)
     if (view->impl) {
       if (view->impl->wrapperView) {
         [view->impl->wrapperView removeFromSuperview];
-        view->impl->wrapperView->puglview = NULL;
       }
 
       if (view->impl->window) {
