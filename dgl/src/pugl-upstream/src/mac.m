@@ -1413,6 +1413,7 @@ puglRealize(PuglView* view)
                                     framePx.size.height / scaleFactor);
 
   // Create wrapper view to handle input
+  impl->lastDispatchedFocus     = false;
   impl->wrapperView             = [PuglWrapperView alloc];
   impl->wrapperView->puglview   = view;
   impl->wrapperView->userTimers = [[NSMutableDictionary alloc] init];
@@ -1825,6 +1826,23 @@ puglUpdate(PuglWorld* world, const double timeout)
 
     for (size_t i = 0; i < world->numViews; ++i) {
       PuglView* const view = world->views[i];
+
+      // Embedded views do not use Pugl's window delegate for focus events.
+      if (view->parent && view->stage >= PUGL_VIEW_STAGE_REALIZED &&
+          view->impl->wrapperView) {
+        const bool focused = puglHasFocus(view);
+        if (focused != view->impl->lastDispatchedFocus) {
+          view->impl->lastDispatchedFocus = focused;
+          PuglEvent ev = {{focused ? PUGL_FOCUS_IN : PUGL_FOCUS_OUT, 0U}};
+          ev.focus.mode = PUGL_CROSSING_NORMAL;
+          puglDispatchEvent(view, &ev);
+        }
+      }
+
+      if (view->stage < PUGL_VIEW_STAGE_REALIZED || !view->impl->wrapperView ||
+          !view->impl->drawView) {
+        continue;
+      }
 
       if ([[view->impl->drawView window] isVisible]) {
         puglDispatchSimpleEvent(view, PUGL_UPDATE);
