@@ -21,9 +21,22 @@
 
 #ifdef DAF_OS_MAC
 
+// Control key status without requiring foreground activation in a build session.
+@interface FocusTestWindow : NSWindow {
+@public
+    BOOL keyForTest;
+}
+@end
+
+@implementation FocusTestWindow
+- (BOOL)isKeyWindow { return keyForTest; }
+@end
+
 struct EventCounts {
     unsigned total = 0;
     unsigned unrealized = 0;
+    unsigned focusIn = 0;
+    unsigned focusOut = 0;
     bool aliveDuringUnrealize = false;
     PuglEventType retireOn = PUGL_NOTHING;
     unsigned retiringEvents = 0;
@@ -34,6 +47,8 @@ static PuglStatus onEvent(PuglView* const view, const PuglEvent* const event)
 {
     EventCounts& counts = *static_cast<EventCounts*>(puglGetHandle(view));
     ++counts.total;
+    if (event->type == PUGL_FOCUS_IN) ++counts.focusIn;
+    if (event->type == PUGL_FOCUS_OUT) ++counts.focusOut;
     if (event->type == PUGL_UNREALIZE)
     {
         ++counts.unrealized;
@@ -235,10 +250,90 @@ static int runRetiringCallback(const RetiringCallback which)
     return 0;
 }
 
+static int runEmbeddedFocus()
+{
+    PuglWorld* const world = puglNewWorld(PUGL_MODULE, 0);
+    DAF_ASSERT_NOT_EQUAL(world, nullptr, "embedded focus world exists");
+    FocusTestWindow* const window = [[FocusTestWindow alloc]
+        initWithContentRect:NSMakeRect(0, 0, 320, 240)
+                  styleMask:NSWindowStyleMaskTitled
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
+    [window setReleasedWhenClosed:NO];
+    window->keyForTest = YES;
+    [window makeKeyAndOrderFront:nil];
+    PuglView* const view = puglNewView(world);
+    DAF_ASSERT_NOT_EQUAL(view, nullptr, "embedded focus view exists");
+    EventCounts counts;
+    puglSetHandle(view, &counts);
+    puglSetEventFunc(view, onEvent);
+    puglSetBackend(view, puglStubBackend());
+    puglSetSizeHint(view, PUGL_DEFAULT_SIZE, 320, 240);
+    puglSetParent(view, reinterpret_cast<PuglNativeView>([window contentView]));
+    DAF_ASSERT_EQUAL(puglRealize(view), PUGL_SUCCESS, "embedded focus view realizes");
+    DAF_ASSERT_EQUAL(puglGrabFocus(view), PUGL_SUCCESS, "embedded view requests native focus");
+    DAF_ASSERT_EQUAL([window isKeyWindow], YES, "native parent is a key window");
+    DAF_ASSERT_EQUAL([window firstResponder], view->impl->wrapperView, "native child is the first responder");
+    DAF_ASSERT_EQUAL(puglHasFocus(view), true, "embedded view is the key window's first responder");
+    DAF_ASSERT_EQUAL(counts.focusIn, 0u, "initial focus waits for the event pump");
+    DAF_ASSERT_EQUAL(puglUpdate(world, 0.0), PUGL_SUCCESS, "initial focus pump succeeds");
+    DAF_ASSERT_EQUAL(counts.focusIn, 1u, "initial embedded focus reaches its callback");
+    DAF_ASSERT_EQUAL(counts.focusOut, 0u, "initial focus has no loss");
+    DAF_ASSERT_EQUAL(puglUpdate(world, 0.0), PUGL_SUCCESS, "unchanged focus pump succeeds");
+    DAF_ASSERT_EQUAL(counts.focusIn, 1u, "unchanged focus is not dispatched twice");
+
+    DAF_ASSERT_EQUAL([window makeFirstResponder:nil], YES, "the parent takes responder focus");
+    DAF_ASSERT_EQUAL([window firstResponder], window, "the native parent is the first responder");
+    DAF_ASSERT_EQUAL(puglHasFocus(view), false, "the child no longer owns responder focus");
+    DAF_ASSERT_EQUAL(puglUpdate(world, 0.0), PUGL_SUCCESS, "responder transfer pump succeeds");
+    DAF_ASSERT_EQUAL(counts.focusOut, 1u, "responder transfer dispatches focus loss");
+    DAF_ASSERT_EQUAL(puglGrabFocus(view), PUGL_SUCCESS, "the child takes responder focus again");
+    DAF_ASSERT_EQUAL([window firstResponder], view->impl->wrapperView, "the native child regains the first responder");
+    DAF_ASSERT_EQUAL(puglHasFocus(view), true, "the child owns responder focus again");
+    DAF_ASSERT_EQUAL(puglUpdate(world, 0.0), PUGL_SUCCESS, "responder return pump succeeds");
+    DAF_ASSERT_EQUAL(counts.focusIn, 2u, "responder return dispatches focus gain");
+
+    window->keyForTest = NO;
+    DAF_ASSERT_EQUAL(puglHasFocus(view), false, "a non-key parent gives no child keyboard focus");
+    DAF_ASSERT_EQUAL(puglUpdate(world, 0.0), PUGL_SUCCESS, "key-window loss pump succeeds");
+    DAF_ASSERT_EQUAL(counts.focusOut, 2u, "key-window loss dispatches focus loss");
+    window->keyForTest = YES;
+    DAF_ASSERT_EQUAL(puglHasFocus(view), true, "the key parent restores child focus");
+    DAF_ASSERT_EQUAL(puglUpdate(world, 0.0), PUGL_SUCCESS, "key-window return pump succeeds");
+    DAF_ASSERT_EQUAL(counts.focusIn, 3u, "key-window return dispatches focus gain");
+
+    DAF_ASSERT_EQUAL(puglUnrealize(view), PUGL_SUCCESS, "focused view unrealizes");
+    DAF_ASSERT_EQUAL(puglRealize(view), PUGL_SUCCESS, "focused view realizes a replacement");
+    DAF_ASSERT_EQUAL(puglGrabFocus(view), PUGL_SUCCESS, "replacement requests native focus");
+    DAF_ASSERT_EQUAL([window firstResponder], view->impl->wrapperView, "the native replacement is the first responder");
+    DAF_ASSERT_EQUAL(puglHasFocus(view), true, "replacement has native focus");
+    DAF_ASSERT_EQUAL(puglUpdate(world, 0.0), PUGL_SUCCESS, "replacement focus pump succeeds");
+    DAF_ASSERT_EQUAL(counts.focusIn, 4u, "replacement receives its own initial focus gain");
+
+    counts.retireOn = PUGL_FOCUS_OUT;
+    DAF_ASSERT_EQUAL([window makeFirstResponder:nil], YES, "the parent takes focus before retirement");
+    DAF_ASSERT_EQUAL([window firstResponder], window, "the native parent owns focus before retirement");
+    DAF_ASSERT_EQUAL(puglHasFocus(view), false, "native focus is gone before retirement");
+    const unsigned beforeRetirement = counts.total;
+    DAF_ASSERT_EQUAL(puglUpdate(world, 0.0), PUGL_SUCCESS, "retiring focus callback returns safely");
+    DAF_ASSERT_EQUAL(counts.focusOut, 3u, "retiring focus loss dispatches once");
+    DAF_ASSERT_EQUAL(counts.retiredInCallback, true, "focus callback can unrealize its view");
+    DAF_ASSERT_EQUAL(view->stage, PUGL_VIEW_STAGE_ALLOCATED, "retired focus view stays unrealized");
+    DAF_ASSERT_EQUAL(counts.total, beforeRetirement + 2, "retirement prevents update and draw callbacks");
+
+    puglFreeView(view);
+    [window close];
+    [window release];
+    puglFreeWorld(world);
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     @autoreleasepool
     {
+        if (argc > 1 && std::strcmp(argv[1], "--focus") == 0)
+            return runEmbeddedFocus();
         if (argc > 1 && std::strcmp(argv[1], "--free") == 0)
             return runRetirement(false);
         if (argc > 1 && std::strcmp(argv[1], "--unrealize") == 0)
@@ -257,7 +352,7 @@ int main(int argc, char** argv)
                     return runRetiringCallback(callback.which);
             return 1;
         }
-        if (runRetirement(false) != 0 || runRetirement(true) != 0)
+        if (runEmbeddedFocus() != 0 || runRetirement(false) != 0 || runRetirement(true) != 0)
             return 1;
         for (const auto& callback : callbacks)
             if (runRetiringCallback(callback.which) != 0)

@@ -37,6 +37,7 @@ struct PuglInternalsImpl {
   PuglWindow*      window;
   uint32_t         mods;
   bool             mouseTracked;
+  bool             lastDispatchedFocus;
 };
 
 #endif // PUGL_SRC_MAC_H
