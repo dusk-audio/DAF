@@ -535,7 +535,10 @@ public:
                 if (hints & kParameterIsInteger)
                     snprintf_i32((char*)ptr, (int32_t)value, 24);
                 else
-                    snprintf_param_value((char*)ptr, value, 24);
+                {
+                    const ParameterRanges& ranges(fPlugin.getParameterRanges(index));
+                    snprintf_param_value((char*)ptr, value, ranges.min, ranges.max, 24);
+                }
 
                 return 1;
             }
