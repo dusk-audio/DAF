@@ -24,6 +24,9 @@
 #endif
 
 #include <atomic>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <set>
 
 START_NAMESPACE_DAF
@@ -124,6 +127,33 @@ static inline
 void snprintf_f32(char* const dst, const double value, const size_t size)
 {
     return snprintf_t<double>(dst, value, "%f", size);
+}
+
+// Value text for a parameter without enum labels or custom text, which hosts show
+// in automation lanes and generic editors. "%f" printed float noise there
+// ("100.000000", "0.000001" for a default of 0): keep three decimals below 10,
+// two below 100 and one above, then drop trailing zeros, the bare point and the
+// sign of a zero.
+static inline
+void snprintf_param_value(char* const dst, const double value, const size_t size)
+{
+    DAF_SAFE_ASSERT_RETURN(size > 0,);
+    if (! std::isfinite(value))
+        return snprintf_t<double>(dst, value, "%g", size);
+    const double magnitude = std::fabs(value);
+    const int decimals = magnitude >= 100.0 ? 1 : magnitude >= 10.0 ? 2 : 3;
+    std::snprintf(dst, size-1, "%.*f", decimals, value);
+    dst[size-1] = '\0';
+    if (char* const point = std::strchr(dst, '.'))
+    {
+        char* end = point + std::strlen(point) - 1;
+        while (end > point && *end == '0')
+            *end-- = '\0';
+        if (end == point)
+            *end = '\0';
+    }
+    if (std::strcmp(dst, "-0") == 0)
+        std::strcpy(dst, "0");
 }
 
 static inline

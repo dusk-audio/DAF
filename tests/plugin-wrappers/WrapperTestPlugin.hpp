@@ -26,6 +26,8 @@
 
 #include "daf/DafPlugin.hpp"
 
+#include <cstdio>
+
 START_NAMESPACE_DAF
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -128,11 +130,17 @@ protected:
             parameter.ranges.min = 20.0f;
             parameter.ranges.max = 20000.0f;
             parameter.ranges.def = 632.0f;
+           #ifdef DAF_WRAPPER_TEST_PARAM_TEXT
+            parameter.hints |= kParameterIsHidden;
+           #endif
             break;
         case kParamLinearLow:
             parameter.name = parameter.symbol = "linearlow";
             parameter.ranges.max = 10.0f;
             parameter.ranges.def = 3.0f;
+           #ifdef DAF_WRAPPER_TEST_PARAM_TEXT
+            parameter.unit = "dB";
+           #endif
             break;
        #if DAF_PLUGIN_WANT_TIMEPOS
         case kParamOutFrame:
@@ -201,6 +209,22 @@ protected:
     {
         return fParameters[index];
     }
+
+   #ifdef DAF_WRAPPER_TEST_PARAM_TEXT
+    // loghigh formats its own text, unit included.
+    bool hasCustomParameterText(const uint32_t index) const override
+    {
+        return index == kParamLogHigh;
+    }
+
+    bool getParameterValueText(const uint32_t index, const float value, char* const text, const uint32_t size) const override
+    {
+        if (index != kParamLogHigh || text == nullptr || size == 0)
+            return false;
+        const int written = std::snprintf(text, size, "%.0f Hz", static_cast<double>(value));
+        return written >= 0 && static_cast<uint32_t>(written) < size;
+    }
+   #endif
 
     void setParameterValue(const uint32_t index, const float value) override
     {

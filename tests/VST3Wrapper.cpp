@@ -26,6 +26,7 @@
  * not the queues after it. */
 
 #define DAF_PLUGIN_TARGET_VST3
+#define DAF_WRAPPER_TEST_PARAM_TEXT
 #define DAF_TEST_NO_DGL
 
 #include "tests.hpp"
@@ -334,6 +335,42 @@ int main()
                      "the component must also be the edit controller");
     DAF_ASSERT_EQUAL((*controller)->ctrl.set_component_handler(controller, (v3_component_handler**)&gHandlerPtr),
                      V3_OK, "set_component_handler must succeed");
+
+    // value text, units and hidden parameters, as a host's generic editor shows them
+    {
+        const auto ascii = [](const int16_t* utf16) {
+            std::string out;
+            for (; *utf16 != 0; ++utf16) out.push_back(static_cast<char>(*utf16));
+            return out;
+        };
+        // A failed call reads as an empty info/text, which no check below accepts.
+        const auto infoOf = [&](uint32_t index) {
+            v3_param_info info = {};
+            if ((*controller)->ctrl.get_parameter_info(controller,
+                    static_cast<int32_t>(kVst3InternalParameterCount + index), &info) != V3_OK)
+                info = {};
+            return info;
+        };
+        const auto textOf = [&](uint32_t index, double normalised) {
+            v3_str_128 text = {};
+            if ((*controller)->ctrl.get_parameter_string_for_value(controller,
+                    kVst3InternalParameterCount + index, normalised, text) != V3_OK)
+                return std::string();
+            return ascii(text);
+        };
+        DAF_ASSERT_EQUAL((infoOf(kParamLogMiddle).flags & V3_PARAM_IS_HIDDEN) != 0, true,
+                         "a hidden parameter must be flagged hidden");
+        DAF_ASSERT_EQUAL((infoOf(kParamLinearLow).flags & V3_PARAM_IS_HIDDEN) != 0, false,
+                         "other parameters must not be hidden");
+        DAF_ASSERT_EQUAL(ascii(infoOf(kParamLinearLow).units) == "dB", true,
+                         "the unit is reported for the host to append");
+        DAF_ASSERT_EQUAL(ascii(infoOf(kParamLogHigh).title) == "loghigh", true, "get_parameter_info must succeed");
+        DAF_ASSERT_EQUAL(ascii(infoOf(kParamLogHigh).units).empty(), true,
+                         "custom text carries its own unit, so none is reported");
+        DAF_ASSERT_EQUAL(textOf(kParamLinearLow, 0.3) == "3", true, "default text has no float noise");
+        DAF_ASSERT_EQUAL(textOf(kParamLinearLow, 0.25) == "2.5", true, "trailing zeros are dropped");
+        DAF_ASSERT_EQUAL(textOf(kParamLinearLow, 0.0) == "0", true, "zero reads 0");
+    }
 
     DAF_ASSERT_EQUAL(gUpdateStateFromConstructor, false, "updateStateValue must fail from the plugin constructor");
     DAF_ASSERT_EQUAL(gUpdateStateFromInitState, false, "updateStateValue must fail from initState");

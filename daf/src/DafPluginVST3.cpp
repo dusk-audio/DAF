@@ -2028,6 +2028,9 @@ public:
         else if (hints & kParameterIsAutomatable)
             flags |= V3_PARAM_CAN_AUTOMATE;
 
+        if (hints & kParameterIsHidden)
+            flags |= V3_PARAM_IS_HIDDEN;
+
         // set up step_count
         int32_t step_count = 0;
 
@@ -2048,7 +2051,9 @@ public:
         // int32_t unit_id;
         strncpy_utf16(info->title,       fPlugin.getParameterName(index), 128);
         strncpy_utf16(info->short_title, fPlugin.getParameterShortName(index), 128);
-        strncpy_utf16(info->units,       fPlugin.getParameterUnit(index), 128);
+        // Hosts append `units` to the value text. Custom text carries its own
+        // unit ("689 ms"), so report none for it rather than show "689 ms ms".
+        strncpy_utf16(info->units, fPlugin.hasCustomParameterText(index) ? "" : fPlugin.getParameterUnit(index).buffer(), 128);
         return V3_OK;
     }
 
@@ -2126,9 +2131,15 @@ public:
         }
 
         if (hints & kParameterIsInteger)
+        {
             snprintf_i32_utf16(output, value, 128);
+        }
         else
-            snprintf_f32_utf16(output, value, 128);
+        {
+            char text[128];
+            snprintf_param_value(text, value, sizeof(text));
+            strncpy_utf16(output, text, 128);
+        }
 
         return V3_OK;
     }
