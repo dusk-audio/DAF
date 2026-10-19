@@ -85,6 +85,13 @@ ifeq ($(DGL_BACKEND_WAYLAND),true)
 UNIT_TESTS   += Wayland
 endif
 
+# drives the X11 backend directly, so it needs one (macOS uses Cocoa even where X11 is installed)
+ifeq ($(LINUX),true)
+ifeq ($(HAVE_X11),true)
+UNIT_TESTS   += X11Focus
+endif
+endif
+
 MANUAL_TARGETS = $(MANUAL_TESTS:%=../build/tests/%$(APP_EXT))
 UNIT_TARGET    = $(UNIT_TESTS:%=../build/tests/%$(APP_EXT))
 CHECK_TARGETS  = $(BUILD_CHECKS:%=../build/tests/%.cpp.o)
