@@ -169,8 +169,11 @@ static unsigned char
 puglX11EndErrorTrap(PuglX11ErrorTrap* const trap)
 {
   // Wait for the server to answer every request made inside the trap, and so
-  // to report its errors while the trap still catches them
-  if (trap->display) {
+  // to report its errors while the trap still catches them. With no request
+  // outstanding, every error has already been read, and syncing would only
+  // cost each idle update a round trip.
+  if (trap->display && LastKnownRequestProcessed(trap->display) + 1U !=
+                         NextRequest(trap->display)) {
     XSync(trap->display, False);
   }
   puglX11ActiveErrorTrap = trap->outer;

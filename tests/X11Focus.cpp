@@ -159,6 +159,26 @@ int main()
         DAF_ASSERT_EQUAL(caught, static_cast<unsigned char>(BadWindow), "the view's error is caught by the trap");
     }
 
+    // 6. closing a trap waits for the server only when a request is outstanding: an idle update
+    //    must not cost a round trip (XSync sends a request of its own), yet a failing request
+    //    made inside the trap is still collected before the trap closes
+    {
+        XSync(display, False);
+        const unsigned long before = NextRequest(display);
+        PuglX11ErrorTrap idle;
+        puglX11BeginErrorTrap(&idle, display);
+        puglX11EndErrorTrap(&idle);
+        DAF_ASSERT_EQUAL(NextRequest(display), before, "a trap with nothing outstanding sends no request");
+
+        hostErrorCount = 0;
+        PuglX11ErrorTrap busy;
+        puglX11BeginErrorTrap(&busy, display);
+        XSetInputFocus(display, viewWindow, RevertToParent, CurrentTime); // hidden: BadMatch
+        const unsigned char caught = puglX11EndErrorTrap(&busy);
+        DAF_ASSERT_EQUAL(caught, static_cast<unsigned char>(BadMatch), "an outstanding failing request is collected");
+        DAF_ASSERT_EQUAL(hostErrorCount, 0, "and does not reach the host");
+    }
+
     // a host may destroy its window, and the view's with it, before letting the view go
     hostErrorCount = 0;
     XDestroyWindow(host, hostWindow);
