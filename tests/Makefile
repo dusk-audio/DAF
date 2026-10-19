@@ -50,6 +50,12 @@ ifeq ($(LINUX),true)
 ../build/tests/%Wrapper$(APP_EXT): LINK_FLAGS += -ldl
 endif
 
+# the LV2 wrapper's TTL exporter, run on a plugin of its own (see lv2-preset-export/)
+../build/tests/LV2PresetExport.cpp.o: BUILD_CXX_FLAGS += -Ilv2-preset-export -I../daf
+ifeq ($(LINUX),true)
+../build/tests/LV2PresetExport$(APP_EXT): LINK_FLAGS += -ldl
+endif
+
 ifeq ($(HAVE_CAIRO),true)
 MANUAL_TESTS += Demo.cairo
 endif
@@ -64,6 +70,9 @@ endif
 ifneq ($(WASM),true)
 UNIT_TESTS   += Application Thread
 UNIT_TESTS   += $(WRAPPER_TESTS)
+ifneq ($(WINDOWS),true)
+UNIT_TESTS   += LV2PresetExport
+endif
 ifeq ($(HAVE_CAIRO),true)
 UNIT_TESTS   += Window.cairo
 endif

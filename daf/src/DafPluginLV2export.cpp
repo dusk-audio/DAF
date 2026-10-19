@@ -251,6 +251,18 @@ static void addAttribute(DAF_NAMESPACE::String& text,
 }
 
 // --------------------------------------------------------------------------------------------------------------------
+// The globals a plugin reads while it is constructed, set for an instance that is only asked about itself
+
+static void setDummyPluginGlobals(const bool dummy) noexcept
+{
+    USE_NAMESPACE_DAF
+
+    d_nextBufferSize = dummy ? 512 : 0;
+    d_nextSampleRate = dummy ? 44100.0 : 0.0;
+    d_nextPluginIsDummy = dummy;
+}
+
+// --------------------------------------------------------------------------------------------------------------------
 
 DAF_PLUGIN_EXPORT
 void lv2_generate_ttl(const char* const basename)
@@ -272,13 +284,9 @@ void lv2_generate_ttl(const char* const basename)
     d_nextBundlePath = bundlePath.buffer();
 
     // Dummy plugin to get data from
-    d_nextBufferSize = 512;
-    d_nextSampleRate = 44100.0;
-    d_nextPluginIsDummy = true;
+    setDummyPluginGlobals(true);
     PluginExporter plugin(nullptr, nullptr, nullptr, nullptr);
-    d_nextBufferSize = 0;
-    d_nextSampleRate = 0.0;
-    d_nextPluginIsDummy = false;
+    setDummyPluginGlobals(false);
 
     const String pluginDLL(basename);
     const String pluginTTL(pluginDLL + ".ttl");
@@ -1685,7 +1693,13 @@ void lv2_generate_ttl(const char* const basename)
         {
             std::snprintf(strBuf, 0xff, "%03i", i+1);
 
-            plugin.loadProgram(i);
+            // Each preset is its program loaded into an instance of its own. Loaded one after
+            // another into the same instance, a program kept whatever earlier programs had set
+            // and it does not, so a preset's ports and state depended on the presets before it.
+            setDummyPluginGlobals(true);
+            PluginExporter program(nullptr, nullptr, nullptr, nullptr);
+            setDummyPluginGlobals(false);
+            program.loadProgram(i);
 
             presetString = "<" DAF_PLUGIN_URI + presetSeparator + "preset" + strBuf + ">\n";
 
@@ -1693,12 +1707,12 @@ void lv2_generate_ttl(const char* const basename)
             presetString += "    state:state [\n";
             for (uint32_t j=0; j<numStates; ++j)
             {
-                const String key   = plugin.getStateKey(j);
-                const String value = plugin.getStateValue(key);
+                const String key   = program.getStateKey(j);
+                const String value = program.getStateValue(key);
 
                 presetString += "        <";
 
-                if (plugin.getStateHints(j) & kStateIsHostReadable)
+                if (program.getStateHints(j) & kStateIsHostReadable)
                     presetString += DAF_PLUGIN_URI "#";
                 else
                     presetString += DAF_PLUGIN_LV2_STATE_PREFIX;
@@ -1721,7 +1735,7 @@ void lv2_generate_ttl(const char* const basename)
 
             for (uint32_t j=0; j <numParameters; ++j)
             {
-                if (plugin.isParameterOutput(j))
+                if (program.isParameterOutput(j))
                     continue;
 
                 if (firstParameter)
@@ -1734,10 +1748,10 @@ void lv2_generate_ttl(const char* const basename)
                     presetString += "    [\n";
                 }
 
-                String parameterSymbol = plugin.getParameterSymbol(j);
-                float parameterValue = plugin.getParameterValue(j);
+                String parameterSymbol = program.getParameterSymbol(j);
+                float parameterValue = program.getParameterValue(j);
 
-                if (plugin.getParameterDesignation(j) == kParameterDesignationBypass)
+                if (program.getParameterDesignation(j) == kParameterDesignationBypass)
                 {
                     parameterSymbol = ParameterDesignationSymbols::bypass_lv2;
                     parameterValue = 1.0f - parameterValue;
@@ -1745,12 +1759,12 @@ void lv2_generate_ttl(const char* const basename)
 
                 presetString += "        lv2:symbol \"" + parameterSymbol + "\" ;\n";
 
-                if (plugin.getParameterHints(j) & kParameterIsInteger)
+                if (program.getParameterHints(j) & kParameterIsInteger)
                     presetString += "        pset:value " + String(int(parameterValue)) + " ;\n";
                 else
                     presetString += "        pset:value " + String(parameterValue) + " ;\n";
 
-                if (j+1 == numParameters || plugin.isParameterOutput(j+1))
+                if (j+1 == numParameters || program.isParameterOutput(j+1))
                     presetString += "    ] .\n\n";
                 else
                     presetString += "    ] ,\n";
