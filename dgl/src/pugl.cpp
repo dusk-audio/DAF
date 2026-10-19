@@ -825,12 +825,17 @@ PuglStatus puglX11UpdateWithoutExposures(PuglWorld* const world)
     const double startTime = puglGetTime(world);
     const double endTime   = startTime + 0.03;
 
+    // see puglUpdate in x11.c
+    PuglX11ErrorTrap trap;
+    puglX11BeginErrorTrap(&trap, world->impl->display);
+
     for (double t = startTime; !st && t < endTime; t = puglGetTime(world))
     {
         if (!(st = pollX11Socket(world, endTime - t)))
             st = dispatchX11Events(world);
     }
 
+    puglX11EndErrorTrap(&trap);
     world->state = startState;
     return st;
 }

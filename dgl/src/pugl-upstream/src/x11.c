@@ -114,6 +114,70 @@ puglX11Status(const int returnCode)
   return returnCode ? PUGL_SUCCESS : PUGL_UNKNOWN_ERROR;
 }
 
+/*
+  Xlib reports errors through one handler for the whole process, and in a
+  plugin that handler is the host's: GDK's exits the host, as does Xlib's
+  default. The host works on our windows from its own connection (it hides,
+  reparents and destroys them), so a request of ours can fail through no fault
+  of ours, XSetInputFocus with BadMatch when the host has just unmapped the
+  window for one. A trap catches the errors raised on our display while pugl
+  works on it, and hands those of any other connection to whoever was installed
+  before. Traps nest, including across plugins each carrying a copy of this.
+*/
+typedef struct PuglX11ErrorTrapImpl {
+  Display*                     display;
+  XErrorHandler                previous;
+  struct PuglX11ErrorTrapImpl* outer;
+  unsigned char                errorCode;
+  unsigned char                requestCode;
+} PuglX11ErrorTrap;
+
+static PuglX11ErrorTrap* puglX11ActiveErrorTrap = NULL;
+
+static int
+puglX11TrapError(Display* const display, XErrorEvent* const event)
+{
+  PuglX11ErrorTrap* outermost = NULL;
+  for (PuglX11ErrorTrap* trap = puglX11ActiveErrorTrap; trap; trap = trap->outer) {
+    if (trap->display == display) {
+      if (!trap->errorCode) {
+        trap->errorCode   = event->error_code;
+        trap->requestCode = event->request_code;
+      }
+      return 0;
+    }
+    outermost = trap;
+  }
+
+  return (outermost && outermost->previous) ? outermost->previous(display, event)
+                                            : 0;
+}
+
+static void
+puglX11BeginErrorTrap(PuglX11ErrorTrap* const trap, Display* const display)
+{
+  trap->display          = display;
+  trap->outer            = puglX11ActiveErrorTrap;
+  trap->errorCode        = 0U;
+  trap->requestCode      = 0U;
+  trap->previous         = XSetErrorHandler(puglX11TrapError);
+  puglX11ActiveErrorTrap = trap;
+}
+
+/// Return the error code of the first request inside the trap that failed, or 0
+static unsigned char
+puglX11EndErrorTrap(PuglX11ErrorTrap* const trap)
+{
+  // Wait for the server to answer every request made inside the trap, and so
+  // to report its errors while the trap still catches them
+  if (trap->display) {
+    XSync(trap->display, False);
+  }
+  puglX11ActiveErrorTrap = trap->outer;
+  XSetErrorHandler(trap->previous);
+  return trap->errorCode;
+}
+
 static bool
 initXSync(PuglWorldInternals* const impl)
 {
@@ -740,6 +804,10 @@ puglUnrealize(PuglView* const view)
   puglDispatchSimpleEvent(view, PUGL_UNREALIZE);
   clearX11Clipboard(&impl->clipboard);
 
+  // A host may destroy its window, and with it ours, before it lets the view go
+  PuglX11ErrorTrap trap;
+  puglX11BeginErrorTrap(&trap, view->world->impl->display);
+
   if (impl->xic) {
     XDestroyIC(impl->xic);
     impl->xic = None;
@@ -753,6 +821,8 @@ puglUnrealize(PuglView* const view)
     XDestroyWindow(view->world->impl->display, impl->win);
     impl->win = None;
   }
+
+  puglX11EndErrorTrap(&trap);
 
   XFree(impl->vi);
   impl->vi = NULL;
@@ -813,9 +883,14 @@ puglFreeViewInternals(PuglView* const view)
 void
 puglFreeWorldInternals(PuglWorld* const world)
 {
+  // Collect any error still owed to us before the connection closes, which
+  // would otherwise report it to the host's handler
+  PuglX11ErrorTrap trap;
+  puglX11BeginErrorTrap(&trap, world->impl->display);
   if (world->impl->xim) {
     XCloseIM(world->impl->xim);
   }
+  puglX11EndErrorTrap(&trap);
   XCloseDisplay(world->impl->display);
   free(world->impl->timers);
   free(world->impl);
@@ -1351,6 +1426,46 @@ translateEvent(PuglView* const view, XEvent xevent)
   return event;
 }
 
+/// Return the child of the root that `window` sits under, which is the window
+/// manager's frame where there is one, or None if the window is gone
+static Window
+getX11TopLevel(Display* const display, Window window)
+{
+  for (;;) {
+    Window       root     = None;
+    Window       parent   = None;
+    Window*      children = NULL;
+    unsigned int count    = 0U;
+    if (!XQueryTree(display, window, &root, &parent, &children, &count)) {
+      return None;
+    }
+
+    if (children) {
+      XFree(children);
+    }
+
+    if (parent == None || parent == root) {
+      return window;
+    }
+
+    window = parent;
+  }
+}
+
+static bool
+focusIsInTopLevelOf(Display* const display, const Window window)
+{
+  Window focus  = None;
+  int    revert = RevertToNone;
+  XGetInputFocus(display, &focus, &revert);
+  if (focus == None || focus == PointerRoot) {
+    return false;
+  }
+
+  const Window topLevel = getX11TopLevel(display, window);
+  return topLevel != None && getX11TopLevel(display, focus) == topLevel;
+}
+
 PuglStatus
 puglGrabFocus(PuglView* const view)
 {
@@ -1358,16 +1473,43 @@ puglGrabFocus(PuglView* const view)
   Display* const       display = view->world->impl->display;
   XWindowAttributes    attrs   = PUGL_INIT_STRUCT;
 
-  if (!impl->win || !XGetWindowAttributes(display, impl->win, &attrs)) {
+  if (!impl->win) {
     return PUGL_UNKNOWN_ERROR;
   }
 
-  if (attrs.map_state != IsViewable) {
-    return PUGL_FAILURE;
+  // The host can unmap or destroy our window from its own connection at any
+  // moment, between the checks below and the request too
+  PuglX11ErrorTrap trap;
+  puglX11BeginErrorTrap(&trap, display);
+
+  PuglStatus st = PUGL_SUCCESS;
+  if (!XGetWindowAttributes(display, impl->win, &attrs)) {
+    st = PUGL_UNKNOWN_ERROR;
+  } else if (attrs.map_state != IsViewable) {
+    st = PUGL_FAILURE;
+  } else if (view->parent && !focusIsInTopLevelOf(display, impl->win)) {
+    // An embedded view only takes the keyboard from its own host window. A
+    // host may ask for it after the user has moved to another application
+    // (Ardour's VST3 UI asks on every key press it is handed, keys the view
+    // forwards back to it included), and taking it then steals the focus.
+    st = PUGL_FAILURE;
+  } else {
+    // Embedded, our window goes away with the host's (closing a plugin window
+    // withdraws the host's top level), and RevertToParent only reverts one
+    // level before becoming RevertToNone, which leaves no window with the
+    // keyboard. Reverting to the pointer root keeps the keyboard working until
+    // the window manager focuses another window.
+    XSetInputFocus(display,
+                   impl->win,
+                   view->parent ? RevertToPointerRoot : RevertToNone,
+                   CurrentTime);
   }
 
-  XSetInputFocus(display, impl->win, RevertToNone, CurrentTime);
-  return PUGL_SUCCESS;
+  if (puglX11EndErrorTrap(&trap) && !st) {
+    st = PUGL_FAILURE;
+  }
+
+  return st;
 }
 
 bool
@@ -1832,6 +1974,11 @@ puglUpdate(PuglWorld* const world, const double timeout)
     return PUGL_BAD_CALL;
   }
 
+  // Reading events reads the errors of earlier requests too, and drawing makes
+  // more, see PuglX11ErrorTrap
+  PuglX11ErrorTrap trap;
+  puglX11BeginErrorTrap(&trap, world->impl->display);
+
   if (timeout < 0.0) {
     if (!(st0 = pollX11Socket(world, timeout))) {
       st0 = dispatchX11Events(world);
@@ -1850,7 +1997,8 @@ puglUpdate(PuglWorld* const world, const double timeout)
     }
   }
 
-  st1          = flushExposures(world);
+  st1 = flushExposures(world);
+  puglX11EndErrorTrap(&trap);
   world->state = startState;
   return st0 ? st0 : st1;
 }
