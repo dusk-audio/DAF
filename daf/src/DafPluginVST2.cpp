@@ -535,7 +535,7 @@ public:
                 if (hints & kParameterIsInteger)
                     snprintf_i32((char*)ptr, (int32_t)value, 24);
                 else
-                    snprintf_f32((char*)ptr, value, 24);
+                    snprintf_param_value((char*)ptr, value, 24);
 
                 return 1;
             }

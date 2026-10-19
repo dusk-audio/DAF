@@ -1628,6 +1628,9 @@ public:
             if (hints & (kParameterIsBoolean|kParameterIsInteger))
                 info->flags |= CLAP_PARAM_IS_STEPPED;
 
+            if (hints & kParameterIsHidden)
+                info->flags |= CLAP_PARAM_IS_HIDDEN;
+
             d_strncpy(info->name, fPlugin.getParameterName(index), CLAP_NAME_SIZE);
 
             uint wrtn;
@@ -1710,7 +1713,17 @@ public:
         if (hints & kParameterIsInteger)
             snprintf_i32(display, value, size);
         else
-            snprintf_f32(display, value, size);
+            snprintf_param_value(display, value, size);
+
+        // CLAP has no unit field, so the text carries it. Custom text (returned
+        // above) already does.
+        const String& unit(fPlugin.getParameterUnit(param_id));
+        const size_t used = std::strlen(display);
+        if (unit.isNotEmpty() && used + 1 + unit.length() < size)
+        {
+            display[used] = ' ';
+            std::memcpy(display + used + 1, unit.buffer(), unit.length() + 1);
+        }
 
         return true;
     }

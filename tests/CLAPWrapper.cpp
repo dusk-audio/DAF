@@ -25,6 +25,7 @@
  * nothing, whether they come through process() or clap_plugin_params::flush(). */
 
 #define DAF_PLUGIN_TARGET_CLAP
+#define DAF_WRAPPER_TEST_PARAM_TEXT
 #define DAF_TEST_NO_DGL
 
 #include "tests.hpp"
@@ -236,6 +237,23 @@ int main()
         DAF_ASSERT_EQUAL(h.params->get_info(h.plugin, i, &info), true, "get_info must succeed");
         DAF_ASSERT_EQUAL((info.flags & CLAP_PARAM_IS_READONLY) != 0, i >= kParamOutFrame,
                          "exactly the output parameters must be read-only");
+        DAF_ASSERT_EQUAL((info.flags & CLAP_PARAM_IS_HIDDEN) != 0, i == kParamLogMiddle,
+                         "exactly the hidden parameter must be flagged hidden");
+    }
+
+    // value text: CLAP has no unit field, so the text carries the unit
+    {
+        // An empty string (never a valid answer here) stands for a failed call.
+        const auto textOf = [&](clap_id id, double value) {
+            char text[64] = {};
+            return h.params->value_to_text(h.plugin, id, value, text, sizeof(text)) ? std::string(text) : std::string();
+        };
+        DAF_ASSERT_EQUAL(textOf(kParamLinearLow, 3.0) == "3 dB", true, "default text is compact and carries the unit");
+        DAF_ASSERT_EQUAL(textOf(kParamLinearLow, 1.0 / 3.0) == "0.333 dB", true, "three decimals below 10");
+        DAF_ASSERT_EQUAL(textOf(kParamLinearLow, -0.0000004) == "0 dB", true, "float noise around zero reads 0");
+        DAF_ASSERT_EQUAL(textOf(kParamLogMiddle, 632.26) == "632.3", true, "one decimal above 100");
+        DAF_ASSERT_EQUAL(textOf(kParamLogHigh, 4096.0) == "4096 Hz", true,
+                         "custom text is shown as it is, with no unit appended");
     }
 
     const clap_plugin_state_t* const state =
