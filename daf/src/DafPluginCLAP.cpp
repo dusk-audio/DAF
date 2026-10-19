@@ -1628,9 +1628,6 @@ public:
             if (hints & (kParameterIsBoolean|kParameterIsInteger))
                 info->flags |= CLAP_PARAM_IS_STEPPED;
 
-            if (hints & kParameterIsHidden)
-                info->flags |= CLAP_PARAM_IS_HIDDEN;
-
             d_strncpy(info->name, fPlugin.getParameterName(index), CLAP_NAME_SIZE);
 
             uint wrtn;
@@ -1650,6 +1647,10 @@ public:
             d_strncpy(info->module + wrtn, fPlugin.getParameterSymbol(index), CLAP_PATH_SIZE - wrtn);
             break;
         }
+
+        // Every designation may be hidden, as in the VST3 wrapper.
+        if (fPlugin.getParameterHints(index) & kParameterIsHidden)
+            info->flags |= CLAP_PARAM_IS_HIDDEN;
 
         info->id = index;
         info->cookie = nullptr;
@@ -1713,7 +1714,7 @@ public:
         if (hints & kParameterIsInteger)
             snprintf_i32(display, value, size);
         else
-            snprintf_param_value(display, value, size);
+            snprintf_param_value(display, value, ranges.min, ranges.max, size);
 
         // CLAP has no unit field, so the text carries it. Custom text (returned
         // above) already does.

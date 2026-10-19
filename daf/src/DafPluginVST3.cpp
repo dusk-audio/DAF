@@ -2137,7 +2137,7 @@ public:
         else
         {
             char text[128];
-            snprintf_param_value(text, value, sizeof(text));
+            snprintf_param_value(text, value, ranges.min, ranges.max, sizeof(text));
             strncpy_utf16(output, text, 128);
         }
 

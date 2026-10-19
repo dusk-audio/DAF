@@ -254,6 +254,16 @@ int main()
         DAF_ASSERT_EQUAL(textOf(kParamLogMiddle, 632.26) == "632.3", true, "one decimal above 100");
         DAF_ASSERT_EQUAL(textOf(kParamLogHigh, 4096.0) == "4096 Hz", true,
                          "custom text is shown as it is, with no unit appended");
+
+        // the formatter itself: a small range keeps its digits, the buffer is used to its end
+        char formatted[32];
+        snprintf_param_value(formatted, 0.0004, 0.0, 0.001, sizeof(formatted));
+        DAF_ASSERT_EQUAL(std::string(formatted) == "0.0004", true, "a value in a small range is not shown as 0");
+        snprintf_param_value(formatted, 0.000001, -20.0, 40.0, sizeof(formatted));
+        DAF_ASSERT_EQUAL(std::string(formatted) == "0", true, "float noise in a wide range still reads 0");
+        char exact[6];
+        snprintf_param_value(exact, 3.14159, 0.0, 10.0, sizeof(exact));
+        DAF_ASSERT_EQUAL(std::string(exact) == "3.142", true, "text that fits the buffer keeps every digit");
     }
 
     const clap_plugin_state_t* const state =

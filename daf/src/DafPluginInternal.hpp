@@ -23,6 +23,7 @@
 # include "DafPluginVST.hpp"
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -133,17 +134,22 @@ void snprintf_f32(char* const dst, const double value, const size_t size)
 // in automation lanes and generic editors. "%f" printed float noise there
 // ("100.000000", "0.000001" for a default of 0): keep three decimals below 10,
 // two below 100 and one above, then drop trailing zeros, the bare point and the
-// sign of a zero.
+// sign of a zero. The decimals also resolve a ten-thousandth of the parameter's
+// range, so a small range (0..0.001) never shows a real value as 0, nor does a
+// host type it back that way.
 static inline
-void snprintf_param_value(char* const dst, const double value, const size_t size)
+void snprintf_param_value(char* const dst, const double value, const double rangeMin, const double rangeMax,
+                          const size_t size)
 {
     DAF_SAFE_ASSERT_RETURN(size > 0,);
     if (! std::isfinite(value))
         return snprintf_t<double>(dst, value, "%g", size);
     const double magnitude = std::fabs(value);
-    const int decimals = magnitude >= 100.0 ? 1 : magnitude >= 10.0 ? 2 : 3;
-    std::snprintf(dst, size-1, "%.*f", decimals, value);
-    dst[size-1] = '\0';
+    int decimals = magnitude >= 100.0 ? 1 : magnitude >= 10.0 ? 2 : 3;
+    const double span = std::fabs(rangeMax - rangeMin);
+    if (span > 0.0 && std::isfinite(span))
+        decimals = std::max(decimals, std::min(9, static_cast<int>(std::ceil(-std::log10(span * 1.0e-4) - 1.0e-9))));
+    std::snprintf(dst, size, "%.*f", decimals, value);
     if (char* const point = std::strchr(dst, '.'))
     {
         char* end = point + std::strlen(point) - 1;
