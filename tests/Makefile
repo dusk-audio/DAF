@@ -45,6 +45,10 @@ BUILD_CHECKS  = StaticTarget
 
 # format wrappers compiled into the test, which then acts as the host (see plugin-wrappers/)
 WRAPPER_TESTS = CLAPWrapper LADSPAWrapper LV2Wrapper VST2Wrapper VST3Wrapper
+ifeq ($(MACOS),true)
+WRAPPER_TESTS += AUWrapper
+../build/tests/AUWrapper$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
+endif
 ../build/tests/%Wrapper.cpp.o: BUILD_CXX_FLAGS += -Iplugin-wrappers -I../daf
 ifeq ($(LINUX),true)
 ../build/tests/%Wrapper$(APP_EXT): LINK_FLAGS += -ldl

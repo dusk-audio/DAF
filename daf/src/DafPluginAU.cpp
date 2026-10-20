@@ -1319,9 +1319,9 @@ public:
                 const CFPropertyListRef propList = *static_cast<const CFPropertyListRef*>(inData);
                 DAF_SAFE_ASSERT_RETURN(CFGetTypeID(propList) == CFDictionaryGetTypeID(), kAudioUnitErr_InvalidPropertyValue);
 
-                restoreClassInfo(static_cast<CFDictionaryRef>(propList));
+                return restoreClassInfo(static_cast<CFDictionaryRef>(propList))
+                     ? noErr : kAudioUnitErr_InvalidPropertyValue;
             }
-            return noErr;
 
         case kAudioUnitProperty_MakeConnection:
             DAF_SAFE_ASSERT_UINT_RETURN(inScope == kAudioUnitScope_Input, inScope, kAudioUnitErr_InvalidScope);
@@ -2943,13 +2943,13 @@ private:
         return clsInfo;
     }
 
-    void restoreClassInfo(const CFDictionaryRef clsInfo)
+    bool restoreClassInfo(const CFDictionaryRef clsInfo)
     {
         CFDictionaryRef data = nullptr;
         DAF_SAFE_ASSERT_RETURN(CFDictionaryGetValueIfPresent(clsInfo,
                                                                  CFSTR(kAUPresetDataKey),
-                                                                 reinterpret_cast<const void**>(&data)),);
-        DAF_SAFE_ASSERT_RETURN(CFGetTypeID(data) == CFDictionaryGetTypeID(),);
+                                                                 reinterpret_cast<const void**>(&data)), false);
+        DAF_SAFE_ASSERT_RETURN(CFGetTypeID(data) == CFDictionaryGetTypeID(), false);
 
         bool parameterSnapshot = false;
        #if DAF_PLUGIN_WANT_STATE
@@ -2957,13 +2957,22 @@ private:
         CFArrayRef statesRef = nullptr;
         if (CFDictionaryGetValueIfPresent(data, CFSTR("states"), reinterpret_cast<const void**>(&statesRef)))
         {
-            if (statesRef == nullptr || CFGetTypeID(statesRef) != CFArrayGetTypeID()) return;
+            if (statesRef == nullptr || CFGetTypeID(statesRef) != CFArrayGetTypeID()) return false;
             const auto readString = [](CFStringRef ref, CFStringEncoding encoding, String& out) {
                 if (ref == nullptr || CFGetTypeID(ref) != CFStringGetTypeID()) return false;
-                const CFIndex capacity = CFStringGetMaximumSizeForEncoding(CFStringGetLength(ref), encoding);
+                const CFIndex length = CFStringGetLength(ref);
+                const CFIndex capacity = CFStringGetMaximumSizeForEncoding(length, encoding);
                 if (capacity < 0) return false;
                 std::vector<char> bytes(static_cast<size_t>(capacity) + 1u);
-                if (!CFStringGetCString(ref, bytes.data(), capacity + 1, encoding)) return false;
+                CFIndex used = 0;
+                const CFIndex converted = CFStringGetBytes(ref, CFRangeMake(0, length), encoding, 0, false,
+                                                         reinterpret_cast<UInt8*>(bytes.data()), capacity, &used);
+                // DAF's state API uses C strings. An embedded NUL cannot be
+                // represented: silently truncating it can turn a different key
+                // or malformed value into a valid snapshot.
+                if (converted != length || used < 0 || used > capacity
+                    || std::memchr(bytes.data(), 0, static_cast<size_t>(used)) != nullptr) return false;
+                bytes[static_cast<size_t>(used)] = '\0';
                 out = bytes.data();
                 return true;
             };
@@ -2971,23 +2980,23 @@ private:
             {
                 const CFDictionaryRef state = static_cast<CFDictionaryRef>(CFArrayGetValueAtIndex(statesRef, i));
                 if (state == nullptr || CFGetTypeID(state) != CFDictionaryGetTypeID()
-                    || CFDictionaryGetCount(state) != 1) return;
+                    || CFDictionaryGetCount(state) != 1) return false;
                 CFStringRef keyRef = nullptr, valueRef = nullptr;
                 CFDictionaryGetKeysAndValues(state, reinterpret_cast<const void**>(&keyRef),
                                             reinterpret_cast<const void**>(&valueRef));
                 String key, value;
                 if (!readString(keyRef, kCFStringEncodingASCII, key)
-                    || !readString(valueRef, kCFStringEncodingUTF8, value)) return;
+                    || !readString(valueRef, kCFStringEncodingUTF8, value)) return false;
                 if (!fPlugin.wantStateKey(key)) continue;
                 if (pendingStates.find(key) != pendingStates.end()
-                    || !fPlugin.validateStateValue(key, value)) return;
+                    || !fPlugin.validateStateValue(key, value)) return false;
                 pendingStates[key] = value;
                 parameterSnapshot = parameterSnapshot || fPlugin.isParameterSnapshotState(key);
             }
         }
         if (!fPlugin.hasRequiredStates([&](const char* key) {
             return pendingStates.count(String(key));
-        })) return;
+        })) return false;
        #endif
 
        #if DAF_PLUGIN_WANT_PROGRAMS
@@ -3086,6 +3095,7 @@ private:
 
             std::free(symbol);
         }
+        return true;
     }
 
     // ----------------------------------------------------------------------------------------------------------------
