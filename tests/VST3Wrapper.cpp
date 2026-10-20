@@ -92,6 +92,8 @@ static std::string expectedClassIdString(const uint32_t kind)
 
 static int gSetDirtyCalls = 0;
 static std::string gStreamData;
+static std::string gStreamReadData;
+static std::size_t gStreamReadOffset = 0;
 
 static v3_component_handler_cpp gHandler;
 static v3_component_handler2_cpp gHandler2;
@@ -125,9 +127,12 @@ static v3_result V3_API handler2_set_dirty(void*, const v3_bool state) { if (sta
 static v3_result V3_API handler2_open_editor(void*, const char*) { return V3_OK; }
 static v3_result V3_API handler2_group_edit(void*) { return V3_OK; }
 
-static v3_result V3_API stream_read(void*, void*, int32_t, int32_t* const read)
+static v3_result V3_API stream_read(void*, void* const buffer, int32_t requested, int32_t* const read)
 {
-    if (read != nullptr) *read = 0;
+    const std::size_t count = std::min<std::size_t>(requested, gStreamReadData.size() - gStreamReadOffset);
+    std::memcpy(buffer, gStreamReadData.data() + gStreamReadOffset, count);
+    gStreamReadOffset += count;
+    if (read != nullptr) *read = static_cast<int32_t>(count);
     return V3_OK;
 }
 
@@ -304,6 +309,42 @@ int main()
     DAF_ASSERT_EQUAL((*factory)->v1.get_class_info(factory, 0, &info), V3_OK, "get_class_info must succeed");
     DAF_ASSERT_EQUAL(sdkClassIdString(info.class_id), expectedClassIdString(d_cconst('c', 'l', 'a', 's')),
                      "the component class ID string must match Linux and macOS");
+
+    // Required-state rejection must happen before live parameters are changed.
+    {
+        gRequireWrapperTestState = true;
+        v3_component_cpp** required = nullptr;
+        DAF_ASSERT_EQUAL((*factory)->v1.create_instance(factory, info.class_id, v3_component_iid, (void**)&required), V3_OK,
+                         "required-state component must instantiate");
+        DAF_ASSERT_EQUAL(v3_cpp_obj_initialize(required, nullptr), V3_OK, "required-state component must initialize");
+        gRequireWrapperTestState = false;
+        initTestObjects();
+        const auto save = [&] {
+            gStreamData.clear();
+            (*required)->comp.get_state(required, (v3_bstream**)&gStreamPtr);
+            return gStreamData;
+        };
+        const auto load = [&](unsigned copies) {
+            gStreamReadData.clear(); gStreamReadOffset = 0;
+            const auto token = [&](const char* value) { gStreamReadData += value; gStreamReadData += '\0'; };
+            token("__daf_state_begin__");
+            for (unsigned i = 0; i < copies; ++i) { token("file"); token(""); }
+            token("__daf_state_end__");
+            token("__daf_parameters_begin__"); token("linearlow"); token("9");
+            token("__daf_parameters_end__"); gStreamReadData += '\xfe'; gStreamReadData += '\0';
+            return (*required)->comp.set_state(required, (v3_bstream**)&gStreamPtr);
+        };
+        const std::string initial = save();
+        DAF_ASSERT_EQUAL(load(0), V3_INVALID_ARG, "missing required state must reject");
+        DAF_ASSERT_EQUAL(save() == initial, true, "rejection must leave the complete state unchanged");
+        DAF_ASSERT_EQUAL(load(1), V3_OK, "one required state must accept");
+        const std::string accepted = save();
+        DAF_ASSERT_EQUAL(accepted != initial, true, "a valid required-state restore must apply its parameter edit");
+        DAF_ASSERT_EQUAL(load(2), V3_INVALID_ARG, "duplicate required state must reject");
+        DAF_ASSERT_EQUAL(save() == accepted, true, "duplicate rejection must preserve the accepted state");
+        gStreamReadData.clear(); gStreamReadOffset = 0;
+        v3_cpp_obj_terminate(required); v3_cpp_obj_unref(required);
+    }
 
     // the ID the factory lists is the one it must create from
     v3_component_cpp** component = nullptr;

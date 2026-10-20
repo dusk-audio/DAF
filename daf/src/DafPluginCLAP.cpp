@@ -2402,6 +2402,12 @@ public:
         // parameter snapshot is authoritative over the redundant legacy program/parameter sections.
         bool parameterSnapshot = false;
        #if DAF_PLUGIN_WANT_STATE
+        if (!fPlugin.hasRequiredStates([&](const char* key) {
+            uint32_t count = 0;
+            for (const PluginStateParser::Entry& item : parser.entries)
+                if (item.type == 's' && item.key == key) ++count;
+            return count;
+        })) return false;
         for (const PluginStateParser::Entry& item : parser.entries)
         {
             if (item.type != 's' || !fPlugin.wantStateKey(item.key.c_str()))

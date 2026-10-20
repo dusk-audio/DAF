@@ -2985,6 +2985,9 @@ private:
                 parameterSnapshot = parameterSnapshot || fPlugin.isParameterSnapshotState(key);
             }
         }
+        if (!fPlugin.hasRequiredStates([&](const char* key) {
+            return pendingStates.count(String(key));
+        })) return;
        #endif
 
        #if DAF_PLUGIN_WANT_PROGRAMS

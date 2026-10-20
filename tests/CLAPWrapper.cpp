@@ -221,6 +221,35 @@ int main()
         static_cast<const clap_plugin_factory_t*>(clap_entry.get_factory(CLAP_PLUGIN_FACTORY_ID));
     DAF_ASSERT_NOT_EQUAL(factory, nullptr, "the plugin factory must be available");
 
+    // Required keys reject before applying an otherwise valid parameter edit.
+    {
+        gRequireWrapperTestState = true;
+        Host required;
+        required.plugin = factory->create_plugin(factory, &host, DAF_PLUGIN_CLAP_ID);
+        gRequireWrapperTestState = false;
+        DAF_ASSERT_NOT_EQUAL(required.plugin, nullptr, "required-state create_plugin must succeed");
+        DAF_ASSERT_EQUAL(required.plugin->init(required.plugin), true, "required-state init must succeed");
+        required.params = static_cast<const clap_plugin_params_t*>(required.plugin->get_extension(required.plugin, CLAP_EXT_PARAMS));
+        const clap_plugin_state_t* const states = static_cast<const clap_plugin_state_t*>(required.plugin->get_extension(required.plugin, CLAP_EXT_STATE));
+        const auto stream = [](unsigned copies) {
+            std::string data;
+            const auto token = [&](const char* value) { data += value; data += '\0'; };
+            token("__daf_state_begin__");
+            for (unsigned i = 0; i < copies; ++i) { token("file"); token(""); }
+            token("__daf_state_end__");
+            token("__daf_parameters_begin__"); token("linearlow"); token("9");
+            token("__daf_parameters_end__"); data += '\xfe'; data += '\0';
+            return data;
+        };
+        DAF_ASSERT_EQUAL(loadState(required.plugin, states, stream(0)), false, "missing required state must reject");
+        DAF_ASSERT_EQUAL(required.getValue(kParamLinearLow), 3.0, "rejection must preserve earlier parameters");
+        DAF_ASSERT_EQUAL(loadState(required.plugin, states, stream(1)), true, "one required state must accept");
+        DAF_ASSERT_EQUAL(required.getValue(kParamLinearLow), 9.0, "valid restore must still apply parameters");
+        DAF_ASSERT_EQUAL(loadState(required.plugin, states, stream(2)), false, "duplicate required state must reject");
+        DAF_ASSERT_EQUAL(required.getValue(kParamLinearLow), 9.0, "duplicate rejection must preserve parameters");
+        required.plugin->destroy(required.plugin);
+    }
+
     Host h;
     h.plugin = factory->create_plugin(factory, &host, DAF_PLUGIN_CLAP_ID);
     DAF_ASSERT_NOT_EQUAL(h.plugin, nullptr, "create_plugin must succeed");

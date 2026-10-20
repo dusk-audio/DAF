@@ -199,6 +199,13 @@ static constexpr const uint32_t kStateIsOnlyForUI = 0x20;
  */
 static constexpr const uint32_t kStateIsParameterSnapshot = 0x40;
 
+/**
+   This key must occur exactly once when restoring a complete host state.
+   Opt in for authoritative snapshots whose absence must not fall back to a
+   partial parameter recall. Other plugins retain their existing restore policy.
+ */
+static constexpr const uint32_t kStateIsRequired = 0x80;
+
 /** @} */
 
 /* --------------------------------------------------------------------------------------------------------------------
