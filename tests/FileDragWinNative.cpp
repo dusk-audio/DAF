@@ -21,6 +21,14 @@ static int checks=0, failures=0;
 static void check(bool ok,const char* message)
 { ++checks; std::printf("%s: %s\n",ok?"PASS":"FAIL",message);std::fflush(stdout);if(!ok)++failures; }
 
+static WNDPROC sourceProcedure=nullptr;
+static bool startingDrag=false, releasedDuringStart=false;
+static LRESULT CALLBACK captureProbe(HWND window,UINT message,WPARAM wParam,LPARAM lParam)
+{
+    if(message==WM_CAPTURECHANGED&&startingDrag)releasedDuringStart=true;
+    return CallWindowProcW(sourceProcedure,window,message,wParam,lParam);
+}
+
 struct Target : IDropTarget
 {
     std::atomic<ULONG> refs{1};
@@ -111,7 +119,13 @@ int main()
         Sleep(30);app->idle();
         const int size=WideCharToMultiByte(CP_UTF8,0,path.c_str(),-1,nullptr,0,nullptr,nullptr);
         std::vector<char> utf8(std::size_t(size),0);WideCharToMultiByte(CP_UTF8,0,path.c_str(),-1,utf8.data(),size,nullptr,nullptr);
-        accepted=source->startFileDrag(utf8.data());
+        sourceProcedure=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(sourceWindow,GWLP_WNDPROC,
+            reinterpret_cast<LONG_PTR>(captureProbe)));
+        SetCapture(sourceWindow);
+        check(GetCapture()==sourceWindow,"native source holds the primary gesture capture");
+        startingDrag=true;accepted=source->startFileDrag(utf8.data());startingDrag=false;
+        SetWindowLongPtrW(sourceWindow,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(sourceProcedure));
+        check(!releasedDuringStart,"native capture handoff is deferred outside the caller's drawing frame");
         check(accepted,"public Window API accepts physical primary gesture");
         if(accepted)
         {

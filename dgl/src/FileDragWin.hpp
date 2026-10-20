@@ -115,16 +115,21 @@ struct FileDragComRelease
 
 class WindowsFileDrag : public PuglFileDrag
 {
+    const HWND window;
     std::unique_ptr<FileDragData, FileDragComRelease> data;
     std::unique_ptr<FileDragSource, FileDragComRelease> source;
 public:
-    WindowsFileDrag(HWND owner, std::wstring path) : data(new FileDragData(std::move(path))), source(new FileDragSource(owner)) {}
+    WindowsFileDrag(HWND owner, std::wstring path) : window(owner), data(new FileDragData(std::move(path))), source(new FileDragSource(owner)) {}
     ~WindowsFileDrag() override { source.reset(); data.reset(); OleUninitialize(); }
     void cancel() override { source->cancelled.store(true, std::memory_order_release); }
     bool idle() override
     {
         if (!source->cancelled.load(std::memory_order_acquire))
         {
+            // WM_CAPTURECHANGED is synchronous and may close the editor.
+            // Run it from native idle, never from the caller's drawing frame.
+            if (GetCapture() == window) ReleaseCapture();
+            if (source->cancelled.load(std::memory_order_acquire) || !IsWindow(window)) return false;
             DWORD effect = DROPEFFECT_NONE;
             DoDragDrop(data.get(), source.get(), DROPEFFECT_COPY, &effect);
         }
@@ -150,7 +155,6 @@ PuglFileDrag* puglStartFileDrag(PuglView* view, const char* filename)
     const DWORD attributes = GetFileAttributesW(path.data());
     if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY)) return nullptr;
     const HRESULT result = OleInitialize(nullptr); if (FAILED(result)) return nullptr;
-    if (GetCapture() == view->impl->hwnd) ReleaseCapture();
     try { return new WindowsFileDrag(view->impl->hwnd, std::wstring(path.data(), size)); }
     catch (...) { OleUninitialize(); return nullptr; }
 }
