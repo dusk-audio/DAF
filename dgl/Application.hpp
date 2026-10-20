@@ -163,6 +163,8 @@ public:
       You can add more than one, and remove them at anytime with removeIdleCallback().
       Idle callbacks trigger right after OS event handling and Window idle events (within the same cycle).
       There are no guarantees in terms of timing, use Window::addIdleCallback for time-relative callbacks.
+      Registrations added during dispatch start on the next idle call. Removing a registration
+      cancels its pending call immediately; nested idle calls do not re-enter an active registration.
     */
     void addIdleCallback(IdleCallback* callback);
 

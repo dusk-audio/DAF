@@ -15,6 +15,8 @@
  */
 
 #include "tests.hpp"
+#include <functional>
+#include <memory>
 
 #define DAF_TEST_APPLICATION_CPP
 #include "dgl/src/pugl.cpp"
@@ -36,6 +38,12 @@ struct IdleCallbackCounter : IdleCallback
     {
         ++counter;
     }
+};
+
+struct MutatingIdleCallback : IdleCallback
+{
+    std::function<void()> action;
+    void idleCallback() override { action(); }
 };
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -63,6 +71,33 @@ int main()
         app.quit();
         DAF_ASSERT_EQUAL(app.isQuitting(), true, "app MUST be set as quitting after quit()");
         DAF_ASSERT_EQUAL(idleCounter.counter, 2, "app MUST have triggered only 2 idle callbacks in its lifetime");
+    }
+
+    // A UI can unregister and delete its Window while handling an idle call.
+    // Exercise the public Application path, not only the registry in isolation.
+    {
+        Application app(false);
+        std::unique_ptr<DGL_NAMESPACE::MutatingIdleCallback> self(new DGL_NAMESPACE::MutatingIdleCallback);
+        IdleCallbackCounter survivor;
+        unsigned calls = 0;
+        self->action = [&] { ++calls; app.removeIdleCallback(self.get()); self.reset(); };
+        app.addIdleCallback(self.get()); app.addIdleCallback(&survivor);
+        app.idle(); app.idle();
+        DAF_ASSERT_EQUAL(calls, 1u, "a registered callback can unregister and delete itself");
+        DAF_ASSERT_EQUAL(survivor.counter, 2, "self-deletion preserves later public callbacks");
+        app.removeIdleCallback(&survivor);
+    }
+
+    // Embedded UIs can also destroy their Application from a native callback.
+    {
+        std::unique_ptr<Application> app(new Application(false));
+        DGL_NAMESPACE::MutatingIdleCallback closer;
+        IdleCallbackCounter survivor;
+        closer.action = [&] { app.reset(); };
+        app->addIdleCallback(&closer); app->addIdleCallback(&survivor);
+        app->idle();
+        DAF_ASSERT_EQUAL(app.get(), nullptr, "the Application really was destroyed during idle");
+        DAF_ASSERT_EQUAL(survivor.counter, 0, "destroying the Application cancels pending callbacks");
     }
 
     // standalone exec, must not block forever due to quit() called from another thread

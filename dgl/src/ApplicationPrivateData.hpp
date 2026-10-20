@@ -18,6 +18,7 @@
 #define DGL_APP_PRIVATE_DATA_HPP_INCLUDED
 
 #include "../Application.hpp"
+#include "IdleCallbacks.hpp"
 
 #include <list>
 
@@ -80,7 +81,7 @@ struct Application::PrivateData {
     std::list<DGL_NAMESPACE::Window*> windows;
 
     /** List of idle callbacks for this application. */
-    std::list<DGL_NAMESPACE::IdleCallback*> idleCallbacks;
+    IdleCallbacks idleCallbacks;
 
     /** Constructor and destructor */
     explicit PrivateData(bool standalone, Type type);
