@@ -131,11 +131,7 @@ void Application::PrivateData::idle(const uint timeoutInMs)
 
 void Application::PrivateData::triggerIdleCallbacks()
 {
-    for (std::list<IdleCallback*>::iterator it = idleCallbacks.begin(), ite = idleCallbacks.end(); it != ite; ++it)
-    {
-        IdleCallback* const idleCallback(*it);
-        idleCallback->idleCallback();
-    }
+    idleCallbacks.trigger();
 }
 
 void Application::PrivateData::repaintIfNeeeded()

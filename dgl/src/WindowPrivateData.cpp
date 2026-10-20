@@ -653,8 +653,7 @@ bool Window::PrivateData::removeIdleCallback(IdleCallback* const callback)
     if (ignoreIdleCallbacks || view == nullptr)
         return false;
 
-    if (std::find(appData->idleCallbacks.begin(),
-                  appData->idleCallbacks.end(), callback) != appData->idleCallbacks.end())
+    if (appData->idleCallbacks.contains(callback))
     {
         appData->idleCallbacks.remove(callback);
         return true;

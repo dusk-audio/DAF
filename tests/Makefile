@@ -29,7 +29,7 @@ endif
 # ---------------------------------------------------------------------------------------------------------------------
 
 MANUAL_TESTS  =
-UNIT_TESTS    = AudioUnitBufferList Color HostKeyFilter ImGuiKnobs Point StateParser
+UNIT_TESTS    = AudioUnitBufferList Color HostKeyFilter IdleCallbacks ImGuiKnobs Point StateParser
 
 ifeq ($(MACOS),true)
 UNIT_TESTS   += CocoaRetiredView
