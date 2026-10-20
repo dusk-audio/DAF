@@ -960,6 +960,17 @@ public:
         return false;
     }
 
+    // Count all occurrences before any state/program/parameter is applied.
+    // The callback works for both token streams and native dictionary formats.
+    template<class Count>
+    bool hasRequiredStates(const Count& count) const
+    {
+        for (uint32_t i = 0; i < getStateCount(); ++i)
+            if ((getStateHints(i) & kStateIsRequired) != 0 && count(getStateKey(i).buffer()) != 1)
+                return false;
+        return true;
+    }
+
     bool isParameterSnapshotState(const char* const key) const noexcept
     {
         uint32_t hints;

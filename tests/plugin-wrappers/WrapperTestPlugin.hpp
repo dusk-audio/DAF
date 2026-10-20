@@ -61,6 +61,9 @@ static uint32_t gTriggerRunPresses = 0;
 
 #if DAF_PLUGIN_WANT_STATE
 static constexpr const char* const kWrapperTestStateKey = "file";
+// Only dedicated complete-restore probes opt in; all other tests retain the
+// original optional-state policy.
+static bool gRequireWrapperTestState = false;
 #endif
 
 #ifdef DAF_WRAPPER_TEST_UPDATE_STATE
@@ -189,6 +192,7 @@ protected:
         state.key = kWrapperTestStateKey;
         state.label = "File";
         state.hints = kStateIsFilenamePath;
+        if (gRequireWrapperTestState) state.hints |= kStateIsRequired;
         return; (void)index;
     }
 

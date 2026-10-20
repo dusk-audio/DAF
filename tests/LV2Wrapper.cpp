@@ -245,12 +245,33 @@ int main()
     const LV2_Feature workerFeature = { LV2_WORKER__schedule, &schedule };
     const LV2_Feature* const features[] = { &mapFeature, &optionsFeature, &workerFeature, nullptr };
 
+    gRequireWrapperTestState = true;
     host.handle = host.desc->instantiate(host.desc, kSampleRate, "", features);
+    gRequireWrapperTestState = false;
     DAF_ASSERT_NOT_EQUAL(host.handle, nullptr, "instantiate must succeed");
 
     const LV2_Worker_Interface* const worker =
         static_cast<const LV2_Worker_Interface*>(host.desc->extension_data(LV2_WORKER__interface));
     DAF_ASSERT_NOT_EQUAL(worker, nullptr, "the worker interface must be available");
+
+    {
+        const LV2_State_Interface* const state = static_cast<const LV2_State_Interface*>(host.desc->extension_data(LV2_STATE__interface));
+        DAF_ASSERT_NOT_EQUAL(state, nullptr, "state interface must exist");
+        struct Restore { bool present; LV2_URID key, type; } restore = {
+            false, uridMap(nullptr, DAF_PLUGIN_URI "#file"), uridMap(nullptr, LV2_ATOM__Path)
+        };
+        const auto retrieve = [](LV2_State_Handle data, uint32_t key, size_t* size, uint32_t* type, uint32_t* flags) -> const void* {
+            const Restore& value = *static_cast<Restore*>(data);
+            if (!value.present || key != value.key) return nullptr;
+            *size = 1; *type = value.type; *flags = LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE;
+            return "";
+        };
+        DAF_ASSERT_EQUAL(state->restore(host.handle, retrieve, &restore, 0, features), LV2_STATE_ERR_UNKNOWN,
+                         "missing required LV2 state must reject");
+        restore.present = true;
+        DAF_ASSERT_EQUAL(state->restore(host.handle, retrieve, &restore, 0, features), LV2_STATE_SUCCESS,
+                         "one required LV2 state must accept");
+    }
 
     // audio in, audio out, events in, events out, then one port per parameter
     uint32_t port = 0;

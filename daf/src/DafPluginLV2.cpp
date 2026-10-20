@@ -1130,6 +1130,10 @@ public:
             staged[key] = value;
         }
 
+        if (!fPlugin.hasRequiredStates([&](const char* key) {
+            return staged.count(String(key));
+        })) return LV2_STATE_ERR_UNKNOWN;
+
         // Validate every property before applying any of them.
         for (const auto& entry : staged)
             if (!fPlugin.validateStateValue(entry.first, entry.second))
