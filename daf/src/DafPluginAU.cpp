@@ -1320,7 +1320,7 @@ public:
                 DAF_SAFE_ASSERT_RETURN(CFGetTypeID(propList) == CFDictionaryGetTypeID(), kAudioUnitErr_InvalidPropertyValue);
 
                 return restoreClassInfo(static_cast<CFDictionaryRef>(propList))
-                     ? noErr : kAudioUnitErr_InvalidPropertyValue;
+                     ? OSStatus(noErr) : OSStatus(kAudioUnitErr_InvalidPropertyValue);
             }
 
         case kAudioUnitProperty_MakeConnection:
