@@ -346,6 +346,17 @@ public:
     bool setClipboard(const char* mimeType, const void* data, size_t dataSize);
 
    /**
+      Start an outgoing copy-only drag of one existing file, from a primary mouse gesture.
+      The UTF-8 path must identify an absolute file path. Call on the UI thread.
+      Native delivery starts outside drawing, on a subsequent idle call. A true result means
+      the operation was accepted, not that a destination has accepted the file.
+      Keep the file available for asynchronous destination reads, including after this Window closes.
+      The Window cancels its drag on destruction. Supported on Windows, macOS and X11.
+      Returns false for an invalid file/gesture, an active drag, or an unsupported backend.
+    */
+    bool startFileDrag(const char* filename);
+
+   /**
       Set the mouse cursor.
 
       This changes the system cursor that is displayed when the pointer is inside the window.

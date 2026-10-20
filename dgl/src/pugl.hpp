@@ -60,6 +60,15 @@ START_NAMESPACE_DGL
 
 // --------------------------------------------------------------------------------------------------------------------
 
+// DGL outgoing file drag, polled by Window outside its rendering callback.
+struct PuglFileDrag
+{
+    virtual ~PuglFileDrag() {}
+    virtual bool idle() = 0;
+    virtual void cancel() = 0;
+};
+PuglFileDrag* puglStartFileDrag(PuglView* view, const char* filename);
+
 // DGL specific, expose backend enter
 bool puglBackendEnter(PuglView* view);
 

@@ -35,6 +35,7 @@ struct PuglInternalsImpl {
   NSView*          drawView;
   NSCursor*        cursor;
   PuglWindow*      window;
+  NSEvent*         fileDragEvent;
   uint32_t         mods;
   bool             mouseTracked;
   bool             lastDispatchedFocus;

@@ -671,6 +671,11 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 
 - (void)mouseDragged:(NSEvent*)event
 {
+  if (puglview) {
+    NSEvent* previous = puglview->impl->fileDragEvent;
+    puglview->impl->fileDragEvent = [event retain];
+    [previous release];
+  }
   [self mouseMoved:event];
 }
 
@@ -688,6 +693,12 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 {
   if (!puglview) {
     return;
+  }
+
+  if ([event buttonNumber] == 0) {
+    NSEvent* previous = puglview->impl->fileDragEvent;
+    puglview->impl->fileDragEvent = [event retain];
+    [previous release];
   }
 
   const NSPoint         wloc = [self eventLocation:event];
@@ -713,6 +724,11 @@ handleCrossing(PuglWrapperView* view, NSEvent* event, const PuglEventType type)
 {
   if (!puglview) {
     return;
+  }
+
+  if ([event buttonNumber] == 0) {
+    [puglview->impl->fileDragEvent release];
+    puglview->impl->fileDragEvent = nil;
   }
 
   const NSPoint         wloc = [self eventLocation:event];
@@ -1633,6 +1649,8 @@ puglFreeViewInternals(PuglView* view)
         [view->impl->window release];
       }
 
+      [view->impl->fileDragEvent release];
+      view->impl->fileDragEvent = nil;
       free(view->impl);
     }
   }

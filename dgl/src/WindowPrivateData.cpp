@@ -18,6 +18,7 @@
 #include "TopLevelWidgetPrivateData.hpp"
 
 #include "pugl.hpp"
+#include <string>
 
 // #define DGL_DEBUG_EVENTS
 
@@ -265,6 +266,8 @@ Window::PrivateData::PrivateData(Application& a, Window* const s,
 
 Window::PrivateData::~PrivateData()
 {
+    *idleAlive = false;
+    if (fileDrag) { fileDrag->cancel(); fileDrag.reset(); }
     appData->idleCallbacks.remove(this);
     appData->windows.remove(self);
     std::free(filenameToRenderInto);
@@ -611,17 +614,38 @@ const GraphicsContext& Window::PrivateData::getGraphicsContext() const noexcept
 
 void Window::PrivateData::idleCallback()
 {
+    const std::shared_ptr<bool> alive(idleAlive);
 #ifdef DAF_OS_WINDOWS
     if (isEmbed && grabsFocusOnClick && view != nullptr)
         updateClickFocus();
+    if (!*alive) return;
 #endif
 
-#ifdef DGL_USE_FILE_BROWSER
-    if (fileBrowserHandle != nullptr && fileBrowserIdle(fileBrowserHandle))
+    const std::shared_ptr<PuglFileDrag> drag(fileDrag);
+    if (drag)
     {
-        self->onFileSelected(fileBrowserGetPath(fileBrowserHandle));
-        fileBrowserClose(fileBrowserHandle);
-        fileBrowserHandle = nullptr;
+        const bool active = drag->idle();
+        if (!*alive) return;
+        if (!active) fileDrag.reset();
+    }
+
+#ifdef DGL_USE_FILE_BROWSER
+    if (fileBrowserHandle != nullptr)
+    {
+        const bool ready = fileBrowserIdle(fileBrowserHandle);
+        if (!*alive) return;
+        if (ready)
+        {
+            const char* const path = fileBrowserGetPath(fileBrowserHandle);
+            const bool selected = path != nullptr;
+            const std::string filename(selected ? path : "");
+            const FileBrowserHandle browser = fileBrowserHandle;
+            fileBrowserHandle = nullptr;
+            fileBrowserClose(browser);
+            if (!*alive) return;
+            self->onFileSelected(selected ? filename.c_str() : nullptr);
+            if (!*alive) return;
+        }
     }
 #endif
 
