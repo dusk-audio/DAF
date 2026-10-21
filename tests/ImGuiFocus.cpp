@@ -11,7 +11,8 @@ namespace
 struct State
 {
     bool ctrl = false, shift = false, alt = false, super = false;
-    bool up = false, mouse = false;
+    bool up = false, a = false, mouse = false;
+    int characters = 0;
 };
 
 class Harness : public DGL::ImGuiTopLevelWidget
@@ -40,6 +41,13 @@ public:
         onFocusChanged(event);
     }
 
+    void character(unsigned int code)
+    {
+        CharacterInputEvent event;
+        event.character = code;
+        onCharacterInput(event);
+    }
+
     void mouse(bool pressed)
     {
         MouseEvent event;
@@ -65,7 +73,9 @@ private:
         state.alt = io.KeyAlt;
         state.super = io.KeySuper;
         state.up = ImGui::IsKeyPressed(ImGuiKey_UpArrow, false);
+        state.a = ImGui::IsKeyDown(ImGuiKey_A);
         state.mouse = io.MouseDown[0];
+        state.characters = io.InputQueueCharacters.Size;
     }
 };
 }
@@ -85,13 +95,26 @@ int main()
     const unsigned int modifiers[] = {DGL::kModifierControl, DGL::kModifierShift,
         DGL::kModifierAlt, DGL::kModifierSuper,
         DGL::kModifierControl | DGL::kModifierShift | DGL::kModifierAlt | DGL::kModifierSuper};
+    {
+        Harness view(window);
+        view.frame();
+        view.key('a', 0, true);
+        view.character('a');
+        view.loseFocus();
+        const auto lost = view.frame();
+        check(!lost.a && lost.characters == 0, "queued key or text input survived focus loss");
+        view.character('b');
+        check(view.frame().characters == 1, "text input after focus return was discarded");
+    }
     for (const auto modifier : modifiers)
     {
         Harness view(window);
         view.frame();
         view.key('a', modifier, true);
         view.loseFocus();
-        view.frame();
+        const auto lost = view.frame();
+        check(!lost.ctrl && !lost.shift && !lost.alt && !lost.super,
+              "a queued modifier returned on the first frame after focus loss");
         view.key('a', 0, false);
         view.frame();
         view.key(DGL::kKeyUp, 0, true);
@@ -114,6 +137,18 @@ int main()
               && state.alt == ((modifier & DGL::kModifierAlt) != 0)
               && state.super == ((modifier & DGL::kModifierSuper) != 0),
               "a modifier still held on focus return was not restored");
+    }
+    {
+        Harness view(window);
+        view.frame();
+        view.mouse(true);
+        view.key('a', DGL::kModifierControl, true);
+        view.loseFocus();
+        const auto state = view.frame();
+        check(state.mouse && !state.ctrl,
+              "focus loss did not preserve a queued mouse press while clearing keyboard events");
+        view.mouse(false);
+        check(!view.frame().mouse, "queued mouse release did not finish the drag");
     }
     {
         Harness view(window);

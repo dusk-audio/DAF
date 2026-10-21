@@ -650,22 +650,15 @@ void ImGuiWidget<BaseWidget>::onFocusChanged(const Widget::FocusEvent& event)
 
     ImGuiIO& io(ImGui::GetIO());
 
-    // Clear the KEYBOARD state only, and deliberately not through io.AddFocusEvent(false).
-    //
-    // What focus loss must fix is a key or modifier that was held when the window lost focus and
-    // released somewhere else: ImGui never sees the release, so it believes the key is still down
-    // and the next Ctrl-click or Shift-drag behaves as though a modifier were held.
-    //
-    // AddFocusEvent(false) does fix that, but it also makes ImGui call ClearInputMouse() at the
-    // end of the frame, which drops a held mouse button. A plugin editor embedded in a DAW does
-    // not own keyboard focus the way a standalone window does, so focus-out arrives during
-    // ordinary use, and a knob drag then dies the moment the user starts moving the pointer. That
-    // is not theoretical: it shipped, and every DAF plugin's knobs stopped turning
-    // (dusk-audio/plugins#233 follow-up). An earlier attempt tried to dodge it by filtering on the
-    // crossing mode, but kCrossingNormal is precisely the pointer-driven case that occurs mid-drag.
-    //
-    // ClearInputKeys() skips mouse keys by design (it does the ImGui::IsMouseKey(key) continue),
-    // so it clears exactly the half that needs clearing and leaves a gesture in progress alone.
+    // ClearInputKeys() leaves queued presses that would restore keys on the next frame.
+    // Preserve mouse events and state: embedded editors can lose keyboard focus during
+    // a knob drag, which AddFocusEvent(false) would cancel.
+    auto& events = imData->context->InputEventsQueue;
+    int retained = 0;
+    for (int i = 0; i < events.Size; ++i)
+        if (events[i].Type != ImGuiInputEventType_Key && events[i].Type != ImGuiInputEventType_Text)
+            events[retained++] = events[i];
+    events.resize(retained);
     io.ClearInputKeys();
 }
 
