@@ -128,7 +128,6 @@ struct ImGuiWidget<BaseWidget>::PrivateData {
     double scaleFactor;
     float fontSize;
     double lastFrameTime;
-    uint lastModifiers;
 
     // the font this widget added to the atlas itself, nullptr if none
     ImFont* ownFont;
@@ -148,7 +147,6 @@ struct ImGuiWidget<BaseWidget>::PrivateData {
           scaleFactor(s->getTopLevelWidget()->getScaleFactor()),
           fontSize(fontSize_),
           lastFrameTime(0.0),
-          lastModifiers(0),
           ownFont(nullptr),
           referenceStyle(),
           referenceScaleFactor(1.0),
@@ -298,22 +296,10 @@ struct ImGuiWidget<BaseWidget>::PrivateData {
 
     void handleModifiers(ImGuiIO& io, const uint mods)
     {
-        if (lastModifiers == mods)
-            return;
-
-        if ((mods & kModifierShift) != (lastModifiers & kModifierShift))
-            io.AddKeyEvent(ImGuiMod_Shift, mods & kModifierShift);
-
-        if ((mods & kModifierControl) != (lastModifiers & kModifierControl))
-            io.AddKeyEvent(ImGuiMod_Ctrl, mods & kModifierControl);
-
-        if ((mods & kModifierAlt) != (lastModifiers & kModifierAlt))
-            io.AddKeyEvent(ImGuiMod_Alt, mods & kModifierAlt);
-
-        if ((mods & kModifierSuper) != (lastModifiers & kModifierSuper))
-            io.AddKeyEvent(ImGuiMod_Super, mods & kModifierSuper);
-
-        lastModifiers = mods;
+        io.AddKeyEvent(ImGuiMod_Shift, mods & kModifierShift);
+        io.AddKeyEvent(ImGuiMod_Ctrl, mods & kModifierControl);
+        io.AddKeyEvent(ImGuiMod_Alt, mods & kModifierAlt);
+        io.AddKeyEvent(ImGuiMod_Super, mods & kModifierSuper);
     }
 
     DAF_DECLARE_NON_COPYABLE(PrivateData)
@@ -657,8 +643,6 @@ void ImGuiWidget<BaseWidget>::onFocusChanged(const Widget::FocusEvent& event)
     if (event.mode != kCrossingNormal)
         return;
 
-    // Gaining focus needs nothing: the key state was already cleared on the way out, and the
-    // modifier cache below makes the next key event resend whatever is still held.
     if (event.focus)
         return;
 
@@ -683,10 +667,6 @@ void ImGuiWidget<BaseWidget>::onFocusChanged(const Widget::FocusEvent& event)
     // ClearInputKeys() skips mouse keys by design (it does the ImGui::IsMouseKey(key) continue),
     // so it clears exactly the half that needs clearing and leaves a gesture in progress alone.
     io.ClearInputKeys();
-
-    // The cache of what ImGui was last told goes with it, otherwise a modifier still held when
-    // the focus comes back is never resent.
-    imData->lastModifiers = 0;
 }
 
 // --------------------------------------------------------------------------------------------------------------------
