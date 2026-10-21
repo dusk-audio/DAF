@@ -73,6 +73,14 @@ jobs:
       if: ${{ runner.os == 'Linux' }}
       run: |
         xvfb-run make -C tests run
+    - name: ImGui modifier focus regression
+      if: ${{ runner.os == 'Linux' }}
+      env:
+        LIBGL_ALWAYS_SOFTWARE: 1
+      run: |
+        cmake -S tests/imgui-focus -B build/imgui-focus -DCMAKE_CXX_STANDARD=11
+        cmake --build build/imgui-focus -j6
+        xvfb-run -a ctest --test-dir build/imgui-focus --output-on-failure
     - name: Cocoa retired-view regression
       if: ${{ runner.os == 'macOS' }}
       env:

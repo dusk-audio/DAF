@@ -128,7 +128,6 @@ struct ImGuiWidget<BaseWidget>::PrivateData {
     double scaleFactor;
     float fontSize;
     double lastFrameTime;
-    uint lastModifiers;
 
     // the font this widget added to the atlas itself, nullptr if none
     ImFont* ownFont;
@@ -148,7 +147,6 @@ struct ImGuiWidget<BaseWidget>::PrivateData {
           scaleFactor(s->getTopLevelWidget()->getScaleFactor()),
           fontSize(fontSize_),
           lastFrameTime(0.0),
-          lastModifiers(0),
           ownFont(nullptr),
           referenceStyle(),
           referenceScaleFactor(1.0),
@@ -298,22 +296,10 @@ struct ImGuiWidget<BaseWidget>::PrivateData {
 
     void handleModifiers(ImGuiIO& io, const uint mods)
     {
-        if (lastModifiers == mods)
-            return;
-
-        if ((mods & kModifierShift) != (lastModifiers & kModifierShift))
-            io.AddKeyEvent(ImGuiMod_Shift, mods & kModifierShift);
-
-        if ((mods & kModifierControl) != (lastModifiers & kModifierControl))
-            io.AddKeyEvent(ImGuiMod_Ctrl, mods & kModifierControl);
-
-        if ((mods & kModifierAlt) != (lastModifiers & kModifierAlt))
-            io.AddKeyEvent(ImGuiMod_Alt, mods & kModifierAlt);
-
-        if ((mods & kModifierSuper) != (lastModifiers & kModifierSuper))
-            io.AddKeyEvent(ImGuiMod_Super, mods & kModifierSuper);
-
-        lastModifiers = mods;
+        io.AddKeyEvent(ImGuiMod_Shift, mods & kModifierShift);
+        io.AddKeyEvent(ImGuiMod_Ctrl, mods & kModifierControl);
+        io.AddKeyEvent(ImGuiMod_Alt, mods & kModifierAlt);
+        io.AddKeyEvent(ImGuiMod_Super, mods & kModifierSuper);
     }
 
     DAF_DECLARE_NON_COPYABLE(PrivateData)
@@ -657,8 +643,6 @@ void ImGuiWidget<BaseWidget>::onFocusChanged(const Widget::FocusEvent& event)
     if (event.mode != kCrossingNormal)
         return;
 
-    // Gaining focus needs nothing: the key state was already cleared on the way out, and the
-    // modifier cache below makes the next key event resend whatever is still held.
     if (event.focus)
         return;
 
@@ -666,27 +650,16 @@ void ImGuiWidget<BaseWidget>::onFocusChanged(const Widget::FocusEvent& event)
 
     ImGuiIO& io(ImGui::GetIO());
 
-    // Clear the KEYBOARD state only, and deliberately not through io.AddFocusEvent(false).
-    //
-    // What focus loss must fix is a key or modifier that was held when the window lost focus and
-    // released somewhere else: ImGui never sees the release, so it believes the key is still down
-    // and the next Ctrl-click or Shift-drag behaves as though a modifier were held.
-    //
-    // AddFocusEvent(false) does fix that, but it also makes ImGui call ClearInputMouse() at the
-    // end of the frame, which drops a held mouse button. A plugin editor embedded in a DAW does
-    // not own keyboard focus the way a standalone window does, so focus-out arrives during
-    // ordinary use, and a knob drag then dies the moment the user starts moving the pointer. That
-    // is not theoretical: it shipped, and every DAF plugin's knobs stopped turning
-    // (dusk-audio/plugins#233 follow-up). An earlier attempt tried to dodge it by filtering on the
-    // crossing mode, but kCrossingNormal is precisely the pointer-driven case that occurs mid-drag.
-    //
-    // ClearInputKeys() skips mouse keys by design (it does the ImGui::IsMouseKey(key) continue),
-    // so it clears exactly the half that needs clearing and leaves a gesture in progress alone.
+    // ClearInputKeys() leaves queued presses that would restore keys on the next frame.
+    // Preserve mouse events and state: embedded editors can lose keyboard focus during
+    // a knob drag, which AddFocusEvent(false) would cancel.
+    auto& events = imData->context->InputEventsQueue;
+    int retained = 0;
+    for (int i = 0; i < events.Size; ++i)
+        if (events[i].Type != ImGuiInputEventType_Key && events[i].Type != ImGuiInputEventType_Text)
+            events[retained++] = events[i];
+    events.resize(retained);
     io.ClearInputKeys();
-
-    // The cache of what ImGui was last told goes with it, otherwise a modifier still held when
-    // the focus comes back is never resent.
-    imData->lastModifiers = 0;
 }
 
 // --------------------------------------------------------------------------------------------------------------------
