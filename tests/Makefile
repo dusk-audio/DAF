@@ -32,7 +32,12 @@ MANUAL_TESTS  =
 UNIT_TESTS    = AudioUnitBufferList Color HostKeyFilter IdleCallbacks ImGuiKnobs Point StateParser
 
 ifeq ($(MACOS),true)
-UNIT_TESTS   += CocoaRetiredView
+UNIT_TESTS   += CocoaRetiredView FileDragCocoa
+endif
+
+ifeq ($(WINDOWS),true)
+UNIT_TESTS   += FileDragWin
+../build/tests/FileDragWin$(APP_EXT): LINK_FLAGS += -lole32 -luuid -lshell32
 endif
 
 # ImGuiKnobs builds Dear ImGui itself, headless, and includes the knobs the way DearImGui.cpp does.

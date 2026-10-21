@@ -15,6 +15,8 @@
  */
 
 #include "tests.hpp"
+#include <functional>
+#include <memory>
 
 #define DAF_TEST_POINT_CPP
 #define DAF_TEST_WINDOW_CPP
@@ -35,6 +37,38 @@ void Window::PrivateData::createContextIfNeeded() {}
 END_NAMESPACE_DGL
 #endif
 
+#ifdef DAF_OS_MAC
+using TestNativeDrag = ::PuglFileDrag;
+#else
+using TestNativeDrag = DGL_NAMESPACE::PuglFileDrag;
+#endif
+
+struct DragLifetimeProbe
+{
+    bool cancelled = false, destroyed = false, retainedDuringClose = false;
+};
+
+struct ClosingNativeDrag : TestNativeDrag
+{
+    DragLifetimeProbe& probe;
+    std::function<void()> step;
+    explicit ClosingNativeDrag(DragLifetimeProbe& state) : probe(state) {}
+    ~ClosingNativeDrag() override { probe.destroyed = true; }
+    void cancel() override { probe.cancelled = true; }
+    bool idle() override
+    {
+        step();
+        probe.retainedDuringClose = probe.cancelled && !probe.destroyed;
+        return false;
+    }
+};
+
+struct ClosingIdle : DGL_NAMESPACE::IdleCallback
+{
+    std::function<void()> step;
+    void idleCallback() override { step(); }
+};
+
 // --------------------------------------------------------------------------------------------------------------------
 // Window befriends the plugin wrappers' PluginWindow, which is how a host-provided scale factor reaches
 // Window::PrivateData::setScaleFactor (see UIExporter::notifyScaleFactorChanged). This translation unit
@@ -52,6 +86,11 @@ public:
         : Window(app, 0, width, height, scaleFactor, true),
           scaleFactorChanges(0),
           lastScaleFactor(0.0) {}
+
+    void installNativeDrag(const std::shared_ptr<TestNativeDrag>& drag)
+    {
+        pData->fileDrag = drag;
+    }
 
     bool setScaleFactorFromHost(const double scaleFactor)
     {
@@ -88,6 +127,44 @@ int main()
     using DGL_NAMESPACE::Application;
     using DGL_NAMESPACE::ApplicationQuitter;
     using DGL_NAMESPACE::Window;
+
+    // Native drag modal loops can close both the Window and its Application.
+    {
+        DragLifetimeProbe probe;
+        std::unique_ptr<Application> app(new Application(false));
+        std::unique_ptr<DAF_NAMESPACE::PluginWindow> window(new DAF_NAMESPACE::PluginWindow(*app, 160, 160, 1));
+        window->show();
+        DAF_ASSERT_EQUAL(window->startFileDrag(nullptr), false, "null file-drag paths are rejected");
+        DAF_ASSERT_EQUAL(window->startFileDrag(""), false, "empty file-drag paths are rejected");
+        std::shared_ptr<ClosingNativeDrag> drag(new ClosingNativeDrag(probe));
+        ClosingIdle closer;
+        closer.step = [&] {
+            window->close(); window.reset();
+            app->removeIdleCallback(&closer); app.reset();
+        };
+        drag->step = [&] { app->idle(); };
+        window->installNativeDrag(drag); drag.reset();
+        app->addIdleCallback(&closer);
+        DAF_ASSERT_EQUAL(window->startFileDrag("unused.mid"), false, "an active native drag cannot be replaced");
+        app->idle();
+        DAF_ASSERT_EQUAL(window.get(), nullptr, "nested native dispatch really destroyed the Window");
+        DAF_ASSERT_EQUAL(app.get(), nullptr, "nested native dispatch really destroyed the Application");
+        DAF_ASSERT_EQUAL(probe.cancelled, true, "Window teardown cancels its native operation");
+        DAF_ASSERT_EQUAL(probe.retainedDuringClose, true, "the native operation survives until its active call returns");
+        DAF_ASSERT_EQUAL(probe.destroyed, true, "the last active native call releases its operation");
+    }
+    {
+        DragLifetimeProbe probe;
+        Application app(false);
+        std::unique_ptr<DAF_NAMESPACE::PluginWindow> window(new DAF_NAMESPACE::PluginWindow(app, 160, 160, 1));
+        window->show();
+        std::shared_ptr<ClosingNativeDrag> drag(new ClosingNativeDrag(probe));
+        drag->step = [] {};
+        window->installNativeDrag(drag); drag.reset(); app.idle();
+        DAF_ASSERT_EQUAL(probe.destroyed, true, "completed native operations are released without closing the Window");
+        DAF_ASSERT_EQUAL(probe.cancelled, false, "normal completion is not changed into cancellation");
+        window->close(); window.reset();
+    }
 
     // creating and destroying simple window
     {

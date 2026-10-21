@@ -181,6 +181,11 @@ jobs:
     - name: Build all
       working-directory: build
       run: cmake --build . --config "Release" -j 2
+    - name: Test native OLE file payload
+      run: |
+       cmake -S tests/native-file-drag -B build-file-drag -G"Visual Studio 17 2022" -A"x64"
+       cmake --build build-file-drag --config Release
+       ctest --test-dir build-file-drag -C Release --output-on-failure
     - name: Show built files
       working-directory: build/bin
       run: tree

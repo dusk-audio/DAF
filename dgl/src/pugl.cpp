@@ -43,6 +43,14 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <new>
+#include <string>
+#include <utility>
+#include <vector>
 #include <ctime>
 
 #if defined(DAF_OS_HAIKU)
@@ -74,6 +82,9 @@
 # include <winsock2.h>
 # include <windows.h>
 # include <windowsx.h>
+# include <ole2.h>
+# include <shellapi.h>
+# include <shlobj.h>
 # ifdef DGL_CAIRO
 #  include <cairo-win32.h>
 # endif
@@ -96,6 +107,8 @@
 # include <X11/Xresource.h>
 # include <X11/Xutil.h>
 # include <X11/keysym.h>
+# include <X11/cursorfont.h>
+# include <sys/stat.h>
 # ifdef HAVE_XCURSOR
 #  include <X11/Xcursor/Xcursor.h>
 // #  include <X11/cursorfont.h>
@@ -927,6 +940,16 @@ void puglX11SetWindowType(const PuglView* const view, const bool isStandalone)
 // --------------------------------------------------------------------------------------------------------------------
 
 #endif // HAVE_X11 / HAVE_WAYLAND
+
+#if defined(DAF_OS_MAC)
+# include "FileDragMac.hpp"
+#elif defined(DAF_OS_WINDOWS)
+# include "FileDragWin.hpp"
+#elif defined(HAVE_X11)
+# include "FileDragX11.hpp"
+#else
+PuglFileDrag* puglStartFileDrag(PuglView*, const char*) { return nullptr; }
+#endif
 
 #ifndef DAF_OS_MAC
 END_NAMESPACE_DGL

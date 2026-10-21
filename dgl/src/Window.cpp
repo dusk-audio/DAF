@@ -397,6 +397,18 @@ bool Window::setClipboard(const char* const mimeType, const void* const data, co
         && puglSetClipboard(pData->view, mimeType != nullptr ? mimeType : "text/plain", data, dataSize) == PUGL_SUCCESS;
 }
 
+bool Window::startFileDrag(const char* const filename)
+{
+    if (filename == nullptr || filename[0] == '\0' || pData->view == nullptr || !pData->isVisible || pData->fileDrag)
+        return false;
+    const std::shared_ptr<bool> alive(pData->idleAlive);
+    std::shared_ptr<PuglFileDrag> operation(puglStartFileDrag(pData->view, filename));
+    if (!*alive) { if (operation) operation->cancel(); return false; }
+    if (!operation) return false;
+    pData->fileDrag = std::move(operation);
+    return true;
+}
+
 bool Window::setCursor(const MouseCursor cursor)
 {
     return pData->view != nullptr

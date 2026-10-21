@@ -25,6 +25,7 @@
 #include "pugl.hpp"
 
 #include <list>
+#include <memory>
 
 START_NAMESPACE_DGL
 
@@ -145,6 +146,10 @@ struct Window::PrivateData : IdleCallback {
 
     /** Render to a picture file when non-null, automatically free+unset after saving. */
     char* filenameToRenderInto;
+
+    /** Native drags can pump nested UI loops that destroy this Window. */
+    std::shared_ptr<PuglFileDrag> fileDrag;
+    std::shared_ptr<bool> idleAlive{std::make_shared<bool>(true)};
 
     /** Storage behind getPortalParentHandle(), rebuilt on each call. */
     char portalParentHandle[80];
