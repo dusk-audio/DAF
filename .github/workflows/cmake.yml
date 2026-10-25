@@ -16,7 +16,6 @@ on:
     paths-ignore:
       - '**.md'
       - '.vscode/**'
-      - '.claude/**'
       - 'LICENSE*'
   workflow_dispatch:
 
