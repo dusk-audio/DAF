@@ -46,8 +46,7 @@ No AI attribution: no `Co-Authored-By: Claude ...`, no `🤖 Generated with [Cla
 
 Three layers, because the tooling adds these by default and asking it not to is not enough:
 
-- `.claude/settings.json` (and the same keys in `~/.claude/settings.json`) blank the attribution,
-  so nothing appends it in the first place.
+- `~/.claude/settings.json` blanks the attribution, so nothing appends it in the first place.
 - `.git/hooks/commit-msg` strips the lines as commits are written, whatever wrote them.
 - `.git/hooks/pre-push` refuses to publish a commit that still carries them, which catches anything
   arriving from another checkout, a rebase, an amend or a cherry-pick.

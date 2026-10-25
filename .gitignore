@@ -11,6 +11,7 @@
 .kdev4/
 .DS_Store
 .vs/
+.claude/
 CMakeFiles
 CMakeSettings.json
 cmake_install.cmake
