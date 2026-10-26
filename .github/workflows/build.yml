@@ -88,6 +88,15 @@ jobs:
       run: |
         make -C tests ../build/tests/CocoaRetiredView USE_WEB_VIEW=false -j5
         ./build/tests/CocoaRetiredView
+    - name: AU wrapper and sidechain-on-mono-main regressions
+      if: ${{ runner.os == 'macOS' }}
+      env:
+        CFLAGS: -Werror
+        CXXFLAGS: -Werror
+      run: |
+        make -C tests ../build/tests/AUWrapper ../build/tests/AUSidechainLayout USE_WEB_VIEW=false -j5
+        ./build/tests/AUWrapper
+        ./build/tests/AUSidechainLayout
     # gnu++98 dropped: this fork's C++ floor is C++11 (std::atomic in the CLAP wrapper)
     - name: As C++11 mode
       env:

@@ -480,7 +480,13 @@ protected:
       Optional callback to inform the plugin about audio port IO changes.@n
       This function will only be called when the plugin is deactivated.@n
       Used by AU, and by CLAP/VST3 for supported main-bus configurations
-      declared with DAF_PLUGIN_EXTRA_IO.
+      declared with DAF_PLUGIN_EXTRA_IO.@n
+      With DAF_PLUGIN_SIDECHAIN_ON_EXTRA_IO (AU), @a numInputs can also be the declared main-bus layout for
+      @a numOutputs plus a connected sidechain at its declared width or narrower (e.g. 1 + 1 = 2 with 1 output on a
+      Logic mono track, 1 + 2 = 3 for a mono track keyed by a stereo sidechain). This applies only to a plugin with
+      one sidechain bus, and to output counts whose declared combinations all put the same width on the main bus, so
+      the main width follows from @a numOutputs. The input ports keep their declared positions: the sidechain stays
+      on its own ports, and the channels a connected bus does not carry read silence.
       @see DAF_PLUGIN_EXTRA_IO
     */
     virtual void ioChanged(uint16_t numInputs, uint16_t numOutputs);

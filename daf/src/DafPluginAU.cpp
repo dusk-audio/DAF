@@ -216,6 +216,19 @@ static constexpr const AUChannelInfo kChannelInfo[] = {
    #endif
 };
 
+#if DAF_PLUGIN_NUM_OUTPUTS != 0
+// The widest output layout the wrapper accepts: DAF_PLUGIN_EXTRA_IO may name more outputs than DAF_PLUGIN_NUM_OUTPUTS.
+static constexpr uint32_t widestOutputLayout(const uint32_t index = 0, const uint32_t widest = 0) noexcept
+{
+    return index == ARRAY_SIZE(kChannelInfo)
+        ? widest
+        : widestOutputLayout(index + 1, kChannelInfo[index].outChannels > static_cast<int>(widest)
+                                            ? static_cast<uint32_t>(kChannelInfo[index].outChannels) : widest);
+}
+
+static constexpr const uint32_t kMaxOutputChannels = widestOutputLayout();
+#endif
+
 #ifdef DAF_PLUGIN_EXTRA_IO
 #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS == 0
 #error DAF_PLUGIN_EXTRA_IO defined but no IO available
@@ -2071,7 +2084,7 @@ public:
     {
        #if defined(DAF_PLUGIN_EXTRA_IO) && DAF_PLUGIN_NUM_INPUTS != 0 && DAF_PLUGIN_NUM_OUTPUTS != 0
         // Do not use a safe-assert macro here: this can persist and must not log from the audio thread.
-        if (! isNumChannelsComboValid(fNumInputs, fNumOutputs))
+        if (! isReportedPortIOValid(static_cast<uint16_t>(fNumInputs), static_cast<uint16_t>(fNumOutputs)))
             return kAudio_ParamError;
        #endif
 
@@ -2129,7 +2142,8 @@ public:
        #else
         constexpr const uint32_t numOutputs = DAF_PLUGIN_NUM_OUTPUTS;
        #endif
-        float* outputs[numOutputs];
+        // Sized for the widest declared layout; a narrower one leaves the rest null.
+        float* outputs[kMaxOutputChannels] = {};
       #else
         constexpr float** outputs = nullptr;
       #endif
@@ -2481,6 +2495,13 @@ private:
         for (uint16_t i = 0; i < ARRAY_SIZE(kChannelInfo); ++i)
             if (getInputBusChannelsForTotal(busIndex, kChannelInfo[i].inChannels) == channels)
                 return true;
+       #if DAF_PLUGIN_SIDECHAIN_ON_EXTRA_IO
+        // A sidechain bus may also run narrower than declared: Logic sets every input element of a mono track to
+        // one channel, and abandons the unit when one refuses. The channels it does not carry read silence.
+        if (busIndex != 0 && fInputBuses[busIndex].sidechain && getDeclaredSidechainChannels() != 0
+            && channels <= fInputBuses[busIndex].declaredChannels)
+            return true;
+       #endif
         return false;
     }
 
@@ -2491,6 +2512,122 @@ private:
             if (fInputBuses[busIndex].hasSource())
                 channels += fInputBuses[busIndex].channels;
         return channels;
+    }
+
+   #if DAF_PLUGIN_SIDECHAIN_ON_EXTRA_IO
+    /* DAF_PLUGIN_SIDECHAIN_ON_EXTRA_IO: a main bus the plugin declares on its own, with every connected sidechain bus
+     * at its declared width or narrower on top. On a mono track Logic sets every input element to one channel,
+     * initializes, and then connects both elements, so the summed count (1 + 1) is no declared combination although
+     * the plugin can run it; a host may also connect a stereo sidechain to a mono main (1 + 2). The sidechain keeps
+     * its declared ports, and the channels a connected bus does not carry read silence. */
+
+    // The plugin's main-bus layout for numOutputs: the input count of the declared combination with numOutputs whose
+    // ports are all on the main bus. 0 when there is none, or when the combinations declared for numOutputs put
+    // different widths on the main bus: the summed count ioChanged() reports could not be split into main and
+    // sidechain then.
+    uint16_t getDeclaredMainLayout(const uint16_t numOutputs) const noexcept
+    {
+        int mainWidth = -1;
+        bool mainOnly = false;
+        for (uint16_t i = 0; i < ARRAY_SIZE(kChannelInfo); ++i)
+        {
+            if (kChannelInfo[i].outChannels != numOutputs)
+                continue;
+            const int width = getInputBusChannelsForTotal(0, kChannelInfo[i].inChannels);
+            if (mainWidth >= 0 && width != mainWidth)
+                return 0;
+            mainWidth = width;
+            mainOnly = mainOnly || width == kChannelInfo[i].inChannels;
+        }
+        return mainOnly && mainWidth > 0 ? static_cast<uint16_t>(mainWidth) : 0;
+    }
+
+    // The declared width of the plugin's sidechain bus: 0 without one, or with more than one (the reported count
+    // could not tell which of them runs narrow).
+    uint16_t getDeclaredSidechainChannels() const noexcept
+    {
+        uint16_t channels = 0;
+        for (uint16_t busIndex = 1; busIndex < fInputBusCount; ++busIndex)
+        {
+            if (! fInputBuses[busIndex].sidechain)
+                continue;
+            if (channels != 0)
+                return 0;
+            channels = fInputBuses[busIndex].declaredChannels;
+        }
+        return channels;
+    }
+
+    // Whether the active buses carry a declared combination's ports bus by bus. Its total alone no longer tells once
+    // a sidechain may run narrow: a mono main with a mono sidechain sums to the 2 of a stereo main without one.
+    bool isDeclaredLayoutBusByBus(const uint16_t numOutputs) const noexcept
+    {
+        for (uint16_t i = 0; i < ARRAY_SIZE(kChannelInfo); ++i)
+        {
+            if (kChannelInfo[i].outChannels != numOutputs)
+                continue;
+
+            bool matches = true;
+            for (uint16_t busIndex = 0; busIndex < fInputBusCount && matches; ++busIndex)
+            {
+                const AUInputBus& bus(fInputBuses[busIndex]);
+                const uint16_t active = busIndex == 0 || bus.hasSource() ? bus.channels : 0;
+                matches = active == getInputBusChannelsForTotal(busIndex, kChannelInfo[i].inChannels);
+            }
+            if (matches)
+                return true;
+        }
+        return false;
+    }
+
+    // Whether the active buses are the declared main layout for numOutputs with the connected sidechain on top.
+    bool isSidechainOnDeclaredMainLayout(const uint16_t numOutputs) const noexcept
+    {
+        const uint16_t mainWidth = getDeclaredMainLayout(numOutputs);
+        if (mainWidth == 0 || getDeclaredSidechainChannels() == 0 || fInputBuses[0].channels != mainWidth)
+            return false;
+
+        bool connected = false;
+        for (uint16_t busIndex = 1; busIndex < fInputBusCount; ++busIndex)
+        {
+            const AUInputBus& bus(fInputBuses[busIndex]);
+            if (! bus.hasSource() || bus.channels == 0)
+                continue;
+            if (! bus.sidechain || bus.channels > bus.declaredChannels)
+                return false;
+            connected = true;
+        }
+        return connected;
+    }
+   #endif
+#endif
+
+#if defined(DAF_PLUGIN_EXTRA_IO) && DAF_PLUGIN_NUM_INPUTS != 0 && DAF_PLUGIN_NUM_OUTPUTS != 0
+    // Whether the plugin can run the active buses, numInputs channels in all: a declared combination, or (opt-in) a
+    // declared combination bus by bus or the sidechain on the declared main-bus layout. With the opt-in the summed
+    // count alone is ambiguous (a narrow sidechain), so the buses are checked one by one.
+    bool isActivePortIOValid(const uint16_t numInputs, const uint16_t numOutputs) const noexcept
+    {
+       #if DAF_PLUGIN_SIDECHAIN_ON_EXTRA_IO
+        (void)numInputs;
+        return isDeclaredLayoutBusByBus(numOutputs) || isSidechainOnDeclaredMainLayout(numOutputs);
+       #else
+        return isNumChannelsComboValid(numInputs, numOutputs);
+       #endif
+    }
+
+    // Whether the plugin can run the counts it was last told, judged from those counts alone: the render guard must
+    // not depend on bus state that a property call may be changing meanwhile.
+    bool isReportedPortIOValid(const uint16_t numInputs, const uint16_t numOutputs) const noexcept
+    {
+        if (isNumChannelsComboValid(numInputs, numOutputs))
+            return true;
+       #if DAF_PLUGIN_SIDECHAIN_ON_EXTRA_IO
+        const uint16_t mainWidth = getDeclaredMainLayout(numOutputs);
+        return mainWidth != 0 && numInputs > mainWidth && numInputs - mainWidth <= getDeclaredSidechainChannels();
+       #else
+        return false;
+       #endif
     }
 #endif
 
@@ -2534,7 +2671,7 @@ private:
        #endif
 
        #if DAF_PLUGIN_NUM_INPUTS != 0 && DAF_PLUGIN_NUM_OUTPUTS != 0
-        if (! isNumChannelsComboValid(numInputs, numOutputs))
+        if (! isActivePortIOValid(numInputs, numOutputs))
             return false;
        #endif
 

@@ -98,6 +98,20 @@
 # define DAF_PLUGIN_WANT_TIMEPOS 0
 #endif
 
+// AU only: a plugin's one sidechain bus may run at its declared width or narrower, and when connected join the
+// main-bus layout declared on its own for the output count, so a mono instance (Logic sets every input element of a
+// mono track to one channel) runs keyed by a mono or a stereo sidechain (see Plugin::ioChanged()). A connection is
+// still refused when the layout it completes cannot run at that moment; Logic sets every format before connecting.
+#ifndef DAF_PLUGIN_SIDECHAIN_ON_EXTRA_IO
+# define DAF_PLUGIN_SIDECHAIN_ON_EXTRA_IO 0
+#endif
+// An older DAF ignores the opt-in silently; a plugin that relies on it can test this.
+#define DAF_SUPPORTS_SIDECHAIN_ON_EXTRA_IO 1
+
+#if DAF_PLUGIN_SIDECHAIN_ON_EXTRA_IO && !defined(DAF_PLUGIN_EXTRA_IO)
+# error DAF_PLUGIN_SIDECHAIN_ON_EXTRA_IO needs DAF_PLUGIN_EXTRA_IO
+#endif
+
 #ifndef DAF_UI_FILE_BROWSER
 # define DAF_UI_FILE_BROWSER 0
 #endif
