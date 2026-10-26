@@ -191,7 +191,8 @@ struct AudioMidiSyncHelper
         else
         {
             for (uint32_t i=0; i<DAF_PLUGIN_NUM_OUTPUTS; ++i)
-                outputs[i] += frames;
+                if (outputs[i] != nullptr) // an EXTRA_IO layout narrower than the declared outputs leaves the rest null
+                    outputs[i] += frames;
         }
 
         // no more MIDI events available

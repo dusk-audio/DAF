@@ -53,6 +53,10 @@ WRAPPER_TESTS = CLAPWrapper LADSPAWrapper LV2Wrapper VST2Wrapper VST3Wrapper
 ifeq ($(MACOS),true)
 WRAPPER_TESTS += AUWrapper
 ../build/tests/AUWrapper$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
+# the AU wrapper's DAF_PLUGIN_SIDECHAIN_ON_EXTRA_IO, on a sidechain plugin of its own (see au-sidechain/)
+WRAPPER_TESTS += AUSidechainLayout
+../build/tests/AUSidechainLayout.cpp.o: BUILD_CXX_FLAGS += -Iau-sidechain -I../daf
+../build/tests/AUSidechainLayout$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
 endif
 ../build/tests/%Wrapper.cpp.o: BUILD_CXX_FLAGS += -Iplugin-wrappers -I../daf
 ifeq ($(LINUX),true)
