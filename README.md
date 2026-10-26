@@ -10,14 +10,13 @@ took the code to move faster on platform-specific fixes than an upstream contrib
 and has developed it as its own framework since.
 
 This tree was taken from [DISTRHO/DPF](https://github.com/DISTRHO/DPF) at `4238e1c7` (2025-10-23)
-and has been maintained independently since. It adds native Wayland support, MSVC/arm64 build
+and has been maintained independently. It adds native Wayland support, MSVC/arm64 build
 coverage and a set of state-handling fixes; see [Differences from DISTRHO/DPF](#differences-from-distrhodpf).
 
-It was renamed from DPF to DAF in August 2026 for one practical reason: two repositories with the
-same name, one upstream and one ours, kept sending people and tooling to the wrong tree. The new
-name marks whose tree this is, not whose work it is.
+It was renamed from DPF to DAF in August 2026 because having two repositories with the
+same name, one upstream and one ours, could send people and tooling to the wrong tree.
 
-This is a standalone repository, not a GitHub fork, and development is one-way in both directions:
+This is a standalone repository, not a GitHub fork, and development is one-way: 
 nothing here is submitted to DISTRHO, and no DISTRHO commit is merged back in. Report bugs here,
 including in code inherited from DPF.
 
