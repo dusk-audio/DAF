@@ -38,6 +38,7 @@ Provided features and implementation status for specific plugin formats can be s
 
 On Linux, DAF builds against X11 by default and against Wayland natively when the X11 development
 files are absent; see [Wayland support](FEATURES.md#wayland-support) for what each build can do.
+`DGL_BACKEND=both` builds both and picks one at runtime, see [dgl/src/runtime-backend.md](dgl/src/runtime-backend.md).
 The Wayland backend needs `wayland-client`, `wayland-egl`, `wayland-cursor`, `xkbcommon` and `egl`.
 When switching a checkout between backends, set `BUILD_DIR_SUFFIX` per backend and remove the
 affected `bin/` bundles, otherwise objects and binaries from the other backend are silently reused.

@@ -12,10 +12,15 @@ correct, but it has not been through the years of host-by-host abuse that the X1
 When is the Wayland arm selected?
 ---------------------------------
 
-Only when X11 is absent from the build machine entirely. X11 and Wayland development files coexist
-on most desktop systems, and DGL prefers X11 whenever it is present, because hosts embed plugin UIs
-through the X11 embedding contract (of the formats DAF targets, only CLAP has a Wayland window API)
-and standalone builds work fine on a Wayland session via XWayland.
+Only when X11 is absent from the build machine entirely, or when the build asked for it. X11 and
+Wayland development files coexist on most desktop systems, and DGL prefers X11 whenever it is
+present, because hosts embed plugin UIs through the X11 embedding contract (of the formats DAF
+targets, only CLAP has a Wayland window API) and standalone builds work fine on a Wayland session
+via XWayland.
+
+DGL_BACKEND=both compiles this backend and the X11 one into the same binary and picks one at
+runtime, see dgl/src/runtime-backend.md. That build includes the backend inside a namespace of its
+own (dgl/src/pugl-dispatch.hpp), so nothing here may assume it is the only pugl in the program.
 
 That policy is expressed in three places, which must be kept in agreement:
 
@@ -23,9 +28,10 @@ That policy is expressed in three places, which must be kept in agreement:
                              `#elif defined(HAVE_WAYLAND)`, plus the long
                              rationale comment. This is the canonical statement.
   * Makefile.base.mk      -- `DGL_BACKEND_WAYLAND`, set only when HAVE_WAYLAND
-                             is true and HAVE_X11 is not. Only this variable
-                             gates -DHAVE_WAYLAND and the Wayland libraries.
-  * cmake/DAF-plugin.cmake -- the `if(X11_FOUND) ... else()` split inside
+                             is true and HAVE_X11 is not, or for DGL_BACKEND=both.
+                             Only this variable gates -DHAVE_WAYLAND and the
+                             Wayland libraries.
+  * cmake/DAF-plugin.cmake -- the `_dgl_use_x11` / `_dgl_use_wayland` choice inside
                              `daf__add_dgl_system_libs`.
 
 To exercise the Wayland arm on a machine that has X11 installed:

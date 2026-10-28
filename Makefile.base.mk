@@ -453,9 +453,30 @@ HAVE_WAYLAND       = $(HAVE_WAYLAND_LIBS)
 # existing dual-stack build. DGL_BACKEND_WAYLAND is the "Wayland is really being used" gate and is
 # what the flag blocks below key off; it mirrors the `#elif defined(HAVE_WAYLAND)` arm that only
 # becomes reachable once HAVE_X11 is absent.
+#
+# DGL_BACKEND=both is the one way to have both: it compiles X11 and Wayland into the same DGL and
+# defines DGL_RUNTIME_BACKEND, and puglNewWorld picks one of them when the program opens its first
+# window (see dgl/src/runtime-backend.md). It is an explicit opt-in, and needs every development
+# file of both backends. The default, auto, is the X11-first rule above.
+ifeq ($(DGL_BACKEND),both)
 ifneq ($(HAVE_X11),true)
+$(error DGL_BACKEND=both needs the X11 development files, x11.pc was not found)
+endif
+ifneq ($(HAVE_WAYLAND),true)
+$(error DGL_BACKEND=both needs the wayland-client, wayland-egl, wayland-cursor, xkbcommon and egl development files)
+endif
+DGL_BACKEND_WAYLAND = true
+DGL_RUNTIME_BACKEND = true
+else ifneq ($(HAVE_X11),true)
 DGL_BACKEND_WAYLAND = $(HAVE_WAYLAND)
 endif
+endif
+
+ifneq (,$(filter-out auto both,$(DGL_BACKEND)))
+$(error DGL_BACKEND must be auto or both, not '$(DGL_BACKEND)')
+endif
+ifeq ($(DGL_BACKEND)$(HAIKU_OR_MACOS_OR_WASM_OR_WINDOWS),bothtrue)
+$(error DGL_BACKEND=both is only for Linux and other X11/Wayland systems)
 endif
 
 # Vulkan is not supported yet
@@ -562,6 +583,9 @@ endif # HAVE_X11
 ifeq ($(DGL_BACKEND_WAYLAND),true)
 DGL_FLAGS       += $(shell $(PKG_CONFIG) --cflags wayland-client wayland-egl wayland-cursor xkbcommon) -DHAVE_WAYLAND
 DGL_SYSTEM_LIBS += $(shell $(PKG_CONFIG) --libs wayland-client wayland-egl wayland-cursor xkbcommon)
+ifeq ($(DGL_RUNTIME_BACKEND),true)
+DGL_FLAGS       += -DDGL_RUNTIME_BACKEND
+endif
 # The clipboard code calls pthread_sigmask to keep SIGPIPE off the GUI thread during a transfer.
 # glibc 2.34 and later have it in libc, but older ones keep it in libpthread.
 DGL_FLAGS       += -pthread
@@ -612,7 +636,13 @@ OPENGL_LIBS  = -lopengl32
 else
 # X11 keeps GLX even when Wayland is also available, matching the backend choice made in pugl.hpp.
 # Only a build without X11 at all falls back to EGL on the Wayland platform.
-ifeq ($(HAVE_X11),true)
+#
+# DGL_BACKEND=both needs GLX for its X11 windows and EGL for its Wayland ones, and renders desktop GL
+# on both: there is no GLES flavour of it, for the same reason the X11 arm below has none.
+ifeq ($(DGL_RUNTIME_BACKEND),true)
+OPENGL_FLAGS = $(shell $(PKG_CONFIG) --cflags gl x11 egl wayland-egl)
+OPENGL_LIBS  = $(shell $(PKG_CONFIG) --libs gl x11 egl wayland-egl)
+else ifeq ($(HAVE_X11),true)
 OPENGL_FLAGS = $(shell $(PKG_CONFIG) --cflags gl x11)
 OPENGL_LIBS  = $(shell $(PKG_CONFIG) --libs gl x11)
 else ifeq ($(DGL_BACKEND_WAYLAND),true)
@@ -930,6 +960,7 @@ features:
 	$(call print_available,HAVE_XRANDR)
 	@echo === Selected DGL backend
 	$(call print_available,DGL_BACKEND_WAYLAND)
+	$(call print_available,DGL_RUNTIME_BACKEND)
 
 # ---------------------------------------------------------------------------------------------------------------------
 # Extra rules for MOD Audio stuff
