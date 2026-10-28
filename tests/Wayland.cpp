@@ -33,6 +33,12 @@
 int main()
 {
     using namespace DGL_NAMESPACE;
+#ifdef DGL_RUNTIME_BACKEND
+    // A DGL_BACKEND=both build compiles the Wayland backend into a namespace of its own, see
+    // pugl-dispatch.hpp. Its view type is the one the internals below work with.
+    using namespace DGL_NAMESPACE::pugl_wl;
+    typedef DGL_NAMESPACE::pugl_wl::PuglView PuglView;
+#endif
 
     // Redraw requests are intersected with the view, including negative and overflowing origins.
     const PuglArea viewSize = {100U, 80U};

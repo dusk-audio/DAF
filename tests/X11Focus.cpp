@@ -30,6 +30,14 @@
 
 #include "dgl/src/pugl.cpp"
 
+#ifdef DGL_RUNTIME_BACKEND
+// A DGL_BACKEND=both build compiles the X11 backend into a namespace of its own, see pugl-dispatch.hpp.
+using DGL_NAMESPACE::pugl_x11::PuglX11ErrorTrap;
+using DGL_NAMESPACE::pugl_x11::puglX11BeginErrorTrap;
+using DGL_NAMESPACE::pugl_x11::puglX11EndErrorTrap;
+using DGL_NAMESPACE::pugl_x11::puglX11TrapError;
+#endif
+
 static int hostErrorCount = 0;
 
 static int hostErrorHandler(Display*, XErrorEvent*)
@@ -87,10 +95,13 @@ int main()
 
     PuglWorld* const world = puglNewWorld(PUGL_MODULE, 0);
     DAF_ASSERT_NOT_EQUAL(world, nullptr, "world");
-    Display* const display = world->impl->display;
+   #ifdef DGL_RUNTIME_BACKEND
+    DAF_ASSERT_EQUAL(puglWorldIsX11(world), true, "a module world opens on X11 when there is an X server");
+   #endif
+    Display* const display = static_cast<Display*>(puglGetNativeWorld(world));
 
     PuglView* const view = puglNewView(world);
-    puglSetBackend(view, puglStubBackend());
+    puglSetMatchingBackendForCurrentBuild(view);
     puglSetEventFunc(view, onEvent);
     puglSetSizeHint(view, PUGL_DEFAULT_SIZE, 100, 80);
     puglSetParent(view, static_cast<PuglNativeView>(hostWindow));
