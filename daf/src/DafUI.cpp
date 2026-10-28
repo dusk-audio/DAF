@@ -131,6 +131,11 @@ double getDesktopScaleFactor(const uintptr_t parentWindowHandle)
     }
    #elif defined(HAVE_X11)
     ::Display* const display = XOpenDisplay(nullptr);
+   #ifdef DGL_RUNTIME_BACKEND
+    // no X server to ask, so the UI is going to open on Wayland instead: see the Wayland arm below
+    if (display == nullptr)
+        return 0.0;
+   #endif
     DAF_SAFE_ASSERT_RETURN(display != nullptr, 1.0);
 
     XrmInitialize();

@@ -702,8 +702,18 @@ bool Window::PrivateData::openFileBrowser(const FileBrowserOptions& options)
 
     options2.className = puglGetViewString(view, PUGL_CLASS_NAME);
 
+    uintptr_t parentWindowHandle = puglGetNativeView(view);
+
+   #ifdef DGL_RUNTIME_BACKEND
+    // The dialog code of a runtime-backend build is the X11 one, which takes the parent as an X11
+    // window id, but the native handle of a Wayland view is its wl_surface. Without a parent the
+    // portal centres the dialog, which is what a Wayland-only build does too.
+    if (DGL_VIEW_IS_WAYLAND(view))
+        parentWindowHandle = 0;
+   #endif
+
     fileBrowserHandle = fileBrowserCreate(isEmbed,
-                                          puglGetNativeView(view),
+                                          parentWindowHandle,
                                           autoScaling ? autoScaleFactor : scaleFactor,
                                           options2);
 
@@ -719,6 +729,13 @@ bool Window::PrivateData::createWebView(const char* const url, const DGL_NAMESPA
 {
     if (webViewHandle != nullptr)
         webViewDestroy(webViewHandle);
+
+   #ifdef DGL_RUNTIME_BACKEND
+    // The Linux web view is an X11 window reparented into the view, which a Wayland view cannot host,
+    // so it is unavailable there, as it is in a Wayland-only build.
+    if (DGL_VIEW_IS_WAYLAND(view))
+        return false;
+   #endif
 
     const PuglArea size = puglGetSizeHint(view, PUGL_CURRENT_SIZE);
     uint initialWidth = size.width - options.offset.x;
@@ -822,8 +839,8 @@ void Window::PrivateData::onPuglConfigure(const uint width, const uint height)
 
     DGL_DBGp("PUGL: onReshape : %d %d\n", width, height);
 
-   #ifdef HAVE_WAYLAND
-    if (followsPuglScaleFactor)
+   #ifdef DGL_USING_WAYLAND
+    if (DGL_VIEW_IS_WAYLAND(view) && followsPuglScaleFactor)
     {
         const double nextScaleFactor = DGL_NAMESPACE::getScaleFactor(view);
 
@@ -1105,22 +1122,29 @@ const void* Window::PrivateData::getClipboard(size_t& dataSize)
     }
 
    #if defined(DGL_USING_X11)
-    // wait for type request, clipboardTypeId must be != 0 to be valid
-    int retry = static_cast<int>(2 / 0.03);
-    while (clipboardTypeId == 0 && waitingForClipboardData && --retry >= 0)
+    if (DGL_VIEW_IS_X11(view))
     {
-        if (puglX11UpdateWithoutExposures(appData->world) != PUGL_SUCCESS)
-            break;
+        // wait for type request, clipboardTypeId must be != 0 to be valid
+        int retry = static_cast<int>(2 / 0.03);
+        while (clipboardTypeId == 0 && waitingForClipboardData && --retry >= 0)
+        {
+            if (puglX11UpdateWithoutExposures(appData->world) != PUGL_SUCCESS)
+                break;
+        }
     }
-   #elif defined(DGL_USING_WAYLAND)
-    // same dance as X11: pump events without exposing until the offer types are known.
-    // On Wayland the offer is usually already in hand (wl_data_device.selection arrives ahead of
-    // time), so puglPaste dispatches PUGL_DATA_OFFER synchronously and this loop exits immediately.
-    int retry = static_cast<int>(2 / 0.03);
-    while (clipboardTypeId == 0 && waitingForClipboardData && --retry >= 0)
+   #endif
+   #if defined(DGL_USING_WAYLAND)
+    if (DGL_VIEW_IS_WAYLAND(view))
     {
-        if (puglWaylandUpdateWithoutExposures(appData->world) != PUGL_SUCCESS)
-            break;
+        // same dance as X11: pump events without exposing until the offer types are known.
+        // On Wayland the offer is usually already in hand (wl_data_device.selection arrives ahead of
+        // time), so puglPaste dispatches PUGL_DATA_OFFER synchronously and this loop exits immediately.
+        int retry = static_cast<int>(2 / 0.03);
+        while (clipboardTypeId == 0 && waitingForClipboardData && --retry >= 0)
+        {
+            if (puglWaylandUpdateWithoutExposures(appData->world) != PUGL_SUCCESS)
+                break;
+        }
     }
    #endif
 
@@ -1132,12 +1156,15 @@ const void* Window::PrivateData::getClipboard(size_t& dataSize)
     }
 
    #if defined(DGL_USING_X11)
-    // wait for actual data (assumes offer was accepted)
-    retry = static_cast<int>(2 / 0.03);
-    while (waitingForClipboardData && --retry >= 0)
+    if (DGL_VIEW_IS_X11(view))
     {
-        if (puglX11UpdateWithoutExposures(appData->world) != PUGL_SUCCESS)
-            break;
+        // wait for actual data (assumes offer was accepted)
+        int retry = static_cast<int>(2 / 0.03);
+        while (waitingForClipboardData && --retry >= 0)
+        {
+            if (puglX11UpdateWithoutExposures(appData->world) != PUGL_SUCCESS)
+                break;
+        }
     }
    #endif
     // NOTE: no second wait on Wayland. puglAcceptOffer performs the pipe transfer inline and
@@ -1239,7 +1266,8 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
             SetClassLongPtr(view->impl->hwnd, GCLP_HICON, (LONG_PTR) LoadIcon(hInstance, MAKEINTRESOURCE(DGL_WINDOWS_ICON_ID)));
            #endif
            #ifdef DGL_USING_X11
-            puglX11SetWindowType(view, pData->appData->isStandalone);
+            if (DGL_VIEW_IS_X11(view))
+                puglX11SetWindowType(view, pData->appData->isStandalone);
            #endif
             /* NOTE: nothing to do for Wayland here. It has no window-type atoms, and the closest
                equivalent -- the xdg_toplevel app id, which compositors key window rules, task list
@@ -1320,7 +1348,8 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
         if (! pData->onPuglKey(ev) && pData->isEmbed)
         {
            #if defined(DGL_USING_X11)
-            puglX11ForwardKeyToParent(view, ev.press, event->key.keycode, event->key.state, ev.time);
+            if (DGL_VIEW_IS_X11(view))
+                puglX11ForwardKeyToParent(view, ev.press, event->key.keycode, event->key.state, ev.time);
            #elif defined(DAF_OS_MAC) || defined(DAF_OS_WINDOWS)
             // The Cocoa view passes the NSEvent up its responder chain on this status,
             // and the Win32 view sends the key message on to the host's top-level window.
@@ -1475,8 +1504,9 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
            #ifdef DGL_USING_WAYLAND
             // Wayland does the whole transfer inline and dispatches PUGL_DATA itself, so a failure
             // here is final: no later event will clear the wait, and getClipboard would otherwise
-            // hand back a type id with no data behind it.
-            if (status != PUGL_SUCCESS)
+            // hand back a type id with no data behind it. The X11 views of a runtime-backend build
+            // answer asynchronously instead, as below.
+            if (DGL_VIEW_IS_WAYLAND(view) && status != PUGL_SUCCESS)
             {
                 pData->clipboardTypeId = 0;
                 pData->waitingForClipboardData = false;

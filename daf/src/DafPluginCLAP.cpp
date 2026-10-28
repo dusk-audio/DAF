@@ -90,8 +90,12 @@
  *
  * A build that found *both* X11 and Wayland still advertises X11 alone. It is tempting to list
  * CLAP_WINDOW_API_WAYLAND as an extra floating-only API there, but an X11-built DGL has no
- * wl_surface to hand over: that would be advertising an API it cannot honour. Supporting both at
- * once needs runtime backend dispatch inside DGL, which is deliberately out of scope.
+ * wl_surface to hand over: that would be advertising an API it cannot honour.
+ *
+ * A DGL_BACKEND=both build has both compiled in, and advertises X11 alone as well: it opens a
+ * plugin UI's world on X11 whenever an X server is reachable (see dgl/src/pugl-dispatch.hpp), which
+ * is what the embedding API needs. Offering CLAP_WINDOW_API_WAYLAND there would take creating the
+ * world on whichever backend the host's create() asked for, which DGL cannot be told yet.
  *
  * HAVE_X11 and HAVE_WAYLAND reach this file through DGL_FLAGS, which Makefile.plugins.mk folds into
  * BASE_FLAGS (and which cmake/DAF-plugin.cmake exposes via dgl-system-libs-definitions), so the

@@ -455,12 +455,19 @@ const char* Window::getPortalParentHandle() const noexcept
         return handle;
 
    #if defined(DGL_USING_X11)
-    if (const uintptr_t win = puglGetNativeView(pData->view))
-        std::snprintf(handle, sizeof(pData->portalParentHandle), "x11:0x%llx",
-                      static_cast<unsigned long long>(win));
-   #elif defined(DGL_USING_WAYLAND)
-    if (const char* const exported = puglWaylandGetExportedHandle(pData->view))
-        std::snprintf(handle, sizeof(pData->portalParentHandle), "wayland:%s", exported);
+    if (DGL_VIEW_IS_X11(pData->view))
+    {
+        if (const uintptr_t win = puglGetNativeView(pData->view))
+            std::snprintf(handle, sizeof(pData->portalParentHandle), "x11:0x%llx",
+                          static_cast<unsigned long long>(win));
+    }
+   #endif
+   #if defined(DGL_USING_WAYLAND)
+    if (DGL_VIEW_IS_WAYLAND(pData->view))
+    {
+        if (const char* const exported = puglWaylandGetExportedHandle(pData->view))
+            std::snprintf(handle, sizeof(pData->portalParentHandle), "wayland:%s", exported);
+    }
    #endif
 
     return handle;
