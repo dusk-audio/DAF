@@ -169,6 +169,14 @@ bool puglWin32IsInActiveWindow(const PuglView* view);
 
 #define DGL_USING_X11
 
+#elif defined(HAVE_WAYLAND)
+
+#define DGL_USING_WAYLAND
+
+#endif
+
+#ifdef DGL_USING_X11
+
 // X11 specific, update world without triggering exposure events
 PuglStatus puglX11UpdateWithoutExposures(PuglWorld* world);
 
@@ -180,9 +188,9 @@ void puglX11SetWindowType(const PuglView* view, bool isStandalone);
 // swallows host shortcuts whenever the pointer rests on it.
 void puglX11ForwardKeyToParent(const PuglView* view, bool press, uint keycode, uint mods, uint time);
 
-#elif defined(HAVE_WAYLAND)
+#endif // DGL_USING_X11
 
-#define DGL_USING_WAYLAND
+#ifdef DGL_USING_WAYLAND
 
 // Wayland specific, update world without triggering exposure events
 PuglStatus puglWaylandUpdateWithoutExposures(PuglWorld* world);
@@ -197,7 +205,7 @@ void puglWaylandSetAppId(PuglView* view, const char* appId);
 // compositor answers, and stays null on a compositor without xdg-foreign.
 const char* puglWaylandGetExportedHandle(const PuglView* view);
 
-#endif
+#endif // DGL_USING_WAYLAND
 
 // --------------------------------------------------------------------------------------------------------------------
 
