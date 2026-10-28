@@ -17,8 +17,10 @@
 // The per-platform half of the pugl unity build, included by pugl.cpp inside the DGL namespace: pugl
 // itself for one windowing system, plus the DGL extensions that reach into its internals.
 //
-// Linux arms test DGL_PUGL_X11 and DGL_PUGL_WAYLAND rather than HAVE_X11 and HAVE_WAYLAND: pugl.cpp
-// defines exactly one of them, for the backend being compiled.
+// Linux arms test DGL_PUGL_X11 and DGL_PUGL_WAYLAND, which pugl.cpp defines for the backend being
+// compiled. A single-backend build includes this file once with one of them defined. A
+// runtime-backend build includes it twice, once per backend, each time inside a namespace of its own
+// (see pugl-dispatch.hpp), which is why nothing here may assume it is compiled only once.
 
 // --------------------------------------------------------------------------------------------------------------------
 

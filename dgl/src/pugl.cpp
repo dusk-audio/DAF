@@ -97,8 +97,8 @@
 # endif
 #endif
 
-// DGL_USING_X11 or DGL_USING_WAYLAND comes from pugl.hpp, which picks the backend. Each block below
-// holds the system headers of one backend.
+// DGL_USING_X11 and DGL_USING_WAYLAND come from pugl.hpp, which sets one of them for a single-backend
+// build and both for a runtime-backend one. Each block below holds the system headers of one backend.
 #if defined(DGL_USING_X11)
 # include <dlfcn.h>
 # include <limits.h>
@@ -235,14 +235,18 @@ START_NAMESPACE_DGL
 #endif
 
 // --------------------------------------------------------------------------------------------------------------------
-// pugl and the DGL extensions that reach into it
+// pugl and the DGL extensions that reach into it, once per windowing system compiled in
 
-#if defined(DGL_USING_X11)
-# define DGL_PUGL_X11
-#elif defined(DGL_USING_WAYLAND)
-# define DGL_PUGL_WAYLAND
+#if defined(DGL_RUNTIME_BACKEND)
+# include "pugl-dispatch.hpp"
+#else
+# if defined(DGL_USING_X11)
+#  define DGL_PUGL_X11
+# elif defined(DGL_USING_WAYLAND)
+#  define DGL_PUGL_WAYLAND
+# endif
+# include "pugl-platform.hpp"
 #endif
-#include "pugl-platform.hpp"
 
 // --------------------------------------------------------------------------------------------------------------------
 // DGL specific, build-specific drawing prepare

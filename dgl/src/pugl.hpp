@@ -146,7 +146,7 @@ bool puglWin32IsInActiveWindow(const PuglView* view);
 // coexist happily and most desktop distributions ship both. The order of the arms below is
 // therefore a deliberate policy, not an accident:
 //
-//   X11 is the primary backend whenever it is present.
+//   X11 is the primary backend whenever it is present, unless the build asked for both.
 //
 // The reason is that a plugin UI is not free to pick its own windowing system. Hosts embed plugin
 // UIs into their own window, and the only embedding contract that every plugin format has is the
@@ -155,23 +155,46 @@ bool puglWin32IsInActiveWindow(const PuglView* view);
 // XWayland, so there is nothing to gain from splitting the backend choice between plugin and
 // standalone builds of the same source tree.
 //
-// Consequently the Wayland arm below is reachable only on a build where X11 is absent entirely
+// Consequently the Wayland-only arm below is reachable only on a build where X11 is absent entirely
 // (no libx11-dev), which is the case this backend exists to serve. The build system mirrors this
 // exactly -- see DGL_BACKEND_WAYLAND in Makefile.base.mk and the X11_FOUND branch in
-// cmake/DAF-plugin.cmake, both of which refuse to define HAVE_WAYLAND when X11 is in play.
+// cmake/DAF-plugin.cmake, both of which refuse to define HAVE_WAYLAND when X11 is in play, unless
+// DGL_BACKEND=both asked for it.
 //
-// A possible future step is runtime dispatch: build both backends and choose per window, so that a
-// CLAP plugin could hand the host a real Wayland surface while everything else keeps using X11.
-// That requires the pugl view/world internals to stop being a compile-time singleton, so it is
-// explicitly out of scope here; the compile-time choice below is the stepping stone to it.
+// DGL_BACKEND=both defines DGL_RUNTIME_BACKEND as well. Both backends are compiled in, each in a
+// namespace of its own, and puglNewWorld picks one when it opens the world. Everything below is
+// then declared for both, and code that has to differ per backend asks DGL_VIEW_IS_X11 or
+// DGL_VIEW_IS_WAYLAND at runtime instead of testing DGL_USING_X11 or DGL_USING_WAYLAND alone.
+// See dgl/src/runtime-backend.md and pugl-dispatch.hpp.
+
+#elif defined(DGL_RUNTIME_BACKEND)
+
+#if ! defined(HAVE_X11) || ! defined(HAVE_WAYLAND)
+# error "DGL_RUNTIME_BACKEND needs both HAVE_X11 and HAVE_WAYLAND, see DGL_BACKEND=both"
+#endif
+
+#define DGL_USING_X11
+#define DGL_USING_WAYLAND
+
+// DGL specific, whether a world, or the world a view belongs to, runs on X11 rather than Wayland
+// puglNewWorld decides once per world, and every view created in it stays on the same backend.
+bool puglWorldIsX11(const PuglWorld* world);
+bool puglViewIsX11(const PuglView* view);
+
+#define DGL_VIEW_IS_X11(view)     puglViewIsX11(view)
+#define DGL_VIEW_IS_WAYLAND(view) (! puglViewIsX11(view))
 
 #elif defined(HAVE_X11)
 
 #define DGL_USING_X11
+#define DGL_VIEW_IS_X11(view)     true
+#define DGL_VIEW_IS_WAYLAND(view) false
 
 #elif defined(HAVE_WAYLAND)
 
 #define DGL_USING_WAYLAND
+#define DGL_VIEW_IS_X11(view)     false
+#define DGL_VIEW_IS_WAYLAND(view) true
 
 #endif
 

@@ -42,8 +42,21 @@ typedef enum {
   PUGL_VIEW_STAGE_CONFIGURED,
 } PuglViewStage;
 
+/*
+  A C++ program that compiles more than one platform implementation into one
+  binary derives the view and world below from a common public handle type,
+  which records the platform an object belongs to (see DGL's
+  dgl/src/pugl-dispatch.hpp). Every other build leaves these empty.
+*/
+#ifndef PUGL_VIEW_IMPL_BASE
+#  define PUGL_VIEW_IMPL_BASE
+#endif
+#ifndef PUGL_WORLD_IMPL_BASE
+#  define PUGL_WORLD_IMPL_BASE
+#endif
+
 /// Cross-platform view definition
-struct PuglViewImpl {
+struct PuglViewImpl PUGL_VIEW_IMPL_BASE {
   PuglWorld*         world;
   const PuglBackend* backend;
   PuglInternals*     impl;
@@ -61,7 +74,7 @@ struct PuglViewImpl {
 };
 
 /// Cross-platform world definition
-struct PuglWorldImpl {
+struct PuglWorldImpl PUGL_WORLD_IMPL_BASE {
   PuglWorldInternals* impl;
   void*               handle;
   double              startTime;
