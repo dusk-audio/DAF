@@ -110,8 +110,10 @@ base class and reaches the same function one step later.
    Wayland counts as unopenable when its libraries cannot be loaded.
 2. A program (`PUGL_PROGRAM`, a standalone application) tries Wayland first, but only when
    `WAYLAND_DISPLAY` or `WAYLAND_SOCKET` is set: libwayland would otherwise try `wayland-0` on its
-   own. Wayland counts only if the compositor accepts the connection and offers `wl_compositor` and
-   `xdg_wm_base`. Then X11, if `XOpenDisplay` succeeds.
+   own. Wayland counts only if its libraries load, the compositor accepts the connection and offers
+   `wl_compositor` and `xdg_wm_base`, and, in an OpenGL build, EGL on that display can make the
+   kind of context the build renders with (desktop GL, or GLES for a GLES build). Then X11, if
+   `XOpenDisplay` succeeds.
 3. A module (`PUGL_MODULE`, a plugin UI) tries X11 first. Hosts embed plugin UIs through an X11
    window id in every format DAF supports, and the plugin wrappers of a `both` build keep
    advertising exactly that (LV2 `ui:X11UI`, the CLAP X11 window API), so a module takes an X

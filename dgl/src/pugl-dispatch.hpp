@@ -130,6 +130,40 @@ static inline const pugl_wl::PuglView* asWayland(const PuglView* const view) { r
 // --------------------------------------------------------------------------------------------------------------------
 // backend selection
 
+#ifdef DGL_OPENGL
+// Whether EGL can give a window of this world the kind of context the build renders with. A compositor can
+// be reachable while EGL is of no use on it, a driver without Wayland support say, which would otherwise
+// only show when the first window failed to get its context.
+static bool puglWaylandCanMakeGlContext(pugl_wl::PuglWorld* const world)
+{
+    const EGLDisplay display = pugl_wl::puglWaylandGlAcquireDisplay(world->impl);
+    if (display == EGL_NO_DISPLAY)
+        return false;
+
+   #if defined(DGL_USE_GLES2) || defined(DGL_USE_GLES3)
+    const EGLenum api = EGL_OPENGL_ES_API;
+    const EGLint renderableType = EGL_OPENGL_ES2_BIT;
+   #else
+    const EGLenum api = EGL_OPENGL_API;
+    const EGLint renderableType = EGL_OPENGL_BIT;
+   #endif
+    const EGLint attributes[] = {
+        EGL_SURFACE_TYPE,    EGL_WINDOW_BIT,
+        EGL_RENDERABLE_TYPE, renderableType,
+        EGL_NONE
+    };
+
+    EGLConfig config = nullptr;
+    EGLint numConfigs = 0;
+    const bool usable = eglBindAPI(api) == EGL_TRUE
+                     && eglChooseConfig(display, attributes, &config, 1, &numConfigs) == EGL_TRUE
+                     && numConfigs > 0;
+
+    pugl_wl::puglWaylandGlReleaseDisplay(world->impl);
+    return usable;
+}
+#endif
+
 static PuglWorld* puglNewWorldOn(const PuglWindowSystem system, const PuglWorldType type, const PuglWorldFlags flags)
 {
     if (system == kPuglWindowSystemWayland)
@@ -142,8 +176,20 @@ static PuglWorld* puglNewWorldOn(const PuglWindowSystem system, const PuglWorldT
         }
 
         pugl_wl::PuglWorld* const world = pugl_wl::puglNewWorld(type, flags);
-        if (world != nullptr)
-            world->system = kPuglWindowSystemWayland;
+        if (world == nullptr)
+            return nullptr;
+
+        world->system = kPuglWindowSystemWayland;
+
+       #ifdef DGL_OPENGL
+        if (! puglWaylandCanMakeGlContext(world))
+        {
+            d_stderr("DGL: cannot use Wayland, EGL cannot make an OpenGL context on this compositor");
+            pugl_wl::puglFreeWorld(world);
+            return nullptr;
+        }
+       #endif
+
         return world;
     }
 
@@ -213,7 +259,7 @@ PuglWorld* puglNewWorld(const PuglWorldType type, const PuglWorldFlags flags)
     }
 
     if (forced)
-        d_stderr2("DGL: DAF_WINDOW_BACKEND=%s, but no %s display could be opened (WAYLAND_DISPLAY=%s, DISPLAY=%s)",
+        d_stderr2("DGL: DAF_WINDOW_BACKEND=%s, but %s cannot be used here (WAYLAND_DISPLAY=%s, DISPLAY=%s)",
                   order[0] == kPuglWindowSystemX11 ? "x11" : "wayland",
                   order[0] == kPuglWindowSystemX11 ? "X11" : "Wayland",
                   puglEnvOrUnset("WAYLAND_DISPLAY"), puglEnvOrUnset("DISPLAY"));
