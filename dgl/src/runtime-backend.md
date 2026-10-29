@@ -52,9 +52,10 @@ choice goes on to X11 and a forced `DAF_WINDOW_BACKEND=wayland` fails, naming wh
   copy of an interface: it compares interfaces by name when the pointers differ.
 - Visibility: the accessors are hidden in every build, so that two DAF plugins in one host cannot
   interpose each other's; for that, `EGLAPI` is emptied and xkbcommon's own `visibility("default")`
-  rewritten before their headers declare them. The vendored interface objects are hidden wherever
-  the build hides by default, which every release build does, exactly like the other generated
-  protocol code (see the comment on it in pugl.cpp).
+  rewritten before their headers declare them. The vendored interface objects are hidden in every
+  build as well, debug builds without `-fvisibility=hidden` included, because they carry the names
+  libwayland-client exports: a plugin that exported them could stand in for the library's own (see
+  the comment on them in pugl.cpp).
 
 libGL stays linked: the X11 side needs GLX from it anyway, and with glvnd its GL entry points serve
 EGL contexts as well.
