@@ -7,6 +7,9 @@
 # WAYLAND_DISPLAY. DISPLAY is passed through as it is: unset it for a Wayland-only run, or keep it,
 # under xvfb-run say, to give the command an X server as well. Weston draws with pixman and needs no
 # GPU; GL clients need Mesa's software rasterizer, which LIBGL_ALWAYS_SOFTWARE=1 selects.
+#
+# DAF_TEST_WAYLAND_SCALE=N gives Weston's output a scale of N, which RuntimeBackendWindow then expects
+# a Wayland window to follow.
 set -eu
 
 runtime=$(mktemp -d)
@@ -24,7 +27,8 @@ cleanup() {
 trap cleanup EXIT
 
 XDG_RUNTIME_DIR=$runtime weston --backend=headless --renderer=pixman --socket=daf-headless \
-    --width=1280 --height=720 --idle-time=0 > "$runtime/weston.log" 2>&1 &
+    --width=1280 --height=720 --idle-time=0 ${DAF_TEST_WAYLAND_SCALE:+--scale="$DAF_TEST_WAYLAND_SCALE"} \
+    > "$runtime/weston.log" 2>&1 &
 weston_pid=$!
 
 for _ in $(seq 100); do

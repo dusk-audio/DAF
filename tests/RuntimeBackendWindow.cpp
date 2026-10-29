@@ -37,11 +37,47 @@
 #include "dgl/src/Widget.cpp"
 #include "dgl/src/WidgetPrivateData.cpp"
 #include "dgl/src/Window.cpp"
-#include "dgl/src/WindowPrivateData.cpp"
 
 #ifndef DGL_RUNTIME_BACKEND
 # error This test is for DGL_BACKEND=both builds
 #endif
+
+// What differs per backend in getClipboard is the loop that waits for an offer's types, and on a compositor that
+// loop never runs: without a selection offer puglPaste fails first, and with one the data is in hand before it
+// starts. So WindowPrivateData.cpp is compiled here with the calls each loop makes counted, and with a puglPaste
+// that can report an offer whose types have yet to arrive, which is what the loops wait for.
+START_NAMESPACE_DGL
+
+static int x11WaitLoopUpdates = 0;
+static int waylandWaitLoopUpdates = 0;
+static bool pasteWithTypesToCome = false;
+
+static PuglStatus testPaste(PuglView* const view)
+{
+    return pasteWithTypesToCome ? PUGL_SUCCESS : puglPaste(view);
+}
+
+static PuglStatus testX11UpdateWithoutExposures(PuglWorld* const world)
+{
+    ++x11WaitLoopUpdates;
+    return puglX11UpdateWithoutExposures(world);
+}
+
+static PuglStatus testWaylandUpdateWithoutExposures(PuglWorld* const world)
+{
+    ++waylandWaitLoopUpdates;
+    return puglWaylandUpdateWithoutExposures(world);
+}
+
+END_NAMESPACE_DGL
+
+#define puglPaste testPaste
+#define puglX11UpdateWithoutExposures testX11UpdateWithoutExposures
+#define puglWaylandUpdateWithoutExposures testWaylandUpdateWithoutExposures
+#include "dgl/src/WindowPrivateData.cpp"
+#undef puglPaste
+#undef puglX11UpdateWithoutExposures
+#undef puglWaylandUpdateWithoutExposures
 
 #ifdef HAVE_DBUS
 # include <dbus/dbus.h>
@@ -96,6 +132,8 @@ public:
 
     bool fileSelected = false;
     std::string selectedFile;
+    uint scaleFactorChanges = 0;
+    double lastScaleFactor = 0.0;
 
 protected:
     void onReshape(const uint width, const uint height) override
@@ -108,6 +146,12 @@ protected:
     {
         fileSelected = true;
         selectedFile = filename != nullptr ? filename : "";
+    }
+
+    void onScaleFactorChanged(const double scaleFactor) override
+    {
+        ++scaleFactorChanges;
+        lastScaleFactor = scaleFactor;
     }
 };
 
@@ -361,8 +405,30 @@ int main()
     DAF_ASSERT_EQUAL(win.reshaped, true, "the window is configured");
     DAF_ASSERT_EQUAL(win.isX11(), expected == kX11, "the window opens on the expected backend");
 
-    // a window created without a scale factor keeps following pugl's, on configure as well
+    // A window created without a scale factor follows its backend's. On Wayland that is the scale of the output its
+    // surface entered, which pugl only learns after the first configure, and which reaches the window through
+    // onPuglConfigure's Wayland branch alone. DAF_TEST_WAYLAND_SCALE names that scale where the compositor's output
+    // has one other than 1; an X11 window keeps the X server's all the same.
     DAF_ASSERT_EQUAL(win.followsPuglScaleFactor(), true, "the window follows pugl's scale factor");
+    if (const char* const outputScaleString = std::getenv("DAF_TEST_WAYLAND_SCALE"))
+    {
+        const double outputScale = std::atof(outputScaleString);
+        if (expected == kWayland)
+        {
+            const std::chrono::steady_clock::time_point scaleDeadline
+                = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (d_isNotEqual(win.getScaleFactor(), outputScale) && std::chrono::steady_clock::now() < scaleDeadline)
+                app.idle();
+
+            DAF_ASSERT_SAFE_EQUAL(win.getScaleFactor(), outputScale, "a Wayland window follows its output's scale");
+            DAF_ASSERT_SAFE_EQUAL(win.lastScaleFactor, outputScale, "a Wayland window is told of its output's scale");
+        }
+        else
+        {
+            DAF_ASSERT_SAFE_EQUAL(win.getScaleFactor(), 1.0, "an X11 window keeps the X server's scale");
+            DAF_ASSERT_EQUAL(win.scaleFactorChanges, 0u, "an X11 window hears of no scale change");
+        }
+    }
     DAF_ASSERT_SAFE_EQUAL(win.getScaleFactor(), win.puglScaleFactor(), "the window has pugl's scale factor");
 
     // a portal is handed the window in its own backend's form, never an X11 id for a Wayland window
@@ -427,9 +493,26 @@ int main()
         DAF_ASSERT_EQUAL(win.createWebView("about:blank"), false, "a Wayland window gets no web view");
     }
 
-    // What the window puts on the clipboard comes back through its own backend's paste loop. A compositor
-    // only offers the selection to the client with keyboard focus, which no window gets on a headless one,
-    // so on Wayland the loop has to come back empty-handed rather than with the text.
+    // A paste whose offer types have yet to arrive waits on the window's own backend, never the other's.
+    DGL_NAMESPACE::pasteWithTypesToCome = true;
+    size_t pendingSize = 0;
+    DAF_ASSERT_EQUAL(win.getClipboard(pendingSize), static_cast<const void*>(nullptr),
+                     "a paste whose types never arrive gives nothing");
+    DGL_NAMESPACE::pasteWithTypesToCome = false;
+    if (expected == kX11)
+    {
+        DAF_ASSERT_EQUAL(DGL_NAMESPACE::x11WaitLoopUpdates > 0, true, "an X11 window waits on X11 events");
+        DAF_ASSERT_EQUAL(DGL_NAMESPACE::waylandWaitLoopUpdates, 0, "an X11 window never waits on Wayland events");
+    }
+    else
+    {
+        DAF_ASSERT_EQUAL(DGL_NAMESPACE::waylandWaitLoopUpdates > 0, true, "a Wayland window waits on Wayland events");
+        DAF_ASSERT_EQUAL(DGL_NAMESPACE::x11WaitLoopUpdates, 0, "a Wayland window never waits on X11 events");
+    }
+
+    // What the window puts on the clipboard comes back through its own backend's paste. A compositor only
+    // offers the selection to the client with keyboard focus, which no window gets on a headless one, so on
+    // Wayland it has to come back empty-handed rather than with the text.
     static const char kClipboardText[] = "DAF runtime backend test";
     DAF_ASSERT_EQUAL(win.setClipboard("text/plain", kClipboardText, sizeof(kClipboardText)),
                      expected == kX11 || win.hasWaylandDataDevice(),

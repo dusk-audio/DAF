@@ -216,6 +216,10 @@ fails the test rather than turn it into a check that nothing opens.
   the X11 dialog. Then a stand-in portal on a private session bus answers the dialog of either
   backend, and the window has to get the file it chose, with an `x11:` parent named for an X11
   window and none for a Wayland one. Where no `dbus-daemon` can be started, it says so and skips that.
+  The paste is checked by counting what its wait loop pumps: a paste whose offer types have yet to
+  arrive has to wait on the window's own backend alone. With `DAF_TEST_WAYLAND_SCALE=N`, which
+  `headless-wayland.sh` also gives Weston's output, a Wayland window has to follow that output to
+  scale N, and an X11 window to keep the X server's.
 
 `tests/Wayland.cpp` and `tests/X11Focus.cpp` drive each backend's half of a `both` build directly.
 
