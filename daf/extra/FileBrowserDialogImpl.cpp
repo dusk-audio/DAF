@@ -981,28 +981,27 @@ bool fileBrowserIdle(const FileBrowserHandle handle)
 #endif
 
 #ifdef HAVE_X11
-    Display* const x11display = handle->x11display;
-
-    if (x11display == nullptr)
-        return false;
-
-    XEvent event;
-    while (XPending(x11display) > 0)
+    // without an X11 connection, as for a Wayland window, the portal is all there is
+    if (Display* const x11display = handle->x11display)
     {
-        XNextEvent(x11display, &event);
+        XEvent event;
+        while (XPending(x11display) > 0)
+        {
+            XNextEvent(x11display, &event);
 
-        if (x_fib_handle_events(x11display, &event) == 0)
-            continue;
+            if (x_fib_handle_events(x11display, &event) == 0)
+                continue;
 
-        if (x_fib_status() > 0)
-            handle->selectedFile = x_fib_filename();
-        else
-            handle->selectedFile = kSelectedFileCancelled;
+            if (x_fib_status() > 0)
+                handle->selectedFile = x_fib_filename();
+            else
+                handle->selectedFile = kSelectedFileCancelled;
 
-        x_fib_close(x11display);
-        XCloseDisplay(x11display);
-        handle->x11display = nullptr;
-        break;
+            x_fib_close(x11display);
+            XCloseDisplay(x11display);
+            handle->x11display = nullptr;
+            break;
+        }
     }
 #endif
 
