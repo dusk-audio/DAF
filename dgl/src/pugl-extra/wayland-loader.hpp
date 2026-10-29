@@ -112,14 +112,15 @@ DGL_EGL_FUNCTIONS(DGL_WAYLAND_DEFINE_ACCESSOR)
     {                                                                   \
         void* const symbol = dlsym(library, #name);                     \
         if (symbol == nullptr)                                          \
-            return dglWaylandFailure(soname, #name);                   \
+            return dglWaylandFailure(soname, " has no " #name);        \
         std::memcpy(&dgl_pointer_##name, &symbol, sizeof(symbol));      \
     }
 
-static const char* dglWaylandFailure(const char* const soname, const char* const what)
+// dlerror() names the library itself, and its buffer does not outlive the next dl call
+static const char* dglWaylandFailure(const char* const what, const char* const detail = "")
 {
     static char message[512];
-    std::snprintf(message, sizeof(message), "%s: %s", soname, what);
+    std::snprintf(message, sizeof(message), "%s%s", what, detail);
     return message;
 }
 
@@ -136,7 +137,7 @@ static const char* dglWaylandLoad()
         soname  = name;                                                 \
         library = dlopen(soname, RTLD_NOW | RTLD_LOCAL);                \
         if (library == nullptr)                                         \
-            return dglWaylandFailure(soname, dlerror());
+            return dglWaylandFailure(dlerror());
 
         DGL_WAYLAND_OPEN("libwayland-client.so.0")
         DGL_WAYLAND_CLIENT_FUNCTIONS(DGL_WAYLAND_LOAD_SYMBOL)
