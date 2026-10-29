@@ -534,21 +534,25 @@ public:
 
         fParentWindow = window->uptr;
 
-        if (fUI == nullptr)
-        {
+        const bool creatingUI = fUI == nullptr;
+
+        if (creatingUI)
             createUI();
 
-           #ifdef DGL_RUNTIME_BACKEND
-            // Embedding reparents the UI into the host's X11 window. With no X server to open it on,
-            // the UI is on Wayland and cannot be embedded.
-            if (! fUI->isX11())
-            {
-                d_stderr("Cannot embed the UI, there is no X server for it to open on");
-                fUI = nullptr;
-                return false;
-            }
-           #endif
+       #ifdef DGL_RUNTIME_BACKEND
+        // Embedding reparents the UI into the host's X11 window. With no X server to open it on,
+        // the UI is on Wayland and cannot be embedded. That holds as well for a UI that show()
+        // created before the host named a parent.
+        if (! fUI->isX11())
+        {
+            d_stderr("Cannot embed the UI, there is no X server for it to open on");
+            fUI = nullptr;
+            return false;
+        }
+       #endif
 
+        if (creatingUI)
+        {
             fHostGui->resize_hints_changed(fHost);
 
             // Should the window have come out at another size than get_size predicted, a parent on
