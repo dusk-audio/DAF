@@ -220,6 +220,13 @@ public:
             disconnect();
     }
 
+   #ifdef DGL_RUNTIME_BACKEND
+    bool isX11() const noexcept
+    {
+        return fUI.isX11();
+    }
+   #endif
+
     void postInit(uint32_t nextWidth, uint32_t nextHeight)
     {
         if (fIsResizingFromHost && nextWidth > 0 && nextHeight > 0)
@@ -1266,6 +1273,21 @@ struct daf_plugin_view : v3_plugin_view_cpp {
                                           view->instancePointer,
                                           view->nextWidth > 0 && view->nextHeight > 0,
                                           view->sizeRequestedBeforeBeingAttached);
+
+               #ifdef DGL_RUNTIME_BACKEND
+                // The host embeds the view by reparenting it into its X11 window. With no X server to open it
+                // on, the UI is on Wayland and cannot be embedded.
+                if (! view->uivst3->isX11())
+                {
+                    d_stderr("Cannot embed the UI, there is no X server for it to open on");
+                    view->uivst3 = nullptr;
+                   #if DAF_VST3_USING_HOST_RUN_LOOP
+                    v3_cpp_obj_unref(runloop);
+                    view->runloop = nullptr;
+                   #endif
+                    return V3_FALSE;
+                }
+               #endif
 
                 view->uivst3->postInit(view->nextWidth, view->nextHeight);
                 view->nextWidth = 0;

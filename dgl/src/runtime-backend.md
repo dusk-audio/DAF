@@ -141,9 +141,10 @@ share `PuglFileDrag`, the base class `FileDragX11.hpp` derives from.
    to it. Hosts embed plugin UIs through an X11 window id in every format DAF supports, and the
    plugin wrappers of a `both` build keep advertising exactly that (LV2 `ui:X11UI`, the CLAP X11
    window API), so a module takes an X server, XWayland included, whenever there is one. Wayland
-   follows, under the same condition as for a program. An LV2 UI that the host wants to embed
-   fails to instantiate when it could not open on X11, rather than hand the host a Wayland surface
-   as an X11 window, and a CLAP UI fails `set_parent` in the same case.
+   follows, under the same condition as for a program. A UI that the host wants to embed and that
+   could not open on X11 is refused rather than hand the host a Wayland surface as an X11 window:
+   an LV2 UI fails to instantiate, a CLAP UI fails `set_parent`, a VST3 view fails `attached` and
+   a VST2 editor fails to open.
 4. With nothing left, `puglNewWorld` prints the `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` and `DISPLAY` it
    saw and returns null.
 
@@ -194,9 +195,6 @@ relies on.
   the forwarding layer: they belong to one backend. DGL uses `puglSetMatchingBackendForCurrentBuild`.
 - CLAP keeps advertising only the X11 window API. Offering `CLAP_WINDOW_API_WAYLAND` needs a way to
   create a world on the backend the host asked for, which DGL's `Application` cannot express yet.
-- With no X server to open on, a VST2 or VST3 UI that the host wants to embed opens as a floating
-  Wayland window and the host's X11 parent is ignored. LV2 and CLAP refuse instead, see the
-  selection rule.
 
 ## Tests
 
@@ -217,13 +215,20 @@ fails the test rather than turn it into a check that nothing opens.
   clipboard paste loop, and following pugl's scale factor. Without a portal, only an X11 window gets
   the X11 dialog. Then a stand-in portal on a private session bus answers the dialog of either
   backend, and the window has to get the file it chose, with an `x11:` parent named for an X11
-  window and none for a Wayland one. Where no `dbus-daemon` can be started, it says so and skips that.
+  window and none for a Wayland one. The portal sends the call's reply, a `Response` for another
+  request and the dialog's own `Response` back to back, as a portal serving two dialogs might,
+  and the window must get the file from its own. Where no `dbus-daemon` can be started, it says so and skips that.
   The paste is checked by counting what its wait loop pumps: a paste whose offer types have yet to
   arrive has to wait on the window's own backend alone. With `DAF_TEST_WAYLAND_SCALE=N`, which
   `headless-wayland.sh` also gives Weston's output, a Wayland window has to follow that output to
   scale N, and an X11 window to keep the X server's.
 
 `tests/Wayland.cpp` and `tests/X11Focus.cpp` drive each backend's half of a `both` build directly.
+
+`tests/plugin-embed-host.cpp` embeds a plugin's UI the way a Linux host does, handing the VST2,
+VST3 and CLAP builds of a plugin an X11 parent window. Under Weston alone each has to refuse,
+because there is no X server for the UI to open on; with Xvfb as well each has to embed. LV2 is
+not covered: its UI needs the plugin instance, which the harness does not make.
 
 `tests/headless-wayland.sh` runs a command against a headless Weston of its own, with a private
 `XDG_RUNTIME_DIR`. CI uses it for Wayland alone and, under `xvfb-run`, for both servers at once:
@@ -234,7 +239,8 @@ fails the test rather than turn it into a check that nothing opens.
 
 `build.yml` runs the `both` suite under Xvfb alone. `wayland.yml` runs it under Weston alone, runs
 both runtime backend tests with both servers for each `DAF_WINDOW_BACKEND` and with EGL's vendor
-libraries hidden, and runs the suite again without the Wayland libraries installed, followed by
+libraries hidden, embeds `d_meters` with `plugin-embed-host` under Weston alone and with both
+servers, and runs the suite again without the Wayland libraries installed, followed by
 RuntimeBackend with `WAYLAND_DISPLAY` set, where a program has to fall back to X11, or with Wayland
 forced, open nothing. `cmake.yml` builds and runs `tests/runtime-backend-consumer`, an application
 that consumes a `both` build through CMake.

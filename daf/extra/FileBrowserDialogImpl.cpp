@@ -185,6 +185,15 @@ static constexpr int toHexChar(const char c) noexcept
 {
     return c >= '0' && c <= '9' ? c - '0' : (c >= 'A' && c <= 'F' ? c - 'A' : c - 'a') + 10;
 }
+
+// xdg-desktop-portal sends a request's Response to the caller alone, but the documentation asks a client to
+// subscribe to it all the same, before the call. That is every Response rather than one path, since a portal
+// older than handle_token names its request only in the reply; fileBrowserIdle picks this dialog's by path.
+// Without an error to fill, the call does not wait for the bus to answer.
+static void addPortalResponseMatch(DBusConnection* const dbuscon)
+{
+    dbus_bus_add_match(dbuscon, "type='signal',interface='org.freedesktop.portal.Request',member='Response'", nullptr);
+}
 #endif
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -292,7 +301,13 @@ struct FileBrowserData {
     NSOpenPanel* nsOpenPanel;
 #endif
 #ifdef HAVE_DBUS
+    // A connection of the dialog's own, so that all that arrives on it is for the dialog. The portal request is
+    // known by the serial of the call that makes it and the path its Response comes on, which the dialog names
+    // with a handle_token, or a portal older than that returns.
     DBusConnection* dbuscon;
+    dbus_uint32_t dbusCallSerial;
+    String dbusRequestPath;
+    String dbusReturnedPath;
 #endif
 #ifdef HAVE_X11
     Display* x11display;
@@ -447,6 +462,7 @@ struct FileBrowserData {
        #endif
        #ifdef HAVE_DBUS
         , dbuscon(nullptr)
+        , dbusCallSerial(0)
        #endif
        #ifdef HAVE_X11
         , x11display(nullptr)
@@ -469,7 +485,7 @@ struct FileBrowserData {
         saving = save;
 #endif
 #ifdef HAVE_DBUS
-        if ((dbuscon = dbus_bus_get(DBUS_BUS_SESSION, nullptr)) != nullptr)
+        if ((dbuscon = dbus_bus_get_private(DBUS_BUS_SESSION, nullptr)) != nullptr)
             dbus_connection_set_exit_on_disconnect(dbuscon, false);
 #endif
 #if defined(HAVE_X11) && ! defined(DGL_RUNTIME_BACKEND)
@@ -490,7 +506,10 @@ struct FileBrowserData {
 #endif
 #ifdef HAVE_DBUS
         if (dbuscon != nullptr)
+        {
+            dbus_connection_close(dbuscon);
             dbus_connection_unref(dbuscon);
+        }
 #endif
 #ifdef HAVE_X11
         if (x11display != nullptr)
@@ -738,6 +757,23 @@ FileBrowserHandle fileBrowserCreate(const bool isEmbed,
                #endif
                 const char* windowIdStrPtr = windowIdStr;
 
+                // The request is named after this connection and a token, so that its Response is known
+                // before the portal has even answered the call.
+                static uint handleTokenCounter = 0;
+                char handleToken[32];
+                snprintf(handleToken, sizeof(handleToken), "daf%u", ++handleTokenCounter);
+
+                if (const char* const uniqueName = dbus_bus_get_unique_name(dbuscon))
+                {
+                    String sender(uniqueName[0] == ':' ? uniqueName + 1 : uniqueName);
+                    handle->dbusRequestPath = "/org/freedesktop/portal/desktop/request/";
+                    handle->dbusRequestPath += sender.replace('.', '_');
+                    handle->dbusRequestPath += "/";
+                    handle->dbusRequestPath += handleToken;
+                }
+
+                addPortalResponseMatch(dbuscon);
+
                 dbus_message_append_args(msg,
                                          DBUS_TYPE_STRING, &windowIdStrPtr,
                                          DBUS_TYPE_STRING, &windowTitle,
@@ -764,9 +800,22 @@ FileBrowserHandle fileBrowserCreate(const bool isEmbed,
                     dbus_message_iter_close_container(&array, &dict);
                 }
 
+                {
+                    DBusMessageIter dict, variant;
+                    const char* const handle_token_key = "handle_token";
+                    const char* const handle_token_val = handleToken;
+
+                    dbus_message_iter_open_container(&array, DBUS_TYPE_DICT_ENTRY, nullptr, &dict);
+                    dbus_message_iter_append_basic(&dict, DBUS_TYPE_STRING, &handle_token_key);
+                    dbus_message_iter_open_container(&dict, DBUS_TYPE_VARIANT, "s", &variant);
+                    dbus_message_iter_append_basic(&variant, DBUS_TYPE_STRING, &handle_token_val);
+                    dbus_message_iter_close_container(&dict, &variant);
+                    dbus_message_iter_close_container(&array, &dict);
+                }
+
                 dbus_message_iter_close_container(&iter, &array);
 
-                dbus_connection_send(dbuscon, msg, nullptr);
+                dbus_connection_send(dbuscon, msg, &handle->dbusCallSerial);
 
                 dbus_message_unref(msg);
                 return handle.release();
@@ -841,138 +890,172 @@ FileBrowserHandle fileBrowserCreate(const bool isEmbed,
 }
 #endif
 
+#ifdef HAVE_DBUS
+// The local file a portal Request's Response picked, its (u response, a{sv} results) carrying
+// results["uris"] = ["file://..."]: decoded and allocated with strdup, or null when the dialog was cancelled.
+static char* portalResponseFile(DBusMessage* const msg)
+{
+    DBusMessageIter iter;
+    dbus_message_iter_init(msg, &iter);
+
+    // starts with uint32 for return/exit code
+    DAF_SAFE_ASSERT_RETURN(dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_UINT32, nullptr);
+
+    uint32_t ret = 1;
+    dbus_message_iter_get_basic(&iter, &ret);
+
+    if (ret != 0)
+        return nullptr;
+
+    // next must be array
+    dbus_message_iter_next(&iter);
+    DAF_SAFE_ASSERT_RETURN(dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_ARRAY, nullptr);
+
+    // open dict array
+    DBusMessageIter dictArray;
+    dbus_message_iter_recurse(&iter, &dictArray);
+    DAF_SAFE_ASSERT_RETURN(dbus_message_iter_get_arg_type(&dictArray) == DBUS_TYPE_DICT_ENTRY, nullptr);
+
+    // open containing dict
+    DBusMessageIter dict;
+    dbus_message_iter_recurse(&dictArray, &dict);
+
+    // look for dict with string "uris"
+    DAF_SAFE_ASSERT_RETURN(dbus_message_iter_get_arg_type(&dict) == DBUS_TYPE_STRING, nullptr);
+
+    const char* key = nullptr;
+    dbus_message_iter_get_basic(&dict, &key);
+    DAF_SAFE_ASSERT_RETURN(key != nullptr, nullptr);
+
+    // keep going until we find it
+    while (std::strcmp(key, "uris") != 0)
+    {
+        key = nullptr;
+        dbus_message_iter_next(&dictArray);
+        DAF_SAFE_ASSERT_RETURN(dbus_message_iter_get_arg_type(&dictArray) == DBUS_TYPE_DICT_ENTRY, nullptr);
+
+        dbus_message_iter_recurse(&dictArray, &dict);
+        DAF_SAFE_ASSERT_RETURN(dbus_message_iter_get_arg_type(&dict) == DBUS_TYPE_STRING, nullptr);
+
+        dbus_message_iter_get_basic(&dict, &key);
+        DAF_SAFE_ASSERT_RETURN(key != nullptr, nullptr);
+    }
+
+    // then comes variant
+    dbus_message_iter_next(&dict);
+    DAF_SAFE_ASSERT_RETURN(dbus_message_iter_get_arg_type(&dict) == DBUS_TYPE_VARIANT, nullptr);
+
+    DBusMessageIter variant;
+    dbus_message_iter_recurse(&dict, &variant);
+    DAF_SAFE_ASSERT_RETURN(dbus_message_iter_get_arg_type(&variant) == DBUS_TYPE_ARRAY, nullptr);
+
+    // open variant array (variant type is string)
+    DBusMessageIter variantArray;
+    dbus_message_iter_recurse(&variant, &variantArray);
+    DAF_SAFE_ASSERT_RETURN(dbus_message_iter_get_arg_type(&variantArray) == DBUS_TYPE_STRING, nullptr);
+
+    const char* value = nullptr;
+    dbus_message_iter_get_basic(&variantArray, &value);
+
+    // and finally we have our dear value, just make sure it is local
+    DAF_SAFE_ASSERT_RETURN(value != nullptr, nullptr);
+
+    const char* const localvalue = std::strstr(value, "file:///");
+    if (localvalue == nullptr)
+        return nullptr;
+
+    char* const decodedvalue = strdup(localvalue + 7);
+    if (decodedvalue == nullptr)
+        return nullptr;
+
+    for (char* s = decodedvalue; (s = std::strchr(s, '%')) != nullptr; ++s)
+    {
+        if (! isHexChar(s[1]) || ! isHexChar(s[2]))
+            continue;
+
+        const int decodedNum = toHexChar(s[1]) * 0x10 + toHexChar(s[2]);
+
+        char replacementChar;
+        switch (decodedNum)
+        {
+        case 0x20: replacementChar = ' '; break;
+        case 0x22: replacementChar = '\"'; break;
+        case 0x23: replacementChar = '#'; break;
+        case 0x25: replacementChar = '%'; break;
+        case 0x3c: replacementChar = '<'; break;
+        case 0x3e: replacementChar = '>'; break;
+        case 0x5b: replacementChar = '['; break;
+        case 0x5c: replacementChar = '\\'; break;
+        case 0x5d: replacementChar = ']'; break;
+        case 0x5e: replacementChar = '^'; break;
+        case 0x60: replacementChar = '`'; break;
+        case 0x7b: replacementChar = '{'; break;
+        case 0x7c: replacementChar = '|'; break;
+        case 0x7d: replacementChar = '}'; break;
+        case 0x7e: replacementChar = '~'; break;
+        default: continue;
+        }
+
+        s[0] = replacementChar;
+        std::memmove(s + 1, s + 3, std::strlen(s) - 2);
+    }
+
+    return decodedvalue;
+}
+#endif
+
 // --------------------------------------------------------------------------------------------------------------------
 // returns true if dialog was closed (with or without a file selection)
 
 bool fileBrowserIdle(const FileBrowserHandle handle)
 {
 #ifdef HAVE_DBUS
-    if (DBusConnection* dbuscon = handle->dbuscon)
+    // The connection is the dialog's own, so what arrives on it is the reply to the portal call, the request's
+    // Response, or something the dialog has no use for. Take every message there is: one left for libdbus to
+    // dispatch would be dropped, the Response included.
+    if (DBusConnection* const dbuscon = handle->dbuscon)
     {
-        while (dbus_connection_dispatch(dbuscon) == DBUS_DISPATCH_DATA_REMAINS) {}
-        dbus_connection_read_write_dispatch(dbuscon, 0);
+        dbus_connection_read_write(dbuscon, 0);
 
-        if (DBusMessage* const msg = dbus_connection_pop_message(dbuscon))
+        while (handle->selectedFile == nullptr)
         {
-            const char* const interface = dbus_message_get_interface(msg);
-            const char* const member = dbus_message_get_member(msg);
+            DBusMessage* const msg = dbus_connection_pop_message(dbuscon);
+            if (msg == nullptr)
+                break;
 
-            if (interface != nullptr && std::strcmp(interface, "org.freedesktop.portal.Request") == 0
-                && member != nullptr && std::strcmp(member, "Response") == 0)
+            switch (dbus_message_get_type(msg))
             {
-                do {
-                    DBusMessageIter iter;
-                    dbus_message_iter_init(msg, &iter);
+            case DBUS_MESSAGE_TYPE_METHOD_RETURN:
+                // a portal older than handle_token returns a request path of its own, which the Response comes on
+                if (dbus_message_get_reply_serial(msg) == handle->dbusCallSerial)
+                {
+                    const char* path = nullptr;
+                    if (dbus_message_get_args(msg, nullptr, DBUS_TYPE_OBJECT_PATH, &path, DBUS_TYPE_INVALID)
+                        && handle->dbusRequestPath != path)
+                        handle->dbusReturnedPath = path;
+                }
+                break;
 
-                    // starts with uint32 for return/exit code
-                    DAF_SAFE_ASSERT_BREAK(dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_UINT32);
-
-                    uint32_t ret = 1;
-                    dbus_message_iter_get_basic(&iter, &ret);
-
-                    if (ret != 0)
-                        break;
-
-                    // next must be array
-                    dbus_message_iter_next(&iter);
-                    DAF_SAFE_ASSERT_BREAK(dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_ARRAY);
-
-                    // open dict array
-                    DBusMessageIter dictArray;
-                    dbus_message_iter_recurse(&iter, &dictArray);
-                    DAF_SAFE_ASSERT_BREAK(dbus_message_iter_get_arg_type(&dictArray) == DBUS_TYPE_DICT_ENTRY);
-
-                    // open containing dict
-                    DBusMessageIter dict;
-                    dbus_message_iter_recurse(&dictArray, &dict);
-
-                    // look for dict with string "uris"
-                    DAF_SAFE_ASSERT_BREAK(dbus_message_iter_get_arg_type(&dict) == DBUS_TYPE_STRING);
-
-                    const char* key = nullptr;
-                    dbus_message_iter_get_basic(&dict, &key);
-                    DAF_SAFE_ASSERT_BREAK(key != nullptr);
-
-                    // keep going until we find it
-                    while (std::strcmp(key, "uris") != 0)
-                    {
-                        key = nullptr;
-                        dbus_message_iter_next(&dictArray);
-                        DAF_SAFE_ASSERT_BREAK(dbus_message_iter_get_arg_type(&dictArray) == DBUS_TYPE_DICT_ENTRY);
-
-                        dbus_message_iter_recurse(&dictArray, &dict);
-                        DAF_SAFE_ASSERT_BREAK(dbus_message_iter_get_arg_type(&dict) == DBUS_TYPE_STRING);
-
-                        dbus_message_iter_get_basic(&dict, &key);
-                        DAF_SAFE_ASSERT_BREAK(key != nullptr);
-                    }
-
-                    if (key == nullptr)
-                        break;
-
-                    // then comes variant
-                    dbus_message_iter_next(&dict);
-                    DAF_SAFE_ASSERT_BREAK(dbus_message_iter_get_arg_type(&dict) == DBUS_TYPE_VARIANT);
-
-                    DBusMessageIter variant;
-                    dbus_message_iter_recurse(&dict, &variant);
-                    DAF_SAFE_ASSERT_BREAK(dbus_message_iter_get_arg_type(&variant) == DBUS_TYPE_ARRAY);
-
-                    // open variant array (variant type is string)
-                    DBusMessageIter variantArray;
-                    dbus_message_iter_recurse(&variant, &variantArray);
-                    DAF_SAFE_ASSERT_BREAK(dbus_message_iter_get_arg_type(&variantArray) == DBUS_TYPE_STRING);
-
-                    const char* value = nullptr;
-                    dbus_message_iter_get_basic(&variantArray, &value);
-
-                    // and finally we have our dear value, just make sure it is local
-                    DAF_SAFE_ASSERT_BREAK(value != nullptr);
-
-                    if (const char* const localvalue = std::strstr(value, "file:///"))
-                    {
-                        if (char* const decodedvalue = strdup(localvalue + 7))
-                        {
-                            for (char* s = decodedvalue; (s = std::strchr(s, '%')) != nullptr; ++s)
-                            {
-                                if (! isHexChar(s[1]) || ! isHexChar(s[2]))
-                                    continue;
-
-                                const int decodedNum = toHexChar(s[1]) * 0x10 + toHexChar(s[2]);
-
-                                char replacementChar;
-                                switch (decodedNum)
-                                {
-                                case 0x20: replacementChar = ' '; break;
-                                case 0x22: replacementChar = '\"'; break;
-                                case 0x23: replacementChar = '#'; break;
-                                case 0x25: replacementChar = '%'; break;
-                                case 0x3c: replacementChar = '<'; break;
-                                case 0x3e: replacementChar = '>'; break;
-                                case 0x5b: replacementChar = '['; break;
-                                case 0x5c: replacementChar = '\\'; break;
-                                case 0x5d: replacementChar = ']'; break;
-                                case 0x5e: replacementChar = '^'; break;
-                                case 0x60: replacementChar = '`'; break;
-                                case 0x7b: replacementChar = '{'; break;
-                                case 0x7c: replacementChar = '|'; break;
-                                case 0x7d: replacementChar = '}'; break;
-                                case 0x7e: replacementChar = '~'; break;
-                                default: continue;
-                                }
-
-                                s[0] = replacementChar;
-                                std::memmove(s + 1, s + 3, std::strlen(s) - 2);
-                            }
-
-                            handle->selectedFile = decodedvalue;
-                        }
-                    }
-
-                } while(false);
-
-                if (handle->selectedFile == nullptr)
+            case DBUS_MESSAGE_TYPE_ERROR:
+                // the portal did not take the call, so no dialog is coming
+                if (dbus_message_get_reply_serial(msg) == handle->dbusCallSerial)
                     handle->selectedFile = kSelectedFileCancelled;
+                break;
+
+            case DBUS_MESSAGE_TYPE_SIGNAL:
+                // only the Response to this dialog's request
+                if (dbus_message_is_signal(msg, "org.freedesktop.portal.Request", "Response"))
+                {
+                    const char* const path = dbus_message_get_path(msg);
+
+                    if (path != nullptr && (handle->dbusRequestPath == path
+                                            || (handle->dbusReturnedPath.isNotEmpty() && handle->dbusReturnedPath == path)))
+                    {
+                        char* const file = portalResponseFile(msg);
+                        handle->selectedFile = file != nullptr ? file : kSelectedFileCancelled;
+                    }
+                }
+                break;
             }
 
             dbus_message_unref(msg);
