@@ -488,6 +488,9 @@ endif
 ifneq (,$(filter-out auto x11 wayland both,$(DGL_BACKEND)))
 $(error DGL_BACKEND must be auto, x11, wayland or both, not '$(DGL_BACKEND)')
 endif
+# A plugin Makefile can set DGL_BACKEND itself and then builds DGL through a recursive make (see Makefile.plugins.mk),
+# which has to see it too: a value set in a Makefile reaches a sub-make only when exported.
+export DGL_BACKEND
 ifeq ($(HAIKU_OR_MACOS_OR_WASM_OR_WINDOWS),true)
 ifeq ($(DGL_BACKEND),both)
 $(error DGL_BACKEND=both is only for Linux and other X11/Wayland systems)
