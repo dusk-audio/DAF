@@ -50,9 +50,10 @@ public:
                const DGL_NAMESPACE::Application::Type appType = DGL_NAMESPACE::Application::kTypeAuto,
                const uint32_t bgColor = 0,
                const uint32_t fgColor = 0xffffffff,
-               const char* const appClassName = nullptr)
+               const char* const appClassName = nullptr,
+               const DGL_NAMESPACE::Application::WindowSystem appWindowSystem = DAF_UI_WINDOW_SYSTEM)
         : ui(nullptr),
-          uiData(new UI::PrivateData(appClassName, appType))
+          uiData(new UI::PrivateData(appClassName, appType, appWindowSystem))
     {
         uiData->sampleRate = sampleRate;
         uiData->bundlePath = bundlePath != nullptr ? strdup(bundlePath) : nullptr;

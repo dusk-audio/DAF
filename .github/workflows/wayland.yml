@@ -432,13 +432,16 @@ jobs:
     # X11 parent a Linux host embeds a UI in, so each format has to refuse the embed then, for that reason and no
     # other. With an X server as well the same embed has to succeed, which shows the harness tells the two apart.
     # LV2 is left out: its UI needs the plugin instance, which the harness does not make.
+    # CLAP offers a floating Wayland window as well, which has to open wherever Weston runs, X server or not, and
+    # be refused at create() under Xvfb alone, for a host to fall back to X11.
     - name: Check that each plugin format embeds its UI on X11 and refuses it on Wayland
       env:
         LIBGL_ALWAYS_SOFTWARE: 1
       run: |
         set -o pipefail
         g++ -std=c++11 -Wall -Wextra -Werror -Idaf/src tests/plugin-embed-host.cpp -o build/plugin-embed-host -ldl -lX11
-        plugins=(vst2=bin/d_meters-vst.so vst3=$(echo bin/d_meters.vst3/Contents/*/d_meters.so) clap=bin/d_meters.clap)
+        plugins=(vst2=bin/d_meters-vst.so vst3=$(echo bin/d_meters.vst3/Contents/*/d_meters.so) clap=bin/d_meters.clap
+                 clap-wayland=bin/d_meters.clap)
         env -u DISPLAY tests/headless-wayland.sh ./build/plugin-embed-host refused "${plugins[@]}" 2>&1 \
           | tee embed-refused.log
         refusals=$(grep -c 'Cannot embed the UI, there is no X server' embed-refused.log || true)
@@ -446,6 +449,11 @@ jobs:
           || { echo "::error::expected 3 plugin formats to refuse for want of an X server, $refusals did"; exit 1; }
         xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" \
           tests/headless-wayland.sh ./build/plugin-embed-host embedded "${plugins[@]}"
+        env -u WAYLAND_DISPLAY xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" \
+          ./build/plugin-embed-host embedded clap=bin/d_meters.clap clap-wayland=bin/d_meters.clap 2>&1 \
+          | tee embed-x11-only.log
+        grep -q 'the application asked for Wayland, but Wayland cannot be used here' embed-x11-only.log \
+          || { echo "::error::the CLAP UI did not refuse Wayland for want of a compositor"; exit 1; }
     # The vendored core protocol defines the wl_*_interface objects libwayland-client exports; a plugin exporting them
     # would stand in for the library's own in a host that loads it RTLD_GLOBAL. A pragma hides them, independent of
     # the -fvisibility=hidden a debug build leaves out, so check a debug build as well. It rebuilds DGL, so it comes last.

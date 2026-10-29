@@ -92,10 +92,11 @@
  * CLAP_WINDOW_API_WAYLAND as an extra floating-only API there, but an X11-built DGL has no
  * wl_surface to hand over: that would be advertising an API it cannot honour.
  *
- * A DGL_BACKEND=both build has both compiled in, and advertises X11 alone as well: it opens a
- * plugin UI's world on X11 whenever an X server is reachable (see dgl/src/pugl-dispatch.hpp), which
- * is what the embedding API needs. Offering CLAP_WINDOW_API_WAYLAND there would take creating the
- * world on whichever backend the host's create() asked for, which DGL cannot be told yet.
+ * A DGL_BACKEND=both build has both compiled in, and advertises both: X11 first, embedded or floating,
+ * and CLAP_WINDOW_API_WAYLAND for a floating window. For the X11 API a plugin UI's world follows the
+ * module rule, X11 whenever an X server is reachable (see dgl/src/pugl-dispatch.hpp), which is what the
+ * embedding API needs. For the Wayland API the UI asks for a world on Wayland (Application::WindowSystem),
+ * and create() fails where Wayland cannot be used, so that the host can fall back to X11.
  *
  * HAVE_X11 and HAVE_WAYLAND reach this file through DGL_FLAGS, which Makefile.plugins.mk folds into
  * BASE_FLAGS (and which cmake/DAF-plugin.cmake exposes via dgl-system-libs-definitions), so the
@@ -311,7 +312,8 @@ public:
           #if DAF_CLAP_USING_HOST_TIMER
            const clap_host_timer_support_t* const hostTimer,
           #endif
-           const bool isFloating)
+           const bool isFloating,
+           const DGL_NAMESPACE::Application::WindowSystem windowSystem)
         : fPlugin(plugin),
          #if DAF_PLUGIN_WANT_STATE
           fPluginEventQueue(eventQueue),
@@ -334,6 +336,7 @@ public:
           fCallbackRegistered(false),
          #endif
           fIsFloating(isFloating),
+          fWindowSystem(windowSystem),
           fFloatingWindowShown(false),
           fScaleFactor(0.0),
           fParentWindow(0),
@@ -578,7 +581,7 @@ public:
 
         DAF_SAFE_ASSERT_RETURN(window != nullptr, false);
 
-        // NOTE: on a Wayland build this is effectively a no-op that reports success.
+        // NOTE: for a window on Wayland this is effectively a no-op that reports success.
         //
         // clap_window_t has no wayland member (see clap/ext/gui.h) and, more fundamentally, the only
         // thing a compositor accepts as an xdg_toplevel parent is another toplevel of the *same*
@@ -755,6 +758,7 @@ private:
     ScopedPointer<UIExporter> fUI;
 
     const bool fIsFloating;
+    const DGL_NAMESPACE::Application::WindowSystem fWindowSystem;
     // true between a successful floating show() and the window going away again, whether that is a
     // host-side hide() or the user clicking the window's close button. Only ever set when floating.
     bool fFloatingWindowShown;
@@ -820,7 +824,11 @@ private:
                              d_nextBundlePath,
                              fPlugin.getInstancePointer(),
                              fScaleFactor,
-                             DGL_NAMESPACE::Application::kTypeClassic);
+                             DGL_NAMESPACE::Application::kTypeClassic,
+                             0,
+                             0xffffffff,
+                             nullptr,
+                             fWindowSystem);
 
        #if DAF_PLUGIN_WANT_PROGRAMS
         fUI->programLoaded(fCurrentProgram);
@@ -2559,7 +2567,8 @@ public:
     // gui
 
    #if DAF_PLUGIN_HAS_UI
-    bool createUI(const bool isFloating)
+    bool createUI(const bool isFloating,
+                  const DGL_NAMESPACE::Application::WindowSystem windowSystem = DAF_UI_WINDOW_SYSTEM)
     {
         const clap_host_gui_t* const hostGui = getHostExtension<clap_host_gui_t>(CLAP_EXT_GUI);
         DAF_SAFE_ASSERT_RETURN(hostGui != nullptr, false);
@@ -2569,11 +2578,23 @@ public:
         DAF_SAFE_ASSERT_RETURN(hostTimer != nullptr, false);
        #endif
 
+       #ifdef DGL_RUNTIME_BACKEND
+        // The UI is made when it is first shown, and on no windowing system at all should the one asked for be
+        // unusable. Find out now instead, while the host can still choose another window API.
+        if (windowSystem == DGL_NAMESPACE::Application::kWindowSystemWayland)
+        {
+            const DGL_NAMESPACE::Application probe(false, DGL_NAMESPACE::Application::kTypeClassic, windowSystem);
+            if (probe.getWindowSystem() != windowSystem)
+                return false;
+        }
+       #endif
+
         fUI = new ClapUI(fPlugin, this, fHost, fHostExtensions.params, hostGui,
                         #if DAF_CLAP_USING_HOST_TIMER
                          hostTimer,
                         #endif
-                         isFloating);
+                         isFloating,
+                         windowSystem);
         return true;
     }
 
@@ -3029,7 +3050,7 @@ static ScopedPointer<PluginExporter> sPlugin;
 
 #if DAF_PLUGIN_HAS_UI
 
-// The single window API this build is able to honour; see DAF_CLAP_GUI_FLOATING_ONLY above.
+// The window APIs this build is able to honour, the preferred one first; see DAF_CLAP_GUI_FLOATING_ONLY above.
 static const char* const kSupportedAPIs[] = {
 #if defined(DAF_OS_WINDOWS)
     CLAP_WINDOW_API_WIN32,
@@ -3037,10 +3058,21 @@ static const char* const kSupportedAPIs[] = {
     CLAP_WINDOW_API_COCOA,
 #elif DAF_CLAP_GUI_FLOATING_ONLY
     CLAP_WINDOW_API_WAYLAND,
+#elif defined(DGL_RUNTIME_BACKEND)
+    CLAP_WINDOW_API_X11,
+    CLAP_WINDOW_API_WAYLAND,
 #else
     CLAP_WINDOW_API_X11,
 #endif
 };
+
+#ifdef DGL_RUNTIME_BACKEND
+// Wayland cannot embed, so only its floating variant is real.
+static bool isWaylandApi(const char* const api)
+{
+    return api != nullptr && std::strcmp(api, CLAP_WINDOW_API_WAYLAND) == 0;
+}
+#endif
 
 // TODO DAF external UI
 static bool CLAP_ABI clap_gui_is_api_supported(const clap_plugin_t*, const char* const api, const bool is_floating)
@@ -3051,6 +3083,9 @@ static bool CLAP_ABI clap_gui_is_api_supported(const clap_plugin_t*, const char*
    #if DAF_CLAP_GUI_FLOATING_ONLY
     // Wayland cannot embed, so only the floating variant of the advertised API is real.
     if (! is_floating)
+        return false;
+   #elif defined(DGL_RUNTIME_BACKEND)
+    if (! is_floating && isWaylandApi(api))
         return false;
    #endif
 
@@ -3088,6 +3123,12 @@ static bool CLAP_ABI clap_gui_create(const clap_plugin_t* const plugin, const ch
         return instance->createUI(true);
 
     DAF_SAFE_ASSERT_RETURN(api != nullptr, false);
+
+   #ifdef DGL_RUNTIME_BACKEND
+    // the UI opens on the windowing system the host named, which for Wayland has to be asked for
+    if (isWaylandApi(api))
+        return is_floating && instance->createUI(true, DGL_NAMESPACE::Application::kWindowSystemWayland);
+   #endif
 
     for (size_t i=0; i<ARRAY_SIZE(kSupportedAPIs); ++i)
     {

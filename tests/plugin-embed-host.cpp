@@ -18,7 +18,10 @@
 // there is none, and a Wayland window cannot go into an X11 parent, so each format has to refuse the embed
 // then rather than report one it cannot do.
 //
-//   plugin-embed-host embedded|refused [vst2=PATH] [vst3=PATH] [clap=PATH]
+//   plugin-embed-host embedded|refused [vst2=PATH] [vst3=PATH] [clap=PATH] [clap-wayland=PATH]
+//
+// clap-wayland asks the CLAP build for a floating window on Wayland instead, which has to open when
+// WAYLAND_DISPLAY names a compositor and be refused when it names none.
 //
 // With DISPLAY set the parent is a real window on that X server, otherwise a made-up id, which a plugin has
 // to refuse before it uses it. Exits 1 when any format answers otherwise than expected. Linux only, built
@@ -292,7 +295,13 @@ static const void* CLAP_ABI clapHostGetExtension(const clap_host_t*, const char*
     return nullptr;
 }
 
-static bool embedClap(const char* const path, const uintptr_t parent)
+struct ClapInstance {
+    const clap_plugin_entry_t* entry;
+    const clap_plugin_t* plugin;
+    const clap_plugin_gui_t* gui;
+};
+
+static ClapInstance loadClap(const char* const path)
 {
     void* const lib = dlopen(path, RTLD_NOW|RTLD_LOCAL);
     if (lib == nullptr)
@@ -329,7 +338,26 @@ static bool embedClap(const char* const path, const uintptr_t parent)
     }
 
     const clap_plugin_gui_t* const gui = static_cast<const clap_plugin_gui_t*>(plugin->get_extension(plugin, CLAP_EXT_GUI));
-    if (gui == nullptr || ! gui->create(plugin, CLAP_WINDOW_API_X11, false))
+    if (gui == nullptr)
+    {
+        fprintf(stderr, "CLAP: %s has no UI\n", path);
+        exit(2);
+    }
+
+    return { entry, plugin, gui };
+}
+
+static void unloadClap(const ClapInstance& clap)
+{
+    clap.plugin->destroy(clap.plugin);
+    clap.entry->deinit();
+}
+
+static bool embedClap(const char* const path, const uintptr_t parent)
+{
+    const ClapInstance clap = loadClap(path);
+
+    if (! clap.gui->create(clap.plugin, CLAP_WINDOW_API_X11, false))
     {
         fprintf(stderr, "CLAP: %s offers no embedded X11 UI\n", path);
         exit(2);
@@ -339,12 +367,42 @@ static bool embedClap(const char* const path, const uintptr_t parent)
     window.api = CLAP_WINDOW_API_X11;
     window.x11 = parent;
 
-    const bool embedded = gui->set_parent(plugin, &window);
+    const bool embedded = clap.gui->set_parent(clap.plugin, &window);
 
-    gui->destroy(plugin);
-    plugin->destroy(plugin);
-    entry->deinit();
+    clap.gui->destroy(clap.plugin);
+    unloadClap(clap);
     return embedded;
+}
+
+// The CLAP build of a DGL_BACKEND=both plugin offers a floating window on Wayland besides X11. Wayland cannot
+// embed, so it has to be offered floating only, and create() has to fail where there is no compositor to use,
+// for a host to try X11 instead. Returns whether the window opened.
+static bool floatClapOnWayland(const char* const path)
+{
+    const ClapInstance clap = loadClap(path);
+
+    if (! clap.gui->is_api_supported(clap.plugin, CLAP_WINDOW_API_WAYLAND, true)
+        || clap.gui->is_api_supported(clap.plugin, CLAP_WINDOW_API_WAYLAND, false)
+        || clap.gui->create(clap.plugin, CLAP_WINDOW_API_WAYLAND, false))
+    {
+        fprintf(stderr, "CLAP: %s does not offer a Wayland window as floating only\n", path);
+        exit(1);
+    }
+
+    bool opened = clap.gui->create(clap.plugin, CLAP_WINDOW_API_WAYLAND, true);
+
+    if (opened)
+    {
+        uint32_t width = 0, height = 0;
+        clap.gui->suggest_title(clap.plugin, "plugin-embed-host");
+        opened = clap.gui->show(clap.plugin)
+              && clap.gui->get_size(clap.plugin, &width, &height) && width != 0 && height != 0;
+        clap.gui->hide(clap.plugin);
+        clap.gui->destroy(clap.plugin);
+    }
+
+    unloadClap(clap);
+    return opened;
 }
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -354,7 +412,8 @@ int main(const int argc, char* argv[])
     const bool expectEmbedded = argc > 1 && std::strcmp(argv[1], "embedded") == 0;
     if (argc < 3 || (! expectEmbedded && std::strcmp(argv[1], "refused") != 0))
     {
-        fprintf(stderr, "usage: %s embedded|refused [vst2=PATH] [vst3=PATH] [clap=PATH]\n", argv[0]);
+        fprintf(stderr, "usage: %s embedded|refused [vst2=PATH] [vst3=PATH] [clap=PATH] [clap-wayland=PATH]\n",
+                argv[0]);
         return 2;
     }
 
@@ -383,6 +442,19 @@ int main(const int argc, char* argv[])
         {
             fprintf(stderr, "'%s' is not FORMAT=PATH\n", format);
             return 2;
+        }
+
+        if (std::strncmp(format, "clap-wayland=", 13) == 0)
+        {
+            const bool expectOpened = std::getenv("WAYLAND_DISPLAY") != nullptr;
+            const bool opened = floatClapOnWayland(path + 1);
+            const bool ok = opened == expectOpened;
+            printf("plugin-embed-host: clap %s a floating Wayland window%s\n",
+                   opened ? "opened" : "did not open",
+                   ok ? "" : opened ? ", which it should not have" : ", which it should have");
+            if (! ok)
+                status = 1;
+            continue;
         }
 
         bool embedded;

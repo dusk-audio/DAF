@@ -89,8 +89,9 @@ double getDesktopScaleFactor(uintptr_t parentWindowHandle);
 // --------------------------------------------------------------------------------------------------------------------
 // Plugin Application, will set class name based on plugin details
 
-// The Linux web view is an X11 window reparented into the UI's, so a standalone web view UI asks for X11
-// even where a program would otherwise take Wayland. A plugin UI tries X11 first anyway.
+// The windowing system a UI asks for unless its wrapper names one, see UIExporter. The Linux web view is an X11
+// window reparented into the UI's, so a standalone web view UI asks for X11 even where a program would otherwise
+// take Wayland. A plugin UI tries X11 first anyway.
 #if DAF_UI_USE_WEB_VIEW && DAF_UI_IS_STANDALONE
 # define DAF_UI_WINDOW_SYSTEM DGL_NAMESPACE::Application::kWindowSystemX11
 #else
@@ -100,8 +101,10 @@ double getDesktopScaleFactor(uintptr_t parentWindowHandle);
 class PluginApplication : public DGL_NAMESPACE::Application
 {
 public:
-    explicit PluginApplication(const char* className, const Application::Type type)
-        : DGL_NAMESPACE::Application(DAF_UI_IS_STANDALONE, type, DAF_UI_WINDOW_SYSTEM)
+    explicit PluginApplication(const char* className,
+                               const Application::Type type,
+                               const Application::WindowSystem windowSystem)
+        : DGL_NAMESPACE::Application(DAF_UI_IS_STANDALONE, type, windowSystem)
     {
        #if defined(__MOD_DEVICES__) || !defined(__EMSCRIPTEN__)
         if (className == nullptr)
@@ -414,8 +417,10 @@ struct UI::PrivateData {
     setSizeFunc     setSizeCallbackFunc;
     fileRequestFunc fileRequestCallbackFunc;
 
-    PrivateData(const char* const appClassName, const DGL_NAMESPACE::Application::Type appType) noexcept
-        : app(appClassName, appType),
+    PrivateData(const char* const appClassName,
+                const DGL_NAMESPACE::Application::Type appType,
+                const DGL_NAMESPACE::Application::WindowSystem appWindowSystem) noexcept
+        : app(appClassName, appType, appWindowSystem),
           window(nullptr),
          #if DAF_UI_USE_WEB_VIEW
           webview(nullptr),
