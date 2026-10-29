@@ -68,10 +68,12 @@ jobs:
         make -j ${{ env.JOBS }}
     - name: Build widget gallery
       run: make -C widgets/tests -j ${{ env.JOBS }}
+    # -noreset: a lone Xvfb resets whenever its last client disconnects, and refuses the odd connection made
+    # during the reset, which the Window tests' back-to-back windows run into
     - name: Run tests
       if: ${{ runner.os == 'Linux' }}
       run: |
-        xvfb-run make -C tests run
+        xvfb-run -s "-screen 0 1280x1024x24 -noreset" make -C tests run
     - name: ImGui modifier focus regression
       if: ${{ runner.os == 'Linux' }}
       env:
