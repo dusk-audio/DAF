@@ -189,7 +189,18 @@ UI::PrivateData* UI::PrivateData::s_nextPrivateData = nullptr;
 PluginWindow& UI::PrivateData::createNextWindow(UI* const ui, uint width, uint height)
 {
     UI::PrivateData* const uiData = s_nextPrivateData;
-    const double scaleFactor = d_isNotZero(uiData->scaleFactor) ? uiData->scaleFactor : getDesktopScaleFactor(uiData->winId);
+
+   #ifdef DGL_RUNTIME_BACKEND
+    // Xft.dpi describes the X server, so a window on Wayland follows its compositor's scale instead, as in
+    // a Wayland-only build, even where an X server is reachable too.
+    const bool askDesktop = uiData->app.isX11() || std::getenv("DAF_SCALE_FACTOR") != nullptr;
+   #else
+    const bool askDesktop = true;
+   #endif
+
+    const double scaleFactor = d_isNotZero(uiData->scaleFactor) ? uiData->scaleFactor
+                             : askDesktop ? getDesktopScaleFactor(uiData->winId)
+                             : 0.0;
 
     if (d_isNotZero(scaleFactor) && d_isNotEqual(scaleFactor, 1.0))
     {
