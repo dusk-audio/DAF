@@ -187,13 +187,12 @@ static constexpr int toHexChar(const char c) noexcept
 }
 
 // xdg-desktop-portal sends a request's Response to the caller alone, but the documentation asks a client to
-// subscribe to it all the same. Without an error to fill, the call does not wait for the bus to answer.
-static void addPortalResponseMatch(DBusConnection* const dbuscon, const char* const path)
+// subscribe to it all the same, before the call. That is every Response rather than one path, since a portal
+// older than handle_token names its request only in the reply; fileBrowserIdle picks this dialog's by path.
+// Without an error to fill, the call does not wait for the bus to answer.
+static void addPortalResponseMatch(DBusConnection* const dbuscon)
 {
-    String rule("type='signal',interface='org.freedesktop.portal.Request',member='Response',path='");
-    rule += path;
-    rule += "'";
-    dbus_bus_add_match(dbuscon, rule, nullptr);
+    dbus_bus_add_match(dbuscon, "type='signal',interface='org.freedesktop.portal.Request',member='Response'", nullptr);
 }
 #endif
 
@@ -771,8 +770,9 @@ FileBrowserHandle fileBrowserCreate(const bool isEmbed,
                     handle->dbusRequestPath += sender.replace('.', '_');
                     handle->dbusRequestPath += "/";
                     handle->dbusRequestPath += handleToken;
-                    addPortalResponseMatch(dbuscon, handle->dbusRequestPath);
                 }
+
+                addPortalResponseMatch(dbuscon);
 
                 dbus_message_append_args(msg,
                                          DBUS_TYPE_STRING, &windowIdStrPtr,
@@ -1032,10 +1032,7 @@ bool fileBrowserIdle(const FileBrowserHandle handle)
                     const char* path = nullptr;
                     if (dbus_message_get_args(msg, nullptr, DBUS_TYPE_OBJECT_PATH, &path, DBUS_TYPE_INVALID)
                         && handle->dbusRequestPath != path)
-                    {
                         handle->dbusReturnedPath = path;
-                        addPortalResponseMatch(dbuscon, path);
-                    }
                 }
                 break;
 
