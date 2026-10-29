@@ -223,6 +223,25 @@ static const char* puglEnvOrUnset(const char* const name)
     return value != nullptr && value[0] != '\0' ? value : "<unset>";
 }
 
+// A world on the one system that was asked for, or none: a failure to open it is final
+static PuglWorld* puglNewForcedWorld(const PuglWindowSystem system,
+                                     const PuglWorldType type,
+                                     const PuglWorldFlags flags,
+                                     const char* const forcedBy)
+{
+    // libwayland unsets WAYLAND_SOCKET when it takes the socket over, so the message below reports it as it was
+    char waylandSocket[32];
+    std::snprintf(waylandSocket, sizeof(waylandSocket), "%s", puglEnvOrUnset("WAYLAND_SOCKET"));
+
+    if (PuglWorld* const world = puglNewWorldOn(system, type, flags))
+        return world;
+
+    d_stderr2("DGL: %s, but %s cannot be used here (WAYLAND_DISPLAY=%s, WAYLAND_SOCKET=%s, DISPLAY=%s)",
+              forcedBy, system == kPuglWindowSystemX11 ? "X11" : "Wayland",
+              puglEnvOrUnset("WAYLAND_DISPLAY"), waylandSocket, puglEnvOrUnset("DISPLAY"));
+    return nullptr;
+}
+
 // The backend is chosen once, here, for the whole world:
 //  - For a program, DAF_WINDOW_BACKEND=x11 or =wayland forces that backend, and a failure to open it
 //    is final.
@@ -232,40 +251,34 @@ static const char* puglEnvOrUnset(const char* const name)
 //  - A module tries X11 first, whatever DAF_WINDOW_BACKEND says. Hosts embed plugin UIs through an X11
 //    window id in every format DAF supports, so an X11 server, XWayland included, is what a module
 //    needs whenever there is one.
+// An application that asks for a backend of its own goes through puglNewWorldOnSystem instead.
 PuglWorld* puglNewWorld(const PuglWorldType type, const PuglWorldFlags flags)
 {
-    PuglWindowSystem order[2] = { kPuglWindowSystemNone, kPuglWindowSystemNone };
-
-    const char* const requested = type == PUGL_PROGRAM ? std::getenv("DAF_WINDOW_BACKEND") : nullptr;
-    if (requested != nullptr)
+    if (const char* const requested = type == PUGL_PROGRAM ? std::getenv("DAF_WINDOW_BACKEND") : nullptr)
     {
         if (std::strcmp(requested, "x11") == 0)
-            order[0] = kPuglWindowSystemX11;
-        else if (std::strcmp(requested, "wayland") == 0)
-            order[0] = kPuglWindowSystemWayland;
-        else if (requested[0] != '\0')
+            return puglNewForcedWorld(kPuglWindowSystemX11, type, flags, "DAF_WINDOW_BACKEND=x11");
+        if (std::strcmp(requested, "wayland") == 0)
+            return puglNewForcedWorld(kPuglWindowSystemWayland, type, flags, "DAF_WINDOW_BACKEND=wayland");
+        if (requested[0] != '\0')
             d_stderr2("DGL: ignoring DAF_WINDOW_BACKEND=%s, expected x11 or wayland", requested);
     }
 
-    const bool forced = order[0] != kPuglWindowSystemNone;
+    const bool haveWayland = puglEnvIsSet("WAYLAND_DISPLAY") || puglEnvIsSet("WAYLAND_SOCKET");
+    PuglWindowSystem order[2];
 
-    if (! forced)
+    if (type == PUGL_MODULE)
     {
-        const bool haveWayland = puglEnvIsSet("WAYLAND_DISPLAY") || puglEnvIsSet("WAYLAND_SOCKET");
-
-        if (type == PUGL_MODULE)
-        {
-            order[0] = kPuglWindowSystemX11;
-            order[1] = haveWayland ? kPuglWindowSystemWayland : kPuglWindowSystemNone;
-        }
-        else
-        {
-            order[0] = haveWayland ? kPuglWindowSystemWayland : kPuglWindowSystemX11;
-            order[1] = haveWayland ? kPuglWindowSystemX11 : kPuglWindowSystemNone;
-        }
+        order[0] = kPuglWindowSystemX11;
+        order[1] = haveWayland ? kPuglWindowSystemWayland : kPuglWindowSystemNone;
+    }
+    else
+    {
+        order[0] = haveWayland ? kPuglWindowSystemWayland : kPuglWindowSystemX11;
+        order[1] = haveWayland ? kPuglWindowSystemX11 : kPuglWindowSystemNone;
     }
 
-    // libwayland unsets WAYLAND_SOCKET when it takes the socket over, so the messages below report it as it was
+    // libwayland unsets WAYLAND_SOCKET when it takes the socket over, so the message below reports it as it was
     char waylandSocket[32];
     std::snprintf(waylandSocket, sizeof(waylandSocket), "%s", puglEnvOrUnset("WAYLAND_SOCKET"));
 
@@ -277,18 +290,22 @@ PuglWorld* puglNewWorld(const PuglWorldType type, const PuglWorldFlags flags)
             return world;
     }
 
-    if (forced)
-        d_stderr2("DGL: DAF_WINDOW_BACKEND=%s, but %s cannot be used here (WAYLAND_DISPLAY=%s, WAYLAND_SOCKET=%s, "
-                  "DISPLAY=%s)",
-                  order[0] == kPuglWindowSystemX11 ? "x11" : "wayland",
-                  order[0] == kPuglWindowSystemX11 ? "X11" : "Wayland",
-                  puglEnvOrUnset("WAYLAND_DISPLAY"), waylandSocket, puglEnvOrUnset("DISPLAY"));
-    else
-        d_stderr2("DGL: no windowing system to open a window on, neither a Wayland compositor nor an X server "
-                  "could be reached (WAYLAND_DISPLAY=%s, WAYLAND_SOCKET=%s, DISPLAY=%s)",
-                  puglEnvOrUnset("WAYLAND_DISPLAY"), waylandSocket, puglEnvOrUnset("DISPLAY"));
+    d_stderr2("DGL: no windowing system to open a window on, neither a Wayland compositor nor an X server "
+              "could be reached (WAYLAND_DISPLAY=%s, WAYLAND_SOCKET=%s, DISPLAY=%s)",
+              puglEnvOrUnset("WAYLAND_DISPLAY"), waylandSocket, puglEnvOrUnset("DISPLAY"));
 
     return nullptr;
+}
+
+PuglWorld* puglNewWorldOnSystem(const PuglWorldType type, const PuglWorldFlags flags, const bool x11)
+{
+    const char* const environment = type == PUGL_PROGRAM ? std::getenv("DAF_WINDOW_BACKEND") : nullptr;
+    if (environment != nullptr && environment[0] != '\0' && std::strcmp(environment, x11 ? "x11" : "wayland") != 0)
+        d_stderr2("DGL: ignoring DAF_WINDOW_BACKEND=%s, the application asked for %s",
+                  environment, x11 ? "X11" : "Wayland");
+
+    return puglNewForcedWorld(x11 ? kPuglWindowSystemX11 : kPuglWindowSystemWayland, type, flags,
+                              x11 ? "the application asked for X11" : "the application asked for Wayland");
 }
 
 bool puglWorldIsX11(const PuglWorld* const world)

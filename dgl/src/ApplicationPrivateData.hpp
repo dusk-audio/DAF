@@ -84,7 +84,7 @@ struct Application::PrivateData {
     IdleCallbacks idleCallbacks;
 
     /** Constructor and destructor */
-    explicit PrivateData(bool standalone, Type type);
+    explicit PrivateData(bool standalone, Type type, WindowSystem windowSystem);
     ~PrivateData();
 
     /** Flag one window as shown, which increments @a visibleWindows.

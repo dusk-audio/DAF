@@ -354,8 +354,11 @@ jobs:
           || { echo "::error::RuntimeBackendWindow did not open its window on Wayland"; exit 1; }
         grep -q 'RuntimeBackendWindow: the file chosen in the portal reached the wayland window' tests.log \
           || { echo "::error::RuntimeBackendWindow did not get a file through the stand-in portal"; exit 1; }
+        grep -q 'RuntimeBackendWindow: an application asking for X11 got none, one asking for Wayland got wayland' tests.log \
+          || { echo "::error::an application asking for X11 should get nothing, and one asking for Wayland Wayland"; exit 1; }
     # With both servers reachable a program prefers Wayland and a module X11, DAF_WINDOW_BACKEND overrides the
-    # program's choice alone, and a compositor EGL cannot render on sends a program to X11. The expected
+    # program's choice alone, and a compositor EGL cannot render on sends a program to X11. An application that
+    # asks for a backend gets it whatever DAF_WINDOW_BACKEND says, and none where it cannot be used. The expected
     # backends are spelled out here, so that a rule changed in the tests and the code alike still shows up.
     # On an output of scale 2, a Wayland window has to follow it there and an X11 window has to keep its own.
     - name: Run the runtime backend tests with an X server and a compositor
@@ -380,12 +383,21 @@ jobs:
             exit 1
           fi
         }
+        # requested OVERRIDE X11 WAYLAND: what an application asking for each got, whichever the program took
+        requested() {
+          grep -q "an application asking for X11 got $2, one asking for Wayland got $3" RuntimeBackendWindow.log \
+            || { echo "::error::DAF_WINDOW_BACKEND='$1': an application asking for X11 should get $2, for Wayland $3"; exit 1; }
+        }
         check ''      x11     wayland
+        requested '' x11 wayland
         check x11     x11     x11
+        requested x11 x11 wayland
         check wayland x11     wayland
+        requested wayland x11 wayland
         check ''      x11     x11     __EGL_VENDOR_LIBRARY_FILENAMES=/nonexistent/egl-vendor.json
         grep -q 'DGL: cannot use Wayland, EGL cannot make' RuntimeBackend.log \
           || { echo "::error::RuntimeBackend did not report EGL as the reason it left Wayland"; exit 1; }
+        requested '' x11 none
         check ''      x11     wayland DAF_TEST_WAYLAND_SCALE=2
         check x11     x11     x11     DAF_TEST_WAYLAND_SCALE=2
     # A both build's plugin UIs open on X11 whenever there is an X server, so its turtle keeps declaring the
