@@ -23,8 +23,10 @@
 #include "runtime-backend.hpp"
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #define DAF_TEST_POINT_CPP
 #define DAF_TEST_WINDOW_CPP
@@ -39,6 +41,16 @@
 
 #ifndef DGL_RUNTIME_BACKEND
 # error This test is for DGL_BACKEND=both builds
+#endif
+
+#ifdef HAVE_DBUS
+# include <dbus/dbus.h>
+# include <dirent.h>
+# include <poll.h>
+# include <signal.h>
+# include <sys/prctl.h>
+# include <sys/wait.h>
+# include <unistd.h>
 #endif
 
 // ScopedGraphicsContext creates the renderer's drawing state, which lives with the renderers this test does
@@ -82,22 +94,251 @@ public:
         return world->impl->dataDevice != nullptr;
     }
 
+    bool fileSelected = false;
+    std::string selectedFile;
+
 protected:
     void onReshape(const uint width, const uint height) override
     {
         reshaped = true;
         Window::onReshape(width, height);
     }
+
+    void onFileSelected(const char* const filename) override
+    {
+        fileSelected = true;
+        selectedFile = filename != nullptr ? filename : "";
+    }
 };
 
 END_NAMESPACE_DAF
+
+#ifdef HAVE_DBUS
+// --------------------------------------------------------------------------------------------------------------------
+// A session bus of the test's own, and the desktop portal's FileChooser on it
+
+// Its configuration names no service directories, so nothing on it can be activated, the desktop's own
+// portal included.
+class PrivateSessionBus
+{
+public:
+    std::string address;
+
+    ~PrivateSessionBus()
+    {
+        if (pid > 0)
+        {
+            kill(pid, SIGTERM);
+            waitpid(pid, nullptr, 0);
+        }
+
+        if (dir.empty())
+            return;
+
+        if (DIR* const entries = opendir(dir.c_str()))
+        {
+            while (const dirent* const entry = readdir(entries))
+                if (std::strcmp(entry->d_name, ".") != 0 && std::strcmp(entry->d_name, "..") != 0)
+                    unlink((dir + "/" + entry->d_name).c_str());
+            closedir(entries);
+        }
+        rmdir(dir.c_str());
+    }
+
+    // false where there is no dbus-daemon to run
+    bool start()
+    {
+        const char* const tmpdir = std::getenv("TMPDIR");
+        std::string pattern = std::string(tmpdir != nullptr && tmpdir[0] != '\0' ? tmpdir : "/tmp")
+                            + "/daf-test-bus-XXXXXX";
+        if (mkdtemp(&pattern[0]) == nullptr)
+            return false;
+        dir = pattern;
+
+        const std::string config = dir + "/bus.conf";
+        if (FILE* const file = std::fopen(config.c_str(), "w"))
+        {
+            std::fprintf(file,
+                "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\"\n"
+                " \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n"
+                "<busconfig>\n"
+                "  <type>session</type>\n"
+                "  <listen>unix:dir=%s</listen>\n"
+                "  <auth>EXTERNAL</auth>\n"
+                "  <policy context=\"default\">\n"
+                "    <allow send_destination=\"*\" eavesdrop=\"true\"/>\n"
+                "    <allow eavesdrop=\"true\"/>\n"
+                "    <allow own=\"*\"/>\n"
+                "  </policy>\n"
+                "</busconfig>\n", dir.c_str());
+            std::fclose(file);
+        }
+        else
+        {
+            return false;
+        }
+
+        int fds[2];
+        if (pipe(fds) != 0)
+            return false;
+
+        pid = fork();
+        if (pid == 0)
+        {
+            // the bus goes with the test, however the test ends
+            prctl(PR_SET_PDEATHSIG, SIGTERM);
+            close(fds[0]);
+            const std::string configArg = "--config-file=" + config;
+            const std::string addressArg = "--print-address=" + std::to_string(fds[1]);
+            execlp("dbus-daemon", "dbus-daemon", "--nofork", "--nopidfile", configArg.c_str(), addressArg.c_str(),
+                   static_cast<char*>(nullptr));
+            _exit(127);
+        }
+        close(fds[1]);
+
+        // the address, on a line of its own
+        pollfd readable = { fds[0], POLLIN, 0 };
+        char buffer[512];
+        size_t length = 0;
+        while (length < sizeof(buffer) - 1 && poll(&readable, 1, 5000) > 0)
+        {
+            const ssize_t got = read(fds[0], buffer + length, sizeof(buffer) - 1 - length);
+            if (got <= 0)
+                break;
+            length += static_cast<size_t>(got);
+            if (buffer[length - 1] == '\n')
+                break;
+        }
+        close(fds[0]);
+
+        while (length != 0 && (buffer[length - 1] == '\n' || buffer[length - 1] == '\r'))
+            --length;
+        address.assign(buffer, length);
+        return ! address.empty();
+    }
+
+private:
+    pid_t pid = -1;
+    std::string dir;
+};
+
+static const char kChosenUri[] = "file:///daf%20runtime%20backend/chosen%5Bfile%5D.txt";
+static const char kChosenPath[] = "/daf runtime backend/chosen[file].txt";
+
+// The portal's FileChooser as far as OpenFile goes: it answers with a Response that picks kChosenUri, sent to the
+// caller alone, as xdg-desktop-portal sends it.
+//
+// It leaves out the reply to OpenFile, which carries the request handle that DGL has no use for. A real portal
+// answers the call at once and the Response only after the user has chosen, so the two never reach DGL together;
+// sent back to back here, they could, and fileBrowserIdle hands everything it reads after the first message to
+// dbus_connection_dispatch, which drops a signal nothing handles.
+class StandInFileChooser
+{
+public:
+    int openFileCalls = 0;
+    std::string parentWindow;
+
+    ~StandInFileChooser()
+    {
+        if (connection == nullptr)
+            return;
+        dbus_connection_close(connection);
+        dbus_connection_unref(connection);
+    }
+
+    bool start(const char* const address)
+    {
+        DBusError error;
+        dbus_error_init(&error);
+
+        connection = dbus_connection_open_private(address, &error);
+        if (connection == nullptr)
+        {
+            dbus_error_free(&error);
+            return false;
+        }
+        dbus_connection_set_exit_on_disconnect(connection, false);
+
+        const bool owned = dbus_bus_register(connection, &error)
+                        && dbus_bus_request_name(connection, "org.freedesktop.portal.Desktop",
+                                                 DBUS_NAME_FLAG_DO_NOT_QUEUE, &error)
+                           == DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER;
+        dbus_error_free(&error);
+        return owned;
+    }
+
+    void serve()
+    {
+        dbus_connection_read_write(connection, 0);
+
+        while (DBusMessage* const message = dbus_connection_pop_message(connection))
+        {
+            if (dbus_message_is_method_call(message, "org.freedesktop.portal.FileChooser", "OpenFile"))
+                respond(message);
+            dbus_message_unref(message);
+        }
+
+        dbus_connection_flush(connection);
+    }
+
+private:
+    DBusConnection* connection = nullptr;
+
+    void respond(DBusMessage* const call)
+    {
+        ++openFileCalls;
+
+        const char* parent = nullptr;
+        const char* title = nullptr;
+        if (dbus_message_get_args(call, nullptr, DBUS_TYPE_STRING, &parent, DBUS_TYPE_STRING, &title,
+                                  DBUS_TYPE_INVALID))
+            parentWindow = parent;
+
+        DBusMessage* const response = dbus_message_new_signal("/org/freedesktop/portal/desktop/request/daf/test",
+                                                              "org.freedesktop.portal.Request", "Response");
+        if (response == nullptr)
+            return;
+
+        dbus_message_set_destination(response, dbus_message_get_sender(call));
+
+        // (u response, a{sv} results), with results["uris"] = ["file://..."]
+        DBusMessageIter args, results, entry, variant, uris;
+        dbus_message_iter_init_append(response, &args);
+        const dbus_uint32_t success = 0;
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &success);
+        dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY, "{sv}", &results);
+        dbus_message_iter_open_container(&results, DBUS_TYPE_DICT_ENTRY, nullptr, &entry);
+        const char* const key = "uris";
+        dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
+        dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "as", &variant);
+        dbus_message_iter_open_container(&variant, DBUS_TYPE_ARRAY, "s", &uris);
+        const char* const uri = kChosenUri;
+        dbus_message_iter_append_basic(&uris, DBUS_TYPE_STRING, &uri);
+        dbus_message_iter_close_container(&variant, &uris);
+        dbus_message_iter_close_container(&entry, &variant);
+        dbus_message_iter_close_container(&results, &entry);
+        dbus_message_iter_close_container(&args, &results);
+
+        dbus_connection_send(connection, response, nullptr);
+        dbus_message_unref(response);
+    }
+};
+#endif
 
 // --------------------------------------------------------------------------------------------------------------------
 
 int main()
 {
-    // The file browser below must not reach the session's portal, which would put its dialog on the desktop.
+    // The file browser below must not reach the session's portal, which would put its dialog on the desktop: it
+    // gets a bus of the test's own, or none.
+   #ifdef HAVE_DBUS
+    PrivateSessionBus bus;
+    const bool haveBus = bus.start();
+    setenv("DBUS_SESSION_BUS_ADDRESS",
+           haveBus ? bus.address.c_str() : "unix:path=/nonexistent/daf-runtime-backend-test", 1);
+   #else
     setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/daf-runtime-backend-test", 1);
+   #endif
 
     const Expected expected = expectedBackend(true);
     DAF_ASSERT_NOT_EQUAL(expected, kInvalid, "DAF_TEST_EXPECT_BACKEND is x11, wayland or none");
@@ -142,6 +383,43 @@ int main()
     fileBrowserOptions.title = "DAF runtime backend test";
     DAF_ASSERT_EQUAL(win.openFileBrowser(fileBrowserOptions), expected == kX11,
                      "only an X11 window falls back to the X11 file dialog");
+
+   #ifdef HAVE_DBUS
+    // With a portal, a window of either backend gets its dialog, and the file chosen there. The portal is told
+    // which X11 window to put it over, and of a Wayland window nothing, as in a Wayland-only build.
+    if (haveBus)
+    {
+        StandInFileChooser portal;
+        DAF_ASSERT_EQUAL(portal.start(bus.address.c_str()), true, "the stand-in portal takes its name on the bus");
+        DAF_ASSERT_EQUAL(win.openFileBrowser(fileBrowserOptions), true, "the window opens the portal's file dialog");
+
+        const std::chrono::steady_clock::time_point portalDeadline
+            = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (! win.fileSelected && std::chrono::steady_clock::now() < portalDeadline)
+        {
+            portal.serve();
+            app.idle();
+        }
+
+        DAF_ASSERT_EQUAL(portal.openFileCalls, 1, "the portal is asked for a file once");
+        if (expected == kX11)
+        {
+            DAF_ASSERT_EQUAL(portal.parentWindow.compare(0, 4, "x11:"), 0, "an X11 window is the dialog's x11: parent");
+        }
+        else
+        {
+            DAF_ASSERT_EQUAL(portal.parentWindow.empty(), true, "a Wayland window gives the portal no parent");
+        }
+        DAF_ASSERT_EQUAL(win.fileSelected, true, "the window hears back about the file chosen in the portal");
+        DAF_ASSERT_EQUAL(win.selectedFile == kChosenPath, true, "the window gets the path of the portal's file URI");
+
+        d_stdout("RuntimeBackendWindow: the file chosen in the portal reached the %s window", backendName(expected));
+    }
+    else
+    {
+        d_stdout("RuntimeBackendWindow: no dbus-daemon to run a portal on, the portal's file dialog is not checked");
+    }
+   #endif
 
     // the web view is an X11 window reparented into this one, which a Wayland window cannot host
     if (expected == kWayland)

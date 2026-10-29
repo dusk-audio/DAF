@@ -211,8 +211,11 @@ fails the test rather than turn it into a check that nothing opens.
   listens on and a `WAYLAND_SOCKET` to a stand-in compositor without `xdg_wm_base`, and checks
   that a program falls back to X11, or opens nothing when Wayland was forced.
 - `tests/RuntimeBackendWindow.cpp` opens a DGL `Window` and checks the per-backend code above pugl:
-  the portal parent handle, the file browser (the X11 dialog for an X11 window only), the web view
-  (none for a Wayland window), the clipboard paste loop, and following pugl's scale factor.
+  the portal parent handle, the file browser, the web view (none for a Wayland window), the
+  clipboard paste loop, and following pugl's scale factor. Without a portal, only an X11 window gets
+  the X11 dialog. Then a stand-in portal on a private session bus answers the dialog of either
+  backend, and the window has to get the file it chose, with an `x11:` parent named for an X11
+  window and none for a Wayland one. Where no `dbus-daemon` can be started, it says so and skips that.
 
 `tests/Wayland.cpp` and `tests/X11Focus.cpp` drive each backend's half of a `both` build directly.
 
