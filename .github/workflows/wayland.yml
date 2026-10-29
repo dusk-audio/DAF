@@ -5,7 +5,8 @@ name: wayland
 # The other CI here (build.yml, cmake.yml) always runs on machines that have the X11
 # development files installed, so it only ever exercises the X11 arm of the DGL backend selection.
 # The jobs below cover the two things that arm hides:
-#   - wayland-only          the Wayland backend actually compiles when X11 dev files are absent
+#   - wayland-only          the Wayland backend actually compiles when X11 dev files are absent,
+#                           and its tests pass against a headless Weston
 #   - wayland-x11-regression  a dual-stack machine still picks X11, exactly as it did before
 # plus two conformance gates that load the built plugins instead of only compiling them:
 #   - clap-validation       CLAP, which upstream does not run at all
@@ -67,6 +68,12 @@ jobs:
     # Debian/Ubuntu Cairo development files cannot exist without X11 development files. HAVE_CAIRO is
     # therefore expected to be No here, which is also what ships: the Cairo UI variant is not built for
     # any product, so it is not covered anywhere in CI.
+    #
+    # And what the unit tests run against at the end, installed now because nothing can be installed
+    # once libx11-dev has been forced out below:
+    #   weston            the headless compositor, drawing with pixman (no GPU)
+    #   libgl1-mesa-dri   llvmpipe, Mesa's software rasterizer
+    #   libegl-mesa0      Mesa's EGL vendor library, which glvnd's libEGL dispatches to
     - name: Set up dependencies
       env:
         DEBIAN_FRONTEND: noninteractive
@@ -74,7 +81,8 @@ jobs:
         apt-get update -qq
         apt-get install -yq --no-install-recommends \
           build-essential ca-certificates git pkg-config \
-          libegl-dev libgl-dev libwayland-dev libxkbcommon-dev
+          libegl-dev libgl-dev libwayland-dev libxkbcommon-dev \
+          libegl-mesa0 libgl1-mesa-dri weston
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
@@ -115,6 +123,7 @@ jobs:
         assert 'HAVE_DGL: Yes'
         assert 'HAVE_STUB: Yes'
         assert 'DGL_BACKEND_WAYLAND: Yes'
+        assert 'DGL_RUNTIME_BACKEND: No'
     - name: Build DGL
       run: |
         make -C dgl -j$(nproc)
@@ -180,6 +189,17 @@ jobs:
         grep -rq 'ui:idleInterface' bin/d_meters.lv2/*.ttl \
           || { echo "::error::the UI no longer declares ui:idleInterface"; status=1; }
         exit $status
+    # Now that the windows have a compositor to open on, the whole unit test suite, Window tests
+    # included, not only the Wayland unit test above. The suite links the DGL libraries built with the
+    # file browser and web view, as the top-level Makefile builds them, hence the rebuild; the steps
+    # above wanted them without.
+    - name: Run the unit tests under a headless Wayland compositor
+      env:
+        LIBGL_ALWAYS_SOFTWARE: 1
+      run: |
+        make -C dgl clean
+        make -C dgl -j"$(nproc)" USE_FILE_BROWSER=true USE_WEB_VIEW=true
+        env -u DISPLAY tests/headless-wayland.sh make -C tests run -j"$(nproc)"
 
   wayland-x11-regression:
     runs-on: ubuntu-latest
@@ -200,10 +220,11 @@ jobs:
           grep -qx "$1" features.txt || { echo "::error::expected 'make features' to report '$1'"; exit 1; }
         }
         # Both stacks are present, and X11 must win. DGL_BACKEND_WAYLAND is the gate that decides whether
-        # any Wayland cflags or libs enter the build at all.
+        # any Wayland cflags or libs enter the build at all, and the runtime backend is opt-in only.
         assert 'HAVE_X11: Yes'
         assert 'HAVE_WAYLAND: Yes'
         assert 'DGL_BACKEND_WAYLAND: No'
+        assert 'DGL_RUNTIME_BACKEND: No'
     - name: Build DGL
       run: |
         make -C dgl -j$(nproc)
