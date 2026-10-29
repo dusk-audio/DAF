@@ -160,8 +160,11 @@ build answers with a constant, so the test folds away there. The places that nee
   no X11 connection: the portal gets no parent and centres the dialog, as in a Wayland-only build,
   and without a portal the call fails instead of falling back to the X11-only libsofd dialog. A
   Wayland view gets no web view either, which a Wayland-only build cannot create.
-- `DafUI.cpp`: a plugin UI that finds no X server reports an unknown desktop scale factor (0), as
-  the Wayland-only build does, since its world will open on Wayland.
+- `DafUI.cpp`: a UI whose world is on Wayland takes no desktop scale factor (0) and follows the
+  scale its compositor gives the window, as in a Wayland-only build, without reading `Xft.dpi` from
+  an X server that may be reachable too; `DAF_SCALE_FACTOR` and a scale from the host still apply.
+  `getDesktopScaleFactor` reports 0 as well where no X server answers, which is what the CLAP
+  wrapper's size estimate sees before any UI exists. A web view UI gets no web view on Wayland.
 
 ## OpenGL
 
