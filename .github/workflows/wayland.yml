@@ -291,7 +291,7 @@ jobs:
         sudo apt-get install -yq \
           libcairo2-dev libegl-dev libgl-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev \
           libxkbcommon-dev libxrandr-dev \
-          libegl-mesa0 libgl1-mesa-dri weston xvfb
+          libegl-mesa0 libgl1-mesa-dri weston xvfb dbus
     - name: Show detected features
       run: |
         make features | tee features.txt
@@ -334,9 +334,12 @@ jobs:
           || { echo "::error::RuntimeBackend did not open its window on Wayland"; exit 1; }
         grep -q 'RuntimeBackendWindow: window on wayland' tests.log \
           || { echo "::error::RuntimeBackendWindow did not open its window on Wayland"; exit 1; }
+        grep -q 'RuntimeBackendWindow: the file chosen in the portal reached the wayland window' tests.log \
+          || { echo "::error::RuntimeBackendWindow did not get a file through the stand-in portal"; exit 1; }
     # With both servers reachable a program prefers Wayland and a module X11, DAF_WINDOW_BACKEND overrides the
     # program's choice alone, and a compositor EGL cannot render on sends a program to X11. The expected
     # backends are spelled out here, so that a rule changed in the tests and the code alike still shows up.
+    # On an output of scale 2, a Wayland window has to follow it there and an X11 window has to keep its own.
     - name: Run the runtime backend tests with an X server and a compositor
       env:
         LIBGL_ALWAYS_SOFTWARE: 1
@@ -365,6 +368,8 @@ jobs:
         check ''      x11     x11     __EGL_VENDOR_LIBRARY_FILENAMES=/nonexistent/egl-vendor.json
         grep -q 'DGL: cannot use Wayland, EGL cannot make' RuntimeBackend.log \
           || { echo "::error::RuntimeBackend did not report EGL as the reason it left Wayland"; exit 1; }
+        check ''      x11     wayland DAF_TEST_WAYLAND_SCALE=2
+        check x11     x11     x11     DAF_TEST_WAYLAND_SCALE=2
     # A both build's plugin UIs open on X11 whenever there is an X server, so its turtle keeps declaring the
     # X11 UI class every embedding host uses, exactly as an X11 build does.
     - name: Verify the LV2 turtle still declares an X11 UI
@@ -431,7 +436,7 @@ jobs:
         apt-get install -yq --no-install-recommends \
           build-essential ca-certificates git pkg-config \
           libegl-dev libgl-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev libxkbcommon-dev libxrandr-dev \
-          libgl1-mesa-dri xauth xvfb
+          libgl1-mesa-dri xauth xvfb dbus-daemon
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
@@ -473,6 +478,8 @@ jobs:
           || { echo "::error::RuntimeBackend did not open its window on X11"; exit 1; }
         grep -q 'RuntimeBackendWindow: window on x11' tests.log \
           || { echo "::error::RuntimeBackendWindow did not open its window on X11"; exit 1; }
+        grep -q 'RuntimeBackendWindow: the file chosen in the portal reached the x11 window' tests.log \
+          || { echo "::error::RuntimeBackendWindow did not get a file through the stand-in portal"; exit 1; }
     # With a compositor announced, a program tries Wayland first, cannot load the libraries, and opens on X11;
     # forced onto Wayland, it opens nothing. Either way it says which library was missing.
     - name: Try Wayland without the Wayland libraries

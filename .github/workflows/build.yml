@@ -140,13 +140,14 @@ jobs:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
-    # The build job's packages, plus the Wayland client libraries and EGL the second backend needs
+    # The build job's packages, plus the Wayland client libraries and EGL the second backend needs, and the
+    # dbus-daemon RuntimeBackendWindow runs a stand-in file chooser portal on
     - name: Set up dependencies
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
         sudo apt-get update -qq
-        sudo apt-get install -yq libasound2-dev libcairo2-dev libdbus-1-dev libegl-dev libgl1-mesa-dev liblo-dev libpulse-dev libsdl2-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev libxkbcommon-dev libxrandr-dev xvfb
+        sudo apt-get install -yq dbus libasound2-dev libcairo2-dev libdbus-1-dev libegl-dev libgl1-mesa-dev liblo-dev libpulse-dev libsdl2-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev libxkbcommon-dev libxrandr-dev xvfb
     - name: Show detected features
       run: |
         make features | tee features.txt
@@ -174,3 +175,5 @@ jobs:
           || { echo "::error::RuntimeBackend did not open its window on X11"; exit 1; }
         grep -q 'RuntimeBackendWindow: window on x11' tests.log \
           || { echo "::error::RuntimeBackendWindow did not open its window on X11"; exit 1; }
+        grep -q 'RuntimeBackendWindow: the file chosen in the portal reached the x11 window' tests.log \
+          || { echo "::error::RuntimeBackendWindow did not get a file through the stand-in portal"; exit 1; }
