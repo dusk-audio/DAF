@@ -13,19 +13,24 @@
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-// A DGL_BACKEND=both build chooses X11 or Wayland when it opens a world. This test works out from
-// the environment which one the documented rule picks (dgl/src/runtime-backend.md), checks that pugl
-// picked the same for a program and for a module, then opens an OpenGL window on it, draws, checks
-// the frame reached the display server, resizes it and sends it an event.
+// A DGL_BACKEND=both build chooses X11 or Wayland when it opens a world. This test works out which one
+// the documented rule picks (dgl/src/runtime-backend.md, and runtime-backend.hpp for how), checks that
+// pugl picked the same for a program and for a module, then opens an OpenGL window on it, draws, checks
+// the frame reached the display server, resizes it and sends it an event. It opens a window in the
+// module's world as well while the program's is open, which with both servers up puts an X11 and a
+// Wayland window in one process.
+//
+// Last, it announces a Wayland compositor that cannot be used, first a WAYLAND_DISPLAY nothing listens
+// on, then a WAYLAND_SOCKET to a stand-in compositor without xdg_wm_base, and checks that a program
+// falls back to X11, or opens nothing when DAF_WINDOW_BACKEND=wayland or there is no X server.
 //
 // It runs wherever it is started: under Xvfb alone, under a headless Wayland compositor alone, with
-// both, and with DAF_WINDOW_BACKEND forcing either. The environment it reads is the contract: a set
-// DISPLAY means an X server that answers, a set WAYLAND_DISPLAY or WAYLAND_SOCKET a compositor that
-// does, and when the rule leaves no backend, opening the world has to fail. A forced Wayland with
-// WAYLAND_DISPLAY unset lets libwayland try wayland-0, so XDG_RUNTIME_DIR must not hold one then.
+// both, and with DAF_WINDOW_BACKEND forcing either. A forced Wayland with WAYLAND_DISPLAY unset lets
+// libwayland try wayland-0, so XDG_RUNTIME_DIR must not hold one then.
 
 #define DAF_TEST_NO_DGL
 #include "tests.hpp"
+#include "runtime-backend.hpp"
 
 #include "dgl/src/pugl.cpp"
 
@@ -34,43 +39,19 @@
 #endif
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
+#include <vector>
+
+#include <dlfcn.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
 
 using namespace DGL_NAMESPACE;
-
-enum Expected { kNone, kX11, kWayland };
-
-static const char* name(const Expected expected)
-{
-    return expected == kX11 ? "x11" : expected == kWayland ? "wayland" : "none";
-}
-
-static bool isSet(const char* const var)
-{
-    const char* const value = std::getenv(var);
-    return value != nullptr && value[0] != '\0';
-}
-
-static Expected expectedBackend(const PuglWorldType type)
-{
-    const bool x11 = isSet("DISPLAY");
-    const bool wayland = isSet("WAYLAND_DISPLAY") || isSet("WAYLAND_SOCKET");
-
-    if (type == PUGL_MODULE)
-        return x11 ? kX11 : wayland ? kWayland : kNone;
-
-    if (const char* const forced = std::getenv("DAF_WINDOW_BACKEND"))
-    {
-        if (std::strcmp(forced, "x11") == 0)
-            return x11 ? kX11 : kNone;
-        if (std::strcmp(forced, "wayland") == 0)
-            return wayland ? kWayland : kNone;
-    }
-
-    return wayland ? kWayland : x11 ? kX11 : kNone;
-}
 
 // --------------------------------------------------------------------------------------------------------------------
 
@@ -165,55 +146,19 @@ static bool x11ServerHasColour(PuglView* const view)
     return red > 50 && red < 80 && green > 115 && green < 140 && blue > 180 && blue < 205;
 }
 
-// --------------------------------------------------------------------------------------------------------------------
-
-int main()
+// Opens a GL window in a world, draws into it, and checks the frame reached the display server.
+static int openWindow(PuglWorld* const world, const Expected backend, State& state, const char* const title,
+                      PuglView*& view)
 {
-    // A module's world follows its own rule, and only which backend it opens on is checked. It stays open
-    // until the end, so with both servers up an X11 world and a Wayland world share the process. That also
-    // keeps a lone Xvfb from resetting, which it does when its last client leaves, while the program's
-    // world connects again.
-    const Expected moduleExpected = expectedBackend(PUGL_MODULE);
-    PuglWorld* const moduleWorld = puglNewWorld(PUGL_MODULE, 0);
-
-    if (moduleExpected == kNone)
-    {
-        DAF_ASSERT_EQUAL(moduleWorld, nullptr, "a module world cannot open without its backend");
-    }
-    else
-    {
-        DAF_ASSERT_NOT_EQUAL(moduleWorld, nullptr, "a module world opens");
-        DAF_ASSERT_EQUAL(puglWorldIsX11(moduleWorld), moduleExpected == kX11,
-                         "a module world opens on the expected backend");
-    }
-
-    d_stdout("RuntimeBackend: module world on %s", name(moduleExpected));
-
-    const Expected expected = expectedBackend(PUGL_PROGRAM);
-    PuglWorld* const world = puglNewWorld(PUGL_PROGRAM, 0);
-
-    if (expected == kNone)
-    {
-        DAF_ASSERT_EQUAL(world, nullptr, "a program world cannot open without its backend");
-        if (moduleWorld != nullptr)
-            puglFreeWorld(moduleWorld);
-        d_stdout("RuntimeBackend: no backend available, as expected");
-        return 0;
-    }
-
-    DAF_ASSERT_NOT_EQUAL(world, nullptr, "a program world opens");
-    DAF_ASSERT_EQUAL(puglWorldIsX11(world), expected == kX11, "a program world opens on the expected backend");
-
-    State state;
-    PuglView* const view = puglNewView(world);
+    view = puglNewView(world);
     DAF_ASSERT_NOT_EQUAL(view, nullptr, "a view is created");
-    DAF_ASSERT_EQUAL(puglViewIsX11(view), expected == kX11, "a view is on the backend of its world");
+    DAF_ASSERT_EQUAL(puglViewIsX11(view), backend == kX11, "a view is on the backend of its world");
     DAF_ASSERT_EQUAL(puglGetWorld(view), world, "a view hands back the world it was created in");
 
     puglSetHandle(view, &state);
     puglSetEventFunc(view, onEvent);
     puglSetMatchingBackendForCurrentBuild(view);
-    puglSetViewString(view, PUGL_WINDOW_TITLE, "DAF runtime backend test");
+    puglSetViewString(view, PUGL_WINDOW_TITLE, title);
     puglSetViewHint(view, PUGL_RESIZABLE, PUGL_TRUE);
     puglSetSizeHint(view, PUGL_DEFAULT_SIZE, 200, 150);
 
@@ -227,7 +172,7 @@ int main()
     DAF_ASSERT_EQUAL(state.drewColour, true, "drawing into the window's GL context works");
 
     // the frame has to reach the display server, not only the client's own buffer
-    if (expected == kX11)
+    if (backend == kX11)
     {
         DAF_ASSERT_EQUAL(pumpUntil(world, [&] { return x11ServerHasColour(view); }), true,
                          "the X server has the drawn frame");
@@ -240,12 +185,33 @@ int main()
                          "the compositor presented a frame");
     }
 
-    // a size change goes to the display server and comes back as a configure
+    return 0;
+}
+
+// A size change goes to the display server and comes back as a configure, and the window is exposed again.
+// The new size must be larger: an X server exposes nothing of a window that shrinks.
+static int resize(PuglWorld* const world, PuglView* const view, State& state,
+                  const unsigned width, const unsigned height)
+{
     state.exposed = false;
-    DAF_ASSERT_EQUAL(puglSetSizeHint(view, PUGL_CURRENT_SIZE, 240, 180), PUGL_SUCCESS, "the window can be resized");
-    DAF_ASSERT_EQUAL(pumpUntil(world, [&] { return state.configuredWidth == 240 && state.configuredHeight == 180; }),
+
+    DAF_ASSERT_EQUAL(puglSetSizeHint(view, PUGL_CURRENT_SIZE, width, height), PUGL_SUCCESS,
+                     "the window can be resized");
+    DAF_ASSERT_EQUAL(pumpUntil(world, [&] { return state.configuredWidth == width && state.configuredHeight == height; }),
                      true, "the new size is configured");
     DAF_ASSERT_EQUAL(pumpUntil(world, [&] { return state.exposed; }), true, "the resized window is exposed again");
+
+    return 0;
+}
+
+// A redraw asked for is exposed, and an event sent to the window comes back to it.
+static int redrawAndSignal(PuglWorld* const world, PuglView* const view, State& state)
+{
+    state.exposed = false;
+    state.gotClient = false;
+
+    DAF_ASSERT_EQUAL(puglObscureView(view), PUGL_SUCCESS, "a redraw can be asked for");
+    DAF_ASSERT_EQUAL(pumpUntil(world, [&] { return state.exposed; }), true, "the window is exposed again");
 
     PuglEvent client = {};
     client.client.type = PUGL_CLIENT;
@@ -254,16 +220,288 @@ int main()
     DAF_ASSERT_EQUAL(puglSendEvent(view, &client), PUGL_SUCCESS, "an event can be sent to the window");
     DAF_ASSERT_EQUAL(pumpUntil(world, [&] { return state.gotClient; }), true, "the window receives the event");
 
-    puglHide(view);
-    puglFreeView(view);
-    puglFreeWorld(world);
+    return 0;
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+// Fallback from a Wayland compositor that is announced but cannot be used
+
+// Just enough of a Wayland compositor for a client to connect and list the globals, on one end of a socket
+// pair whose other end a client gets through WAYLAND_SOCKET. It offers wl_compositor and no xdg_wm_base,
+// so no window could open there.
+class CompositorWithoutShell
+{
+public:
+    int clientFd = -1;
+
+    // read once stop() returns
+    bool listedGlobals = false;
+    bool clientHungUp = false;
+
+    bool start()
+    {
+        int fds[2];
+        if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) != 0)
+            return false;
+
+        serverFd = fds[0];
+        clientFd = fds[1];
+
+        // a client that neither talks nor hangs up must not stall the test
+        const timeval timeout = { 5, 0 };
+        setsockopt(serverFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+        thread = std::thread(&CompositorWithoutShell::serve, this);
+        return true;
+    }
+
+    void stop()
+    {
+        thread.join();
+        close(serverFd);
+    }
+
+private:
+    int serverFd = -1;
+    std::thread thread;
+
+    void post(const uint32_t object, const uint32_t opcode, const std::vector<uint32_t>& args)
+    {
+        std::vector<uint32_t> message;
+        message.push_back(object);
+        message.push_back(static_cast<uint32_t>((2 + args.size()) * 4) << 16 | opcode);
+        message.insert(message.end(), args.begin(), args.end());
+        ::send(serverFd, message.data(), message.size() * 4, MSG_NOSIGNAL);
+    }
+
+    void serve()
+    {
+        std::vector<uint8_t> received;
+
+        for (;;)
+        {
+            uint8_t chunk[4096];
+            const ssize_t length = recv(serverFd, chunk, sizeof(chunk), 0);
+
+            if (length <= 0)
+            {
+                clientHungUp = length == 0;
+                // after a timeout, a client still waiting on a reply sees the connection end instead
+                shutdown(serverFd, SHUT_RDWR);
+                return;
+            }
+
+            received.insert(received.end(), chunk, chunk + length);
+
+            // requests: a header of object id and size << 16 | opcode, then the arguments
+            while (received.size() >= 8)
+            {
+                uint32_t header[2];
+                std::memcpy(header, received.data(), sizeof(header));
+
+                const uint32_t size = header[1] >> 16;
+                if (size < 8 || received.size() < size)
+                    break;
+
+                uint32_t newId = 0;
+                if (size >= 12)
+                    std::memcpy(&newId, received.data() + 8, sizeof(newId));
+
+                const uint32_t opcode = header[1] & 0xffff;
+
+                if (header[0] == 1 && opcode == 0)
+                {
+                    // wl_display.sync: wl_callback.done, then wl_display.delete_id for the callback
+                    post(newId, 0, { 0 });
+                    post(1, 1, { newId });
+                }
+                else if (header[0] == 1 && opcode == 1)
+                {
+                    // wl_display.get_registry: wl_registry.global(name, interface, version) for each global
+                    static const char kInterface[16] = "wl_compositor";
+                    std::vector<uint32_t> args = { 1, static_cast<uint32_t>(std::strlen(kInterface) + 1) };
+                    for (size_t i = 0; i < sizeof(kInterface); i += 4)
+                    {
+                        uint32_t word;
+                        std::memcpy(&word, kInterface + i, sizeof(word));
+                        args.push_back(word);
+                    }
+                    args.push_back(4);
+                    post(newId, 0, args);
+                    listedGlobals = true;
+                }
+
+                received.erase(received.begin(), received.begin() + size);
+            }
+        }
+    }
+};
+
+// whether the Wayland libraries DGL loads when it tries Wayland are there to load
+static bool waylandLibrariesLoad()
+{
+    static const char* const kLibraries[] = {
+        "libwayland-client.so.0", "libwayland-cursor.so.0", "libxkbcommon.so.0",
+        "libwayland-egl.so.1", "libEGL.so.1",
+    };
+
+    for (const char* const library : kLibraries)
+    {
+        void* const handle = dlopen(library, RTLD_LAZY | RTLD_LOCAL);
+        if (handle == nullptr)
+            return false;
+        dlclose(handle);
+    }
+
+    return true;
+}
+
+static bool waylandForced(const char* const value)
+{
+    const char* const forced = std::getenv("DAF_WINDOW_BACKEND");
+    return forced != nullptr && std::strcmp(forced, value) == 0;
+}
+
+// a program world where the announced compositor cannot be used
+static int checkProgramFallsBack(const char* const what)
+{
+    const Expected expected = ! waylandForced("wayland") && isSet("DISPLAY") ? kX11 : kNone;
+    PuglWorld* const world = puglNewWorld(PUGL_PROGRAM, 0);
+
+    if (expected == kNone)
+    {
+        DAF_ASSERT_EQUAL(world, nullptr, "a program world opens on nothing then");
+    }
+    else
+    {
+        DAF_ASSERT_NOT_EQUAL(world, nullptr, "a program world falls back to X11");
+        DAF_ASSERT_EQUAL(puglWorldIsX11(world), true, "a program world falls back to X11");
+        puglFreeWorld(world);
+    }
+
+    d_stdout("RuntimeBackend: with %s, a program world opens on %s", what, backendName(expected));
+    return 0;
+}
+
+// These change the environment, so they come last.
+static int checkFallbacks()
+{
+    unsetenv("WAYLAND_SOCKET");
+    setenv("WAYLAND_DISPLAY", "daf-runtime-backend-test-no-compositor", 1);
+
+    if (checkProgramFallsBack("no compositor at WAYLAND_DISPLAY") != 0)
+        return 1;
+
+    CompositorWithoutShell compositor;
+    DAF_ASSERT_EQUAL(compositor.start(), true, "the stand-in compositor starts");
+
+    char clientFd[16];
+    std::snprintf(clientFd, sizeof(clientFd), "%d", compositor.clientFd);
+    unsetenv("WAYLAND_DISPLAY");
+    setenv("WAYLAND_SOCKET", clientFd, 1);
+
+    const int status = checkProgramFallsBack("a compositor without xdg_wm_base at WAYLAND_SOCKET");
+
+    // libwayland takes the socket over, unsetting WAYLAND_SOCKET, and closes it with the failed world
+    const bool socketTaken = std::getenv("WAYLAND_SOCKET") == nullptr;
+    if (! socketTaken)
+        close(compositor.clientFd);
+    compositor.stop();
+
+    if (status != 0)
+        return status;
+
+    // unless the libraries were missing, or DAF_WINDOW_BACKEND=x11 kept it from trying
+    if (! waylandForced("x11") && waylandLibrariesLoad())
+    {
+        DAF_ASSERT_EQUAL(socketTaken, true, "Wayland was tried through WAYLAND_SOCKET");
+        DAF_ASSERT_EQUAL(compositor.listedGlobals, true, "the client asked the compositor for its globals");
+        DAF_ASSERT_EQUAL(compositor.clientHungUp, true, "the client let go of the compositor it could not use");
+    }
+
+    return 0;
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+
+int main()
+{
+    const Expected expected = expectedBackend(true);
+    DAF_ASSERT_NOT_EQUAL(expected, kInvalid, "DAF_TEST_EXPECT_BACKEND is x11, wayland or none");
+
+    // A module's world follows its own rule. It stays open until the end, so with both servers up an X11
+    // world and a Wayland world share the process. That also keeps a lone Xvfb from resetting, which it
+    // does when its last client leaves, while the program's world connects again.
+    const Expected moduleExpected = expectedBackend(false);
+    PuglWorld* const moduleWorld = puglNewWorld(PUGL_MODULE, 0);
+
+    if (moduleExpected == kNone)
+    {
+        DAF_ASSERT_EQUAL(moduleWorld, nullptr, "a module world cannot open without its backend");
+    }
+    else
+    {
+        DAF_ASSERT_NOT_EQUAL(moduleWorld, nullptr, "a module world opens");
+        DAF_ASSERT_EQUAL(puglWorldIsX11(moduleWorld), moduleExpected == kX11,
+                         "a module world opens on the expected backend");
+    }
+
+    d_stdout("RuntimeBackend: module world on %s", backendName(moduleExpected));
+
+    PuglWorld* const world = puglNewWorld(PUGL_PROGRAM, 0);
+
+    if (expected == kNone)
+    {
+        DAF_ASSERT_EQUAL(world, nullptr, "a program world cannot open without its backend");
+        d_stdout("RuntimeBackend: program world on none, as expected");
+    }
+    else
+    {
+        DAF_ASSERT_NOT_EQUAL(world, nullptr, "a program world opens");
+        DAF_ASSERT_EQUAL(puglWorldIsX11(world), expected == kX11, "a program world opens on the expected backend");
+
+        State state;
+        PuglView* view = nullptr;
+        if (openWindow(world, expected, state, "DAF runtime backend test", view) != 0)
+            return 1;
+        if (resize(world, view, state, 240, 180) != 0 || redrawAndSignal(world, view, state) != 0)
+            return 1;
+
+        d_stdout("RuntimeBackend: program world on %s, window realized, drew, presented, resized and got its event",
+                 backendName(expected));
+
+        // A module's window next to the program's, then both still answer. The program's is not resized
+        // again: on a compositor, the configure that takes its focus away for the module's window carries
+        // its old size, and can arrive after a resize.
+        if (moduleWorld != nullptr)
+        {
+            State moduleState;
+            PuglView* moduleView = nullptr;
+            if (openWindow(moduleWorld, moduleExpected, moduleState, "DAF runtime backend test, module", moduleView) != 0)
+                return 1;
+            if (resize(moduleWorld, moduleView, moduleState, 260, 190) != 0)
+                return 1;
+            if (redrawAndSignal(moduleWorld, moduleView, moduleState) != 0 || redrawAndSignal(world, view, state) != 0)
+                return 1;
+
+            puglHide(moduleView);
+            puglFreeView(moduleView);
+
+            d_stdout("RuntimeBackend: a %s window and a %s window open at once", backendName(expected),
+                     backendName(moduleExpected));
+        }
+
+        puglHide(view);
+        puglFreeView(view);
+        puglFreeWorld(world);
+    }
+
+    const int status = checkFallbacks();
 
     if (moduleWorld != nullptr)
         puglFreeWorld(moduleWorld);
 
-    d_stdout("RuntimeBackend: program world on %s, window realized, drew, presented, resized and got its event",
-             name(expected));
-    return 0;
+    return status;
 }
 
 // --------------------------------------------------------------------------------------------------------------------

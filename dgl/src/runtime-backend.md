@@ -146,6 +146,12 @@ share `PuglFileDrag`, the base class `FileDragX11.hpp` derives from.
 4. With nothing left, `puglNewWorld` prints which of `WAYLAND_DISPLAY` and `DISPLAY` it saw and
    returns null.
 
+`WAYLAND_SOCKET` hands the process one connection, and libwayland takes it over on the first
+connect, unsetting the variable. So the first world that tries Wayland owns that connection, and
+when the attempt fails (a missing global, or EGL) the connection is closed with the world, leaving
+later worlds `WAYLAND_DISPLAY` alone to try. A Wayland-only build is no different there: only its
+first world can have the socket.
+
 DGL code that differs per backend tests `DGL_VIEW_IS_X11(view)` or `DGL_VIEW_IS_WAYLAND(view)`
 inside `#ifdef DGL_USING_X11` or `#ifdef DGL_USING_WAYLAND`. A `both` build defines both
 `DGL_USING_*` macros and answers at runtime (`puglViewIsX11`, `puglWorldIsX11`); a single-backend
@@ -193,9 +199,15 @@ relies on.
 ## Tests
 
 `tests/RuntimeBackend.cpp` (built only for `both`) works out from the environment which backend the
-rule picks, checks a program world and a module world against it, opens a GL window, checks the
-context is current and the drawing lands (read back from the X server on X11, a presented frame on
-Wayland), resizes it, and sends it a `PUGL_CLIENT` event. `tests/Wayland.cpp` and
+rule picks (`tests/runtime-backend.hpp`); `DAF_TEST_EXPECT_BACKEND=x11|wayland|none` names the one a
+program must get instead, so that a display server that did not start can fail the test rather than
+turn it into a check that nothing opens. It checks a program world and a module world against it,
+opens a GL window, checks the context is current and the drawing lands (read back from the X server
+on X11, a presented frame on Wayland), resizes it, and sends it a `PUGL_CLIENT` event. It then opens
+a window in the module world too, so that with both servers up an X11 and a Wayland window are open
+in one process. Last, it announces a compositor that cannot be used, a `WAYLAND_DISPLAY` nothing
+listens on and a `WAYLAND_SOCKET` to a stand-in compositor without `xdg_wm_base`, and checks that a
+program falls back to X11, or opens nothing when Wayland was forced. `tests/Wayland.cpp` and
 `tests/X11Focus.cpp` drive each backend's half of a `both` build directly.
 
 `tests/headless-wayland.sh` runs a command against a headless Weston of its own, with a private
