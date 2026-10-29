@@ -149,9 +149,11 @@ build answers with a constant, so the test folds away there. The places that nee
   wait loops, the X11 window type, forwarding unused keys to an X11 parent, and treating a failed
   Wayland offer as final.
 - `Window.cpp`: `getPortalParentHandle` answers `x11:` or `wayland:` by the view's backend.
-- The file browser and web view of a `both` build are the X11 ones. A Wayland view hands the file
-  browser no parent, so the portal centres the dialog as it does in a Wayland-only build, and gets
-  no web view, which a Wayland-only build cannot create either.
+- The file browser and web view of a `both` build are the X11 ones. For a Wayland view,
+  `openFileBrowser` passes `fileBrowserCreate` the view's backend, and the file browser then opens
+  no X11 connection: the portal gets no parent and centres the dialog, as in a Wayland-only build,
+  and without a portal the call fails instead of falling back to the X11-only libsofd dialog. A
+  Wayland view gets no web view either, which a Wayland-only build cannot create.
 - `DafUI.cpp`: a plugin UI that finds no X server reports an unknown desktop scale factor (0), as
   the Wayland-only build does, since its world will open on Wayland.
 

@@ -702,20 +702,14 @@ bool Window::PrivateData::openFileBrowser(const FileBrowserOptions& options)
 
     options2.className = puglGetViewString(view, PUGL_CLASS_NAME);
 
-    uintptr_t parentWindowHandle = puglGetNativeView(view);
-
-   #ifdef DGL_RUNTIME_BACKEND
-    // The dialog code of a runtime-backend build is the X11 one, which takes the parent as an X11
-    // window id, but the native handle of a Wayland view is its wl_surface. Without a parent the
-    // portal centres the dialog, which is what a Wayland-only build does too.
-    if (DGL_VIEW_IS_WAYLAND(view))
-        parentWindowHandle = 0;
-   #endif
-
     fileBrowserHandle = fileBrowserCreate(isEmbed,
-                                          parentWindowHandle,
+                                          puglGetNativeView(view),
                                           autoScaling ? autoScaleFactor : scaleFactor,
-                                          options2);
+                                          options2
+                                         #ifdef DGL_RUNTIME_BACKEND
+                                          , DGL_VIEW_IS_X11(view)
+                                         #endif
+                                          );
 
     return fileBrowserHandle != nullptr;
 }
