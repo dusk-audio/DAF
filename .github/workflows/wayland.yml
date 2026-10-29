@@ -428,6 +428,10 @@ jobs:
   runtime-backend-without-wayland:
     runs-on: ubuntu-latest
     container: ubuntu:24.04
+    # Run steps default to sh in a container, and the test steps below need bash for pipefail.
+    defaults:
+      run:
+        shell: bash
     steps:
     - name: Set up dependencies
       env:
