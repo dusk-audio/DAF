@@ -537,6 +537,18 @@ public:
         if (fUI == nullptr)
         {
             createUI();
+
+           #ifdef DGL_RUNTIME_BACKEND
+            // Embedding reparents the UI into the host's X11 window. With no X server to open it on,
+            // the UI is on Wayland and cannot be embedded.
+            if (! fUI->isX11())
+            {
+                d_stderr("Cannot embed the UI, there is no X server for it to open on");
+                fUI = nullptr;
+                return false;
+            }
+           #endif
+
             fHostGui->resize_hints_changed(fHost);
 
             // Should the window have come out at another size than get_size predicted, a parent on

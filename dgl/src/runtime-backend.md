@@ -143,7 +143,7 @@ share `PuglFileDrag`, the base class `FileDragX11.hpp` derives from.
    window API), so a module takes an X server, XWayland included, whenever there is one. Wayland
    follows, under the same condition as for a program. An LV2 UI that the host wants to embed
    fails to instantiate when it could not open on X11, rather than hand the host a Wayland surface
-   as an X11 window.
+   as an X11 window, and a CLAP UI fails `set_parent` in the same case.
 4. With nothing left, `puglNewWorld` prints the `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` and `DISPLAY` it
    saw and returns null.
 
@@ -194,8 +194,9 @@ relies on.
   the forwarding layer: they belong to one backend. DGL uses `puglSetMatchingBackendForCurrentBuild`.
 - CLAP keeps advertising only the X11 window API. Offering `CLAP_WINDOW_API_WAYLAND` needs a way to
   create a world on the backend the host asked for, which DGL's `Application` cannot express yet.
-- On a Wayland session without XWayland, a plugin UI opens as a floating Wayland window and the
-  host's X11 parent is ignored.
+- With no X server to open on, a VST2 or VST3 UI that the host wants to embed opens as a floating
+  Wayland window and the host's X11 parent is ignored. LV2 and CLAP refuse instead, see the
+  selection rule.
 
 ## Tests
 
