@@ -281,15 +281,16 @@ jobs:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
-    # Both stacks' development files, Cairo's to build the Cairo Window test too, and what the tests run
-    # against: weston (headless, pixman), Mesa's llvmpipe and EGL vendor library, and Xvfb.
+    # Both stacks' development files, Cairo's to build the Cairo Window test too, D-Bus's for the file browser's
+    # portal path, and what the tests run against: weston (headless, pixman), Mesa's llvmpipe and EGL vendor
+    # library, Xvfb, and the dbus-daemon RuntimeBackendWindow runs a stand-in portal on.
     - name: Set up dependencies
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
         sudo apt-get update -qq
         sudo apt-get install -yq \
-          libcairo2-dev libegl-dev libgl-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev \
+          libcairo2-dev libdbus-1-dev libegl-dev libgl-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev \
           libxkbcommon-dev libxrandr-dev \
           libegl-mesa0 libgl1-mesa-dri weston xvfb dbus
     - name: Show detected features
@@ -435,8 +436,8 @@ jobs:
         apt-get update -qq
         apt-get install -yq --no-install-recommends \
           build-essential ca-certificates git pkg-config \
-          libegl-dev libgl-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev libxkbcommon-dev libxrandr-dev \
-          libgl1-mesa-dri xauth xvfb dbus-daemon
+          libdbus-1-dev libegl-dev libgl-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev libxkbcommon-dev \
+          libxrandr-dev libgl1-mesa-dri xauth xvfb dbus-daemon
     - uses: actions/checkout@v4
       with:
         persist-credentials: false

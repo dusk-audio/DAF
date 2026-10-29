@@ -485,6 +485,8 @@ int main()
     {
         d_stdout("RuntimeBackendWindow: no dbus-daemon to run a portal on, the portal's file dialog is not checked");
     }
+   #else
+    d_stdout("RuntimeBackendWindow: built without D-Bus, the portal's file dialog is not checked");
    #endif
 
     // the web view is an X11 window reparented into this one, which a Wayland window cannot host
