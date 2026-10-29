@@ -454,10 +454,23 @@ HAVE_WAYLAND       = $(HAVE_WAYLAND_LIBS)
 # what the flag blocks below key off; it mirrors the `#elif defined(HAVE_WAYLAND)` arm that only
 # becomes reachable once HAVE_X11 is absent.
 #
-# DGL_BACKEND=both is the one way to have both: it compiles X11 and Wayland into the same DGL and
-# defines DGL_RUNTIME_BACKEND, and puglNewWorld picks one of them when the program opens its first
-# window (see dgl/src/runtime-backend.md). It is an explicit opt-in, and needs every development
-# file of both backends. The default, auto, is the X11-first rule above.
+# DGL_BACKEND overrides that rule, as the CMake option of the same name does:
+#   auto     the rule above, the default
+#   x11      X11, and an error where its development files are missing
+#   wayland  Wayland alone, built as on a system without the X11 development files
+#   both     X11 and Wayland compiled into the same DGL, with DGL_RUNTIME_BACKEND defined, and
+#            puglNewWorld picks one of them when the program opens its first window (see
+#            dgl/src/runtime-backend.md). It needs every development file of both backends.
+ifeq ($(DGL_BACKEND),x11)
+ifneq ($(HAVE_X11),true)
+$(error DGL_BACKEND=x11 needs the X11 development files, x11.pc was not found)
+endif
+else ifeq ($(DGL_BACKEND),wayland)
+ifneq ($(HAVE_WAYLAND),true)
+$(error DGL_BACKEND=wayland needs the wayland-client, wayland-egl, wayland-cursor, xkbcommon and egl development files)
+endif
+HAVE_X11 = false
+endif
 ifeq ($(DGL_BACKEND),both)
 ifneq ($(HAVE_X11),true)
 $(error DGL_BACKEND=both needs the X11 development files, x11.pc was not found)
@@ -472,11 +485,15 @@ DGL_BACKEND_WAYLAND = $(HAVE_WAYLAND)
 endif
 endif
 
-ifneq (,$(filter-out auto both,$(DGL_BACKEND)))
-$(error DGL_BACKEND must be auto or both, not '$(DGL_BACKEND)')
+ifneq (,$(filter-out auto x11 wayland both,$(DGL_BACKEND)))
+$(error DGL_BACKEND must be auto, x11, wayland or both, not '$(DGL_BACKEND)')
 endif
-ifeq ($(DGL_BACKEND)$(HAIKU_OR_MACOS_OR_WASM_OR_WINDOWS),bothtrue)
+ifeq ($(HAIKU_OR_MACOS_OR_WASM_OR_WINDOWS),true)
+ifeq ($(DGL_BACKEND),both)
 $(error DGL_BACKEND=both is only for Linux and other X11/Wayland systems)
+else ifneq (,$(filter x11 wayland,$(DGL_BACKEND)))
+$(warning DGL_BACKEND=$(DGL_BACKEND) has no effect here, it is only for Linux and other X11/Wayland systems)
+endif
 endif
 
 # Vulkan is not supported yet

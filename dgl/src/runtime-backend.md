@@ -10,16 +10,22 @@ Wayland-only build compiles to exactly the symbols it would without this support
 
 ## Build switch
 
-| | Make | CMake |
+Make and CMake both take `DGL_BACKEND` with the same values: `auto` (the default, X11 whenever its
+development files are installed), `x11` (X11, or an error without its development files), `wayland`
+(Wayland alone, built as on a system without the X11 development files) and `both`.
+
+| `both` | Make | CMake |
 |---|---|---|
-| Values | `DGL_BACKEND=auto` (default) or `both` | `-DDGL_BACKEND=auto` (default), `x11`, `wayland` or `both` |
+| Option | `DGL_BACKEND=both` | `-DDGL_BACKEND=both` |
 | Requires | every X11 and every Wayland development file | same |
 | Defines | `HAVE_X11`, `HAVE_WAYLAND`, `DGL_RUNTIME_BACKEND` | same, on `dgl-system-libs-definitions` |
 | Links | X11 libraries, `gl x11`, `-ldl` | X11 libraries, `OPENGL_gl_LIBRARY`, `CMAKE_DL_LIBS` |
 
-`make features` reports `DGL_RUNTIME_BACKEND: Yes` for such a build. `both` is Linux only, and has no
-GLES or Vulkan flavour (see the end of this note). It needs every Wayland development file to build,
-but links none of the Wayland libraries, see below.
+`make features` reports `DGL_RUNTIME_BACKEND: Yes` for such a build. `both` is for Linux and the other
+X11/Wayland systems; on macOS, Windows, Haiku and WebAssembly both build systems stop on it, and
+only warn about `x11` or `wayland`, which mean nothing there. It has no GLES or Vulkan flavour (see
+the end of this note), and needs every Wayland development file to build, but links none of the
+Wayland libraries, see below.
 
 ## Loading Wayland at runtime
 
