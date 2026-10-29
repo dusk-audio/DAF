@@ -10,13 +10,6 @@ on:
   push:
     branches:
       - '**'
-    # Documentation and editor/agent configuration cannot change a build result, and every push
-    # here costs a full matrix. Anything under .github/ is deliberately absent from this list: a
-    # workflow change must run the workflow it changed.
-    paths-ignore:
-      - '**.md'
-      - '.vscode/**'
-      - 'LICENSE*'
   workflow_dispatch:
 
 # One run per branch at a time: pushing again supersedes the previous run, which is otherwise left
@@ -33,7 +26,27 @@ permissions:
   contents: read
 
 jobs:
+  # Whether this push has to build and test at all, which every other job waits for: see
+  # .github/code-changed.sh.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.check.outputs.code }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        # the history and main to diff against, without the contents of every old file
+        fetch-depth: 0
+        filter: blob:none
+        persist-credentials: false
+    - id: check
+      env:
+        BEFORE: ${{ github.event.before }}
+      run: .github/code-changed.sh >> "$GITHUB_OUTPUT"
+
   ubuntu-22-04:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       matrix:
         # No linux-arm64 / linux-armhf here: arm64 is built natively by the
@@ -80,6 +93,8 @@ jobs:
   # Mesa's software rasterizer for the consumer's window.
   # ---------------------------------------------------------------------------
   runtime-backend:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -169,6 +184,8 @@ jobs:
   # serve, so `apt-get update` 404s and the step dies before any build happens.
   # ---------------------------------------------------------------------------
   ubuntu-arm:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     # Single runner, so no matrix (and no fail-fast knob) to carry: 22.04-arm is
     # the product glibc floor, and 24.04-arm only rebuilt the same sources
     # against a newer libc.
@@ -219,6 +236,8 @@ jobs:
   # No macos-13 or macos-14 job: GitHub is deprecating the 13 image, and
   # macos-15 covers the newer-SDK risk that 14 merely duplicated.
   macos-15:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       matrix:
         # macos-universal covers the arm64 slice we ship (and the x86_64 one for
@@ -237,6 +256,8 @@ jobs:
   # The only Windows leg: products ship MSVC x64. 32-bit and Windows-on-ARM
   # were dropped with the targets nothing is shipped for.
   msvc-win64:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-2022
     steps:
     - uses: actions/checkout@v4
@@ -259,3 +280,26 @@ jobs:
         name: msvc-win64
         path: build/bin/
 
+
+  # The one check of this workflow that main's ruleset requires. It passes when every job above
+  # passed, or was skipped because .github/code-changed.sh found nothing to build. A job added to
+  # this workflow must be added to needs here as well, or nothing requires it.
+  cmake-passed:
+    needs: [changes, ubuntu-22-04, runtime-backend, ubuntu-arm, macos-15, msvc-win64]
+    # Reports also when a job above failed or the run was cancelled, rather than being skipped: a
+    # required check counts a skipped job as passing.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check the result of every job above
+      env:
+        CODE: ${{ needs.changes.outputs.code }}
+        NEEDS: ${{ toJSON(needs) }}
+      run: |
+        failed=$(jq -r --arg code "$CODE" 'to_entries[]
+          | select(.value.result != "success" and (.value.result != "skipped" or $code != "false"))
+          | "\(.key): \(.value.result)"' <<<"$NEEDS")
+        if [ -n "$failed" ]; then
+          echo "::error::Not every job passed: ${failed//$'\n'/, }"
+          exit 1
+        fi
