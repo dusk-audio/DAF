@@ -331,7 +331,7 @@ jobs:
         grep -q 'RuntimeBackend: program world on wayland' tests.log \
           || { echo "::error::RuntimeBackend did not open its window on Wayland"; exit 1; }
     # With both servers reachable a program prefers Wayland and a module X11, and DAF_WINDOW_BACKEND overrides
-    # both. RuntimeBackend checks this against the environment itself; the expected backends are spelled out
+    # the program's choice alone. RuntimeBackend checks this against the environment itself; the expected backends are spelled out
     # again here so that a rule changed in the test and the code alike still shows up.
     - name: Run RuntimeBackend with an X server and a compositor
       env:
@@ -350,7 +350,7 @@ jobs:
         }
         check ''      x11     wayland
         check x11     x11     x11
-        check wayland wayland wayland
+        check wayland x11     wayland
     # A both build's plugin UIs open on X11 whenever there is an X server, so its turtle keeps declaring the
     # X11 UI class every embedding host uses, exactly as an X11 build does.
     - name: Verify the LV2 turtle still declares an X11 UI

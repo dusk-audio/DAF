@@ -58,6 +58,9 @@ static Expected expectedBackend(const PuglWorldType type)
     const bool x11 = isSet("DISPLAY");
     const bool wayland = isSet("WAYLAND_DISPLAY") || isSet("WAYLAND_SOCKET");
 
+    if (type == PUGL_MODULE)
+        return x11 ? kX11 : wayland ? kWayland : kNone;
+
     if (const char* const forced = std::getenv("DAF_WINDOW_BACKEND"))
     {
         if (std::strcmp(forced, "x11") == 0)
@@ -65,9 +68,6 @@ static Expected expectedBackend(const PuglWorldType type)
         if (std::strcmp(forced, "wayland") == 0)
             return wayland ? kWayland : kNone;
     }
-
-    if (type == PUGL_MODULE)
-        return x11 ? kX11 : wayland ? kWayland : kNone;
 
     return wayland ? kWayland : x11 ? kX11 : kNone;
 }

@@ -105,20 +105,22 @@ base class and reaches the same function one step later.
 
 `puglNewWorld` picks the backend once per world, and every view in that world stays on it.
 
-1. `DAF_WINDOW_BACKEND=x11` or `DAF_WINDOW_BACKEND=wayland` forces that backend. If it cannot be
-   opened, world creation fails with a message saying so. Any other value is reported and ignored.
-   Wayland counts as unopenable when its libraries cannot be loaded.
+1. For a program, `DAF_WINDOW_BACKEND=x11` or `DAF_WINDOW_BACKEND=wayland` forces that backend. If
+   it cannot be used, world creation fails with a message saying so. Any other value is reported and
+   ignored.
 2. A program (`PUGL_PROGRAM`, a standalone application) tries Wayland first, but only when
    `WAYLAND_DISPLAY` or `WAYLAND_SOCKET` is set: libwayland would otherwise try `wayland-0` on its
    own. Wayland counts only if its libraries load, the compositor accepts the connection and offers
    `wl_compositor` and `xdg_wm_base`, and, in an OpenGL build, EGL on that display can make the
    kind of context the build renders with (desktop GL, or GLES for a GLES build). Then X11, if
    `XOpenDisplay` succeeds.
-3. A module (`PUGL_MODULE`, a plugin UI) tries X11 first. Hosts embed plugin UIs through an X11
-   window id in every format DAF supports, and the plugin wrappers of a `both` build keep
-   advertising exactly that (LV2 `ui:X11UI`, the CLAP X11 window API), so a module takes an X
-   server, XWayland included, whenever there is one. Wayland follows, under the same condition
-   as for a program.
+3. A module (`PUGL_MODULE`, a plugin UI) tries X11 first, and `DAF_WINDOW_BACKEND` does not apply
+   to it. Hosts embed plugin UIs through an X11 window id in every format DAF supports, and the
+   plugin wrappers of a `both` build keep advertising exactly that (LV2 `ui:X11UI`, the CLAP X11
+   window API), so a module takes an X server, XWayland included, whenever there is one. Wayland
+   follows, under the same condition as for a program. An LV2 UI that the host wants to embed
+   fails to instantiate when it could not open on X11, rather than hand the host a Wayland surface
+   as an X11 window.
 4. With nothing left, `puglNewWorld` prints which of `WAYLAND_DISPLAY` and `DISPLAY` it saw and
    returns null.
 

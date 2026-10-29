@@ -135,6 +135,13 @@ public:
         return uiData->window->getNativeWindowHandle();
     }
 
+   #ifdef DGL_RUNTIME_BACKEND
+    bool isX11() const noexcept
+    {
+        return uiData->app.isX11();
+    }
+   #endif
+
     uint getBackgroundColor() const noexcept
     {
         DAF_SAFE_ASSERT_RETURN(uiData != nullptr, 0);

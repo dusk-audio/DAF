@@ -212,17 +212,20 @@ static const char* puglEnvOrUnset(const char* const name)
 }
 
 // The backend is chosen once, here, for the whole world:
-//  - DAF_WINDOW_BACKEND=x11 or =wayland forces that backend, and a failure to open it is final.
+//  - For a program, DAF_WINDOW_BACKEND=x11 or =wayland forces that backend, and a failure to open it
+//    is final.
 //  - Otherwise a program tries Wayland first, but only when WAYLAND_DISPLAY or WAYLAND_SOCKET names a
 //    compositor (libwayland would fall back to wayland-0 on its own, which on an X11 session can be
 //    anybody's), then X11.
-//  - A module tries X11 first. Hosts embed plugin UIs through an X11 window id in every format
-//    DAF supports, so an X11 server, XWayland included, is what a module needs whenever there is one.
+//  - A module tries X11 first, whatever DAF_WINDOW_BACKEND says. Hosts embed plugin UIs through an X11
+//    window id in every format DAF supports, so an X11 server, XWayland included, is what a module
+//    needs whenever there is one.
 PuglWorld* puglNewWorld(const PuglWorldType type, const PuglWorldFlags flags)
 {
     PuglWindowSystem order[2] = { kPuglWindowSystemNone, kPuglWindowSystemNone };
 
-    if (const char* const requested = std::getenv("DAF_WINDOW_BACKEND"))
+    const char* const requested = type == PUGL_PROGRAM ? std::getenv("DAF_WINDOW_BACKEND") : nullptr;
+    if (requested != nullptr)
     {
         if (std::strcmp(requested, "x11") == 0)
             order[0] = kPuglWindowSystemX11;

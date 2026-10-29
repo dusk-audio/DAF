@@ -119,6 +119,14 @@ public:
         pData->triggerIdleCallbacks();
     }
 
+   #ifdef DGL_RUNTIME_BACKEND
+    // whether this application's windows opened on X11 rather than Wayland, see dgl/src/runtime-backend.md
+    bool isX11() const noexcept
+    {
+        return pData->world != nullptr && puglWorldIsX11(pData->world);
+    }
+   #endif
+
     void repaintIfNeeeded()
     {
         pData->repaintIfNeeeded();
