@@ -82,6 +82,17 @@ incl. a native ARM Linux runner and a single MSVC x64 leg) and `wayland.yml` (Wa
 container build, X11 regression, clap-validator, pluginval + LV2 validation). Anything relying on
 external package repositories is deliberately kept out of them.
 
+Each workflow runs on every push, documentation included. Its first job, `changes`, runs
+`.github/code-changed.sh` to decide whether anything needs building: on a branch it compares the
+branch with main, on main what the push added. When only Markdown, `.vscode/` or a root `LICENSE*`
+changed, every other job skips itself. The last job, `build-passed`, `cmake-passed` or
+`wayland-passed`, passes when every job before it passed or was skipped that way, and those three
+are the only checks the "Protect main" ruleset requires. A job added to a workflow must be added
+to that workflow's `*-passed` `needs` as well, or nothing requires it. Do not go back to
+`paths-ignore` on the trigger: a push it filtered out ran no workflow, so the required checks were
+never reported, and a pull request whose last push only touched documentation could not be merged
+without an admin override.
+
 Each workflow also has a `runtime-backend` job for the `DGL_BACKEND=both` build, which picks X11 or
 Wayland at runtime (see `dgl/src/runtime-backend.md`). In `build.yml` it runs the tests under Xvfb,
 in `cmake.yml` it builds with CMake and builds an out-of-tree consumer, and in `wayland.yml` it runs
