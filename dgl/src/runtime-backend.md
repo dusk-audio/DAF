@@ -215,7 +215,9 @@ fails the test rather than turn it into a check that nothing opens.
   clipboard paste loop, and following pugl's scale factor. Without a portal, only an X11 window gets
   the X11 dialog. Then a stand-in portal on a private session bus answers the dialog of either
   backend, and the window has to get the file it chose, with an `x11:` parent named for an X11
-  window and none for a Wayland one. Where no `dbus-daemon` can be started, it says so and skips that.
+  window and none for a Wayland one. The portal sends the call's reply, a `Response` for another
+  request and the dialog's own `Response` back to back, as a portal serving two dialogs might,
+  and the window must get the file from its own. Where no `dbus-daemon` can be started, it says so and skips that.
   The paste is checked by counting what its wait loop pumps: a paste whose offer types have yet to
   arrive has to wait on the window's own backend alone. With `DAF_TEST_WAYLAND_SCALE=N`, which
   `headless-wayland.sh` also gives Weston's output, a Wayland window has to follow that output to

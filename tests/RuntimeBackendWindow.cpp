@@ -268,19 +268,20 @@ private:
 
 static const char kChosenUri[] = "file:///daf%20runtime%20backend/chosen%5Bfile%5D.txt";
 static const char kChosenPath[] = "/daf runtime backend/chosen[file].txt";
+static const char kOtherDialogUri[] = "file:///daf%20runtime%20backend/another%20dialog.txt";
 
-// The portal's FileChooser as far as OpenFile goes: it answers with a Response that picks kChosenUri, sent to the
-// caller alone, as xdg-desktop-portal sends it.
+// The portal's FileChooser as far as OpenFile goes, as xdg-desktop-portal does it: the request is named after the
+// caller and the handle_token it passed, the call's reply returns that path, and a Response on it, sent to the
+// caller alone, picks kChosenUri.
 //
-// It leaves out the reply to OpenFile, which carries the request handle that DGL has no use for. A real portal
-// answers the call at once and the Response only after the user has chosen, so the two never reach DGL together;
-// sent back to back here, they could, and fileBrowserIdle hands everything it reads after the first message to
-// dbus_connection_dispatch, which drops a signal nothing handles.
+// The reply, a Response for another request, which picks kOtherDialogUri, and this request's Response all go out
+// back to back, so the dialog reads them together. It has to take its own Response, behind the other two.
 class StandInFileChooser
 {
 public:
     int openFileCalls = 0;
     std::string parentWindow;
+    std::string handleToken;
 
     ~StandInFileChooser()
     {
@@ -338,7 +339,55 @@ private:
                                   DBUS_TYPE_INVALID))
             parentWindow = parent;
 
-        DBusMessage* const response = dbus_message_new_signal("/org/freedesktop/portal/desktop/request/daf/test",
+        // (s parent_window, s title, a{sv} options), with options["handle_token"] a string
+        DBusMessageIter args, options;
+        if (dbus_message_iter_init(call, &args) && dbus_message_iter_next(&args) && dbus_message_iter_next(&args)
+            && dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_ARRAY)
+        {
+            for (dbus_message_iter_recurse(&args, &options);
+                 dbus_message_iter_get_arg_type(&options) == DBUS_TYPE_DICT_ENTRY;
+                 dbus_message_iter_next(&options))
+            {
+                DBusMessageIter entry, value;
+                const char* key = nullptr;
+                dbus_message_iter_recurse(&options, &entry);
+                dbus_message_iter_get_basic(&entry, &key);
+                dbus_message_iter_next(&entry);
+                dbus_message_iter_recurse(&entry, &value);
+
+                if (std::strcmp(key, "handle_token") == 0 && dbus_message_iter_get_arg_type(&value) == DBUS_TYPE_STRING)
+                {
+                    const char* token = nullptr;
+                    dbus_message_iter_get_basic(&value, &token);
+                    handleToken = token;
+                }
+            }
+        }
+
+        // /org/freedesktop/portal/desktop/request/SENDER/TOKEN, SENDER the caller's unique name without its
+        // leading ':' and with '_' for '.'
+        std::string sender(dbus_message_get_sender(call) + 1);
+        for (char& c : sender)
+            if (c == '.')
+                c = '_';
+        const std::string requestPath = "/org/freedesktop/portal/desktop/request/" + sender + "/"
+                                      + (handleToken.empty() ? "stand_in" : handleToken);
+
+        if (DBusMessage* const reply = dbus_message_new_method_return(call))
+        {
+            const char* const handle = requestPath.c_str();
+            dbus_message_append_args(reply, DBUS_TYPE_OBJECT_PATH, &handle, DBUS_TYPE_INVALID);
+            dbus_connection_send(connection, reply, nullptr);
+            dbus_message_unref(reply);
+        }
+
+        sendResponse(call, requestPath + "_other", kOtherDialogUri);
+        sendResponse(call, requestPath, kChosenUri);
+    }
+
+    void sendResponse(DBusMessage* const call, const std::string& requestPath, const char* const uri)
+    {
+        DBusMessage* const response = dbus_message_new_signal(requestPath.c_str(),
                                                               "org.freedesktop.portal.Request", "Response");
         if (response == nullptr)
             return;
@@ -356,7 +405,6 @@ private:
         dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
         dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "as", &variant);
         dbus_message_iter_open_container(&variant, DBUS_TYPE_ARRAY, "s", &uris);
-        const char* const uri = kChosenUri;
         dbus_message_iter_append_basic(&uris, DBUS_TYPE_STRING, &uri);
         dbus_message_iter_close_container(&variant, &uris);
         dbus_message_iter_close_container(&entry, &variant);
@@ -468,6 +516,7 @@ int main()
         }
 
         DAF_ASSERT_EQUAL(portal.openFileCalls, 1, "the portal is asked for a file once");
+        DAF_ASSERT_EQUAL(portal.handleToken.empty(), false, "the dialog names its request with a handle_token");
         if (expected == kX11)
         {
             DAF_ASSERT_EQUAL(portal.parentWindow.compare(0, 4, "x11:"), 0, "an X11 window is the dialog's x11: parent");
@@ -477,7 +526,8 @@ int main()
             DAF_ASSERT_EQUAL(portal.parentWindow.empty(), true, "a Wayland window gives the portal no parent");
         }
         DAF_ASSERT_EQUAL(win.fileSelected, true, "the window hears back about the file chosen in the portal");
-        DAF_ASSERT_EQUAL(win.selectedFile == kChosenPath, true, "the window gets the path of the portal's file URI");
+        DAF_ASSERT_EQUAL(win.selectedFile == kChosenPath, true,
+                         "the window gets the path of the file chosen in its own dialog, not another's");
 
         d_stdout("RuntimeBackendWindow: the file chosen in the portal reached the %s window", backendName(expected));
     }
