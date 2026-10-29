@@ -29,13 +29,6 @@ on:
   push:
     branches:
       - '**'
-    # Documentation and editor/agent configuration cannot change a build result, and every push
-    # here costs a full matrix. Anything under .github/ is deliberately absent from this list: a
-    # workflow change must run the workflow it changed.
-    paths-ignore:
-      - '**.md'
-      - '.vscode/**'
-      - 'LICENSE*'
   workflow_dispatch:
 
 # One run per branch at a time: pushing again supersedes the previous run, which is otherwise left
@@ -50,6 +43,24 @@ permissions:
   contents: read
 
 jobs:
+  # Whether this push has to build and test at all, which every other job waits for: see
+  # .github/code-changed.sh.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.check.outputs.code }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        # the history and main to diff against, without the contents of every old file
+        fetch-depth: 0
+        filter: blob:none
+        persist-credentials: false
+    - id: check
+      env:
+        BEFORE: ${{ github.event.before }}
+      run: .github/code-changed.sh >> "$GITHUB_OUTPUT"
+
   # -------------------------------------------------------------------------------------------------------------------
   # Build with the Wayland development files present and the X11 development files absent.
   #
@@ -58,6 +69,8 @@ jobs:
   # machine where `pkg-config --exists x11` genuinely fails.
 
   wayland-only:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container: ubuntu:24.04
     steps:
@@ -205,6 +218,8 @@ jobs:
         env -u DISPLAY tests/headless-wayland.sh make -C tests run -j"$(nproc)"
 
   wayland-x11-regression:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -273,6 +288,8 @@ jobs:
   # servers up, with DAF_WINDOW_BACKEND unset and forcing either backend.
 
   runtime-backend:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     # read by every make below, the recursive ones included
     env:
@@ -426,6 +443,8 @@ jobs:
   # the Wayland, xkbcommon and EGL runtime libraries away again and run the tests under Xvfb.
 
   runtime-backend-without-wayland:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     container: ubuntu:24.04
     # Run steps default to sh in a container, and the test steps below need bash for pipefail.
@@ -518,6 +537,8 @@ jobs:
   # trimmed, which keeps the baseline from quietly rotting.
 
   clap-validation:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     env:
       # 0.4.1 is newer but its asset name embeds a git-describe suffix and its test set has not been
@@ -688,6 +709,8 @@ jobs:
   # with anyway.
 
   plugin-validation:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     # ubuntu-22.04, not ubuntu-latest: 22.04 is this fork's product floor, and it is the image the target
     # this job replaces used to run on.
     runs-on: ubuntu-22.04
@@ -873,3 +896,26 @@ jobs:
           fi
         done
         exit $status
+
+  # The one check of this workflow that main's ruleset requires. It passes when every job above
+  # passed, or was skipped because .github/code-changed.sh found nothing to build. A job added to
+  # this workflow must be added to needs here as well, or nothing requires it.
+  wayland-passed:
+    needs: [changes, wayland-only, wayland-x11-regression, runtime-backend, runtime-backend-without-wayland, clap-validation, plugin-validation]
+    # Reports also when a job above failed or the run was cancelled, rather than being skipped: a
+    # required check counts a skipped job as passing.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check the result of every job above
+      env:
+        CODE: ${{ needs.changes.outputs.code }}
+        NEEDS: ${{ toJSON(needs) }}
+      run: |
+        failed=$(jq -r --arg code "$CODE" 'to_entries[]
+          | select(.value.result != "success" and (.value.result != "skipped" or $code != "false"))
+          | "\(.key): \(.value.result)"' <<<"$NEEDS")
+        if [ -n "$failed" ]; then
+          echo "::error::Not every job passed: ${failed//$'\n'/, }"
+          exit 1
+        fi
