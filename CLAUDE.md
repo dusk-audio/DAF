@@ -96,8 +96,9 @@ without an admin override.
 Each workflow also has a `runtime-backend` job for the `DGL_BACKEND=both` build, which picks X11 or
 Wayland at runtime (see `dgl/src/runtime-backend.md`). In `build.yml` it runs the tests under Xvfb,
 in `cmake.yml` it builds with CMake and builds an out-of-tree consumer, and in `wayland.yml` it runs
-the tests under a headless Weston, then with Xvfb and Weston together, and checks what the build
-links and exports. `wayland.yml` also has `runtime-backend-without-wayland`, which removes the
+the tests under a headless Weston, then with Xvfb and Weston together, checks what the build
+links and exports, and embeds the VST2, VST3 and CLAP plugins with `tests/plugin-embed-host.cpp`,
+which each have to refuse under Weston alone and accept with Xvfb as well. `wayland.yml` also has `runtime-backend-without-wayland`, which removes the
 Wayland, xkbcommon and EGL libraries and runs the tests on X11, and its Wayland-only job runs the
 unit tests under a headless Weston as well.
 
