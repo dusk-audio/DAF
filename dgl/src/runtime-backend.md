@@ -155,7 +155,10 @@ below. Otherwise:
    follows, under the same condition as for a program. A UI that the host wants to embed and that
    could not open on X11 is refused rather than hand the host a Wayland surface as an X11 window:
    an LV2 UI fails to instantiate, a CLAP UI fails `set_parent`, a VST3 view fails `attached` and
-   a VST2 editor fails to open.
+   a VST2 editor fails to open. CLAP also offers its Wayland window API, floating only, since
+   Wayland cannot embed. A UI the host creates for it asks for Wayland, as an application can (see
+   above), and `create()` makes sure that works first, failing where it does not so that the host
+   can pick X11 instead.
 4. With nothing left, `puglNewWorld` prints the `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` and `DISPLAY` it
    saw and returns null.
 
@@ -206,9 +209,6 @@ relies on.
 - The graphics-backend accessors (`puglSetBackend`, `puglGetBackend`, `puglGlBackend`,
   `puglStubBackend`, `puglGetProcAddress`, `puglEnterContext`, `puglLeaveContext`) are not part of
   the forwarding layer: they belong to one backend. DGL uses `puglSetMatchingBackendForCurrentBuild`.
-- CLAP keeps advertising only the X11 window API. Offering `CLAP_WINDOW_API_WAYLAND` needs the UI's
-  world on the backend the host names in `clap_plugin_gui.create()`, which an `Application` can now ask
-  for, but the wrapper does not do so yet.
 
 ## Tests
 
@@ -245,7 +245,9 @@ fails the test rather than turn it into a check that nothing opens.
 `tests/plugin-embed-host.cpp` embeds a plugin's UI the way a Linux host does, handing the VST2,
 VST3 and CLAP builds of a plugin an X11 parent window. Under Weston alone each has to refuse,
 because there is no X server for the UI to open on; with Xvfb as well each has to embed. LV2 is
-not covered: its UI needs the plugin instance, which the harness does not make.
+not covered: its UI needs the plugin instance, which the harness does not make. It also asks the
+CLAP build for a floating Wayland window, which has to be offered floating only, open and show
+wherever Weston runs, and be refused at `create()` under Xvfb alone.
 
 `tests/headless-wayland.sh` runs a command against a headless Weston of its own, with a private
 `XDG_RUNTIME_DIR`. CI uses it for Wayland alone and, under `xvfb-run`, for both servers at once:
@@ -256,8 +258,8 @@ not covered: its UI needs the plugin instance, which the harness does not make.
 
 `build.yml` runs the `both` suite under Xvfb alone. `wayland.yml` runs it under Weston alone, runs
 both runtime backend tests with both servers for each `DAF_WINDOW_BACKEND` and with EGL's vendor
-libraries hidden, embeds `d_meters` with `plugin-embed-host` under Weston alone and with both
-servers, and runs the suite again without the Wayland libraries installed, followed by
+libraries hidden, embeds `d_meters` with `plugin-embed-host` under Weston alone, with both
+servers and, for CLAP, under Xvfb alone, and runs the suite again without the Wayland libraries installed, followed by
 RuntimeBackend with `WAYLAND_DISPLAY` set, where a program has to fall back to X11, or with Wayland
 forced, open nothing. `cmake.yml` builds and runs `tests/runtime-backend-consumer`, an application
 that consumes a `both` build through CMake.

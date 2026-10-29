@@ -60,9 +60,9 @@ affected `bin/` bundles, otherwise objects and binaries from the other backend a
   picks one when it opens a window: a standalone prefers a Wayland compositor, a plugin UI an X
   server, and `DAF_WINDOW_BACKEND` overrides a standalone's choice
   (see [dgl/src/runtime-backend.md](dgl/src/runtime-backend.md)).
-- **Wayland plugin UIs.** CLAP advertises `CLAP_WINDOW_API_WAYLAND` as floating-only, and LV2
-  declares the generic `ui:UI` class on Wayland builds so conforming hosts take the
-  `ui:showInterface` path. X11 builds are unchanged in both cases.
+- **Wayland plugin UIs.** CLAP advertises `CLAP_WINDOW_API_WAYLAND` as floating-only, next to X11
+  in a `DGL_BACKEND=both` build, and LV2 declares the generic `ui:UI` class on Wayland builds so
+  conforming hosts take the `ui:showInterface` path. X11 builds are unchanged in both cases.
 - **CLAP headers 1.2.10** (DISTRHO vendors 1.1.2), keeping one local addition: the `uptr`
   member in `clap_window_t`, marked in the header so a refresh does not drop it.
 - **macOS defaults to the core-profile GL3 renderer.** `UI_TYPE` defaults to `opengl3` on macOS
