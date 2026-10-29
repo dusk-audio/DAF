@@ -107,11 +107,15 @@ ifeq ($(DGL_BACKEND_WAYLAND),true)
 UNIT_TESTS   += Wayland
 endif
 
-# opens a GL window on whichever backend a DGL_BACKEND=both build picks in the environment it runs in
+# open GL windows on whichever backend a DGL_BACKEND=both build picks in the environment they run in,
+# RuntimeBackend through pugl and RuntimeBackendWindow through DGL's Window
 ifeq ($(DGL_RUNTIME_BACKEND)$(HAVE_OPENGL),truetrue)
 UNIT_TESTS   += RuntimeBackend
+UNIT_TESTS   += RuntimeBackendWindow
 ../build/tests/RuntimeBackend.cpp.o: BUILD_CXX_FLAGS += $(OPENGL_FLAGS) -DDGL_OPENGL -DDGL_USE_OPENGL3
 ../build/tests/RuntimeBackend$(APP_EXT): LINK_FLAGS += $(OPENGL_LIBS)
+../build/tests/RuntimeBackendWindow.cpp.o: BUILD_CXX_FLAGS += $(OPENGL_FLAGS) -DDGL_OPENGL
+../build/tests/RuntimeBackendWindow$(APP_EXT): LINK_FLAGS += $(OPENGL_LIBS)
 endif
 
 # drives the X11 backend directly, so it needs one (macOS uses Cocoa even where X11 is installed)

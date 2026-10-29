@@ -198,17 +198,23 @@ relies on.
 
 ## Tests
 
-`tests/RuntimeBackend.cpp` (built only for `both`) works out from the environment which backend the
-rule picks (`tests/runtime-backend.hpp`); `DAF_TEST_EXPECT_BACKEND=x11|wayland|none` names the one a
-program must get instead, so that a display server that did not start can fail the test rather than
-turn it into a check that nothing opens. It checks a program world and a module world against it,
-opens a GL window, checks the context is current and the drawing lands (read back from the X server
-on X11, a presented frame on Wayland), resizes it, and sends it a `PUGL_CLIENT` event. It then opens
-a window in the module world too, so that with both servers up an X11 and a Wayland window are open
-in one process. Last, it announces a compositor that cannot be used, a `WAYLAND_DISPLAY` nothing
-listens on and a `WAYLAND_SOCKET` to a stand-in compositor without `xdg_wm_base`, and checks that a
-program falls back to X11, or opens nothing when Wayland was forced. `tests/Wayland.cpp` and
-`tests/X11Focus.cpp` drive each backend's half of a `both` build directly.
+Two tests are built only for `both`. Both work out from the environment which backend the rule
+picks (`tests/runtime-backend.hpp`); `DAF_TEST_EXPECT_BACKEND=x11|wayland|none` names the one a
+program must get instead, so that a display server that did not start can fail the test rather
+than turn it into a check that nothing opens.
+
+- `tests/RuntimeBackend.cpp` checks a program world and a module world against it, opens a GL
+  window, checks the context is current and the drawing lands (read back from the X server on X11,
+  a presented frame on Wayland), resizes it, and sends it a `PUGL_CLIENT` event. It then opens a
+  window in the module world too, so that with both servers up an X11 and a Wayland window are open
+  in one process. Last, it announces a compositor that cannot be used, a `WAYLAND_DISPLAY` nothing
+  listens on and a `WAYLAND_SOCKET` to a stand-in compositor without `xdg_wm_base`, and checks
+  that a program falls back to X11, or opens nothing when Wayland was forced.
+- `tests/RuntimeBackendWindow.cpp` opens a DGL `Window` and checks the per-backend code above pugl:
+  the portal parent handle, the file browser (the X11 dialog for an X11 window only), the web view
+  (none for a Wayland window), the clipboard paste loop, and following pugl's scale factor.
+
+`tests/Wayland.cpp` and `tests/X11Focus.cpp` drive each backend's half of a `both` build directly.
 
 `tests/headless-wayland.sh` runs a command against a headless Weston of its own, with a private
 `XDG_RUNTIME_DIR`. CI uses it for Wayland alone and, under `xvfb-run`, for both servers at once:
