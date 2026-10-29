@@ -18,8 +18,10 @@
 //
 // Inside a pass, PuglView and PuglWorld are redeclared to name the pass's own types, so the backend
 // sources compile unchanged. A call there whose callee is only defined further down in the same pass
-// (puglShow calling puglObscureRegion in x11.c) binds to the forwarder here instead, by
-// argument-dependent lookup through the base class, and reaches the same function one step later.
+// binds to the forwarder here instead, by argument-dependent lookup through the base class, and
+// reaches the same function one step later; dgl/src/runtime-backend.md lists the eleven calls that do.
+// That is sound because each of them is made on an object that is complete and tagged by then, and
+// the forwarders treat an untagged one as the corruption it would be.
 
 #if ! defined(DGL_USING_X11) || ! defined(DGL_USING_WAYLAND)
 # error "pugl-dispatch.hpp is the DGL_RUNTIME_BACKEND build, which needs both X11 and Wayland"
@@ -97,16 +99,26 @@ typedef PuglBackendImpl PuglBackend;
 // --------------------------------------------------------------------------------------------------------------------
 // handle helpers
 
+// Every world and view is tagged as soon as its pass has made it, see puglNewWorldOn and puglNewView.
+static bool puglIsWayland(const PuglWindowSystem system)
+{
+    if (system == kPuglWindowSystemNone)
+    {
+        d_stderr2("DGL: a pugl world or view of no backend, not one puglNewWorld or puglNewView made");
+        std::abort();
+    }
+
+    return system == kPuglWindowSystemWayland;
+}
+
 static inline bool puglIsWayland(const PuglWorld* const world)
 {
-    DAF_SAFE_ASSERT(world->system != kPuglWindowSystemNone);
-    return world->system == kPuglWindowSystemWayland;
+    return puglIsWayland(world->system);
 }
 
 static inline bool puglIsWayland(const PuglView* const view)
 {
-    DAF_SAFE_ASSERT(view->system != kPuglWindowSystemNone);
-    return view->system == kPuglWindowSystemWayland;
+    return puglIsWayland(view->system);
 }
 
 static inline pugl_x11::PuglWorld* asX11(PuglWorld* const world) { return static_cast<pugl_x11::PuglWorld*>(world); }

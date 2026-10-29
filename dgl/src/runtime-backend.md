@@ -97,9 +97,25 @@ Why this and not something else:
   goes in the Wayland pass, and `puglStartFileDrag` forwards to whichever owns the view. Drops
   arrive as pugl events at DGL's one event function, whatever the backend.
 
-A call inside a pass to a public function that the same pass only defines further down (one case
-today: `puglShow` in `x11.c` calling `puglObscureRegion`) finds the DGL-scope forwarder through the
-base class and reaches the same function one step later.
+A call inside a pass to a public function that the same pass only defines further down finds the
+DGL-scope forwarder through the base class (argument-dependent lookup), and reaches the same function
+one step later. Eleven calls do that, found by building without optimisation and listing every call
+from a pass into DGL scope:
+
+| Called | From |
+|---|---|
+| `puglGetSizeHint` | `puglUpdateSizeHints` in both passes |
+| `puglGetTime` | `puglUpdate` in `x11.c` |
+| `puglGetViewStyle` | `puglSetViewStyle` in both passes |
+| `puglGetVisible` | `flushExposures` in `x11.c`, `puglWaylandFlushExposures` in `wayland.c` |
+| `puglObscureRegion` | `puglObscureView` in both passes |
+| `puglObscureView` | `puglShow` in `x11.c` |
+| `puglSetTransientParent` | `puglRealize` in `x11.c` |
+
+All of them are made on a world or view that is complete and tagged with its backend by then. An
+untagged one reaching a forwarder would be memory corruption, or an object pugl did not make, and
+stops the program with a message rather than guessing a backend. Besides these calls, the passes
+share `PuglFileDrag`, the base class `FileDragX11.hpp` derives from.
 
 ## Selection rule
 
