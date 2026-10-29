@@ -246,12 +246,22 @@ PluginWindow& UI::PrivateData::createNextWindow(UI* const ui, uint width, uint h
         ;
         opts.callback = webViewMessageCallback;
         opts.callbackPtr = uiData;
-        uiData->webview = webViewCreate(path + "/index.html",
-                                        uiData->winId != 0 ? uiData->winId : uiData->window->getNativeWindowHandle(),
-                                        width,
-                                        height,
-                                        scaleFactor,
-                                        opts);
+
+       #ifdef DGL_RUNTIME_BACKEND
+        // The Linux web view is an X11 window reparented into this one, which a Wayland window cannot
+        // host, so it is unavailable there, as it is in a Wayland-only build.
+        const bool canHostWebView = uiData->app.isX11();
+       #else
+        const bool canHostWebView = true;
+       #endif
+
+        if (canHostWebView)
+            uiData->webview = webViewCreate(path + "/index.html",
+                                            uiData->winId != 0 ? uiData->winId : uiData->window->getNativeWindowHandle(),
+                                            width,
+                                            height,
+                                            scaleFactor,
+                                            opts);
        #endif
     }
     // If there are no callbacks, this is most likely a temporary window, so ignore idle callbacks

@@ -716,7 +716,15 @@ WebViewHandle webViewCreate(const char* const url,
    #endif
 
     ::Display* const display = XOpenDisplay(nullptr);
-    DAF_SAFE_ASSERT_RETURN(display != nullptr, nullptr);
+
+    if (display == nullptr)
+    {
+        d_stderr("webViewCreate failed, cannot open the X display");
+        munmap(shmptr, sizeof(WebViewRingBuffer));
+        close(shmfd);
+        shm_unlink(shmname);
+        return nullptr;
+    }
 
     // set up custom child environment
     uint envsize = 0;
