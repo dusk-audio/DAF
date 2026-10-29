@@ -30,14 +30,15 @@ That policy is expressed in three places, which must be kept in agreement:
   * Makefile.base.mk      -- `DGL_BACKEND_WAYLAND`, set only when HAVE_WAYLAND
                              is true and HAVE_X11 is not, or for DGL_BACKEND=both.
                              Only this variable gates -DHAVE_WAYLAND and the
-                             Wayland libraries.
+                             Wayland libraries, which a both build loads at
+                             runtime rather than links.
   * cmake/DAF-plugin.cmake -- the `_dgl_use_x11` / `_dgl_use_wayland` choice inside
                              `daf__add_dgl_system_libs`.
 
 To exercise the Wayland arm on a machine that has X11 installed:
 
-    make -C dgl HAVE_X11=
-    cmake -DCMAKE_DISABLE_FIND_PACKAGE_X11=ON ...
+    make -C dgl DGL_BACKEND=wayland
+    cmake -DDGL_BACKEND=wayland ...
 
 
 Build requirements
@@ -46,6 +47,9 @@ Build requirements
 Only the client libraries, probed together as HAVE_WAYLAND_LIBS:
 
     wayland-client, wayland-egl, wayland-cursor, xkbcommon, egl
+
+A DGL_BACKEND=both build needs the same development files, but links none of these libraries: it
+loads them when it first tries Wayland, see dgl/src/runtime-backend.md.
 
 The protocol bindings are pre-generated and vendored in `wayland-protocols/` (see the README
 there), so neither the `wayland-protocols` data package nor `wayland-scanner` is needed to build.

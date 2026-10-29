@@ -134,13 +134,16 @@ plugin asked to be user-resizable, but the host has the final say on the size.
 By default DGL links against a single windowing backend chosen at build time.
 X11 is used whenever the X11 development files are present; the native Wayland backend is selected
 only on a machine without them (`HAVE_X11` unset, `HAVE_WAYLAND` set).
-A dual-stack machine builds X11 unless asked otherwise.
+A dual-stack machine builds X11 unless asked otherwise, with `DGL_BACKEND=wayland` (Make or CMake).
 
 `DGL_BACKEND=both` (Make or CMake) builds both into one binary instead, which picks one when it
 opens a window: a standalone program prefers a Wayland compositor and falls back to X11, a plugin UI
-prefers X11, and `DAF_WINDOW_BACKEND=x11` or `=wayland` forces either. See
-[dgl/src/runtime-backend.md](dgl/src/runtime-backend.md). The table below describes the
-single-backend builds; a `both` build behaves as the column of the backend it picked.
+prefers X11, and `DAF_WINDOW_BACKEND=x11` or `=wayland` forces a standalone onto either. It needs
+the development files of both to build, but loads the Wayland libraries only when it tries Wayland.
+See [dgl/src/runtime-backend.md](dgl/src/runtime-backend.md). The table below describes the
+single-backend builds. A `both` standalone behaves as the column of the backend it picked; its
+plugins offer hosts the X11 embedding of an X11 build alone (LV2 `ui:X11UI`, CLAP's X11 window
+API), and an LV2 UI a host wants to embed fails to instantiate where it cannot open on X11.
 
 What a Wayland build gives you:
 

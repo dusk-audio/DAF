@@ -38,8 +38,11 @@ Provided features and implementation status for specific plugin formats can be s
 
 On Linux, DAF builds against X11 by default and against Wayland natively when the X11 development
 files are absent; see [Wayland support](FEATURES.md#wayland-support) for what each build can do.
-`DGL_BACKEND=both` builds both and picks one at runtime, see [dgl/src/runtime-backend.md](dgl/src/runtime-backend.md).
-The Wayland backend needs `wayland-client`, `wayland-egl`, `wayland-cursor`, `xkbcommon` and `egl`.
+`DGL_BACKEND=x11` or `DGL_BACKEND=wayland` asks for one of them, and `DGL_BACKEND=both` builds both
+and picks one at runtime, see [dgl/src/runtime-backend.md](dgl/src/runtime-backend.md).
+The Wayland backend needs the `wayland-client`, `wayland-egl`, `wayland-cursor`, `xkbcommon` and
+`egl` development files. A Wayland build links those libraries; a `both` build needs them to build
+too, but loads the libraries only when it tries Wayland, so it starts and runs on X11 without them.
 When switching a checkout between backends, set `BUILD_DIR_SUFFIX` per backend and remove the
 affected `bin/` bundles, otherwise objects and binaries from the other backend are silently reused.
 
@@ -52,8 +55,11 @@ affected `bin/` bundles, otherwise objects and binaries from the other backend a
   [repository layout](#repository-layout). No submodule initialization or separate
   widget checkout is needed.
 - **Native Wayland windowing.** A pugl Wayland backend for DGL (`dgl/src/pugl-extra/wayland*`),
-  selected when the X11 development files are absent. X11 remains the backend on any machine that
-  has it; there is no runtime switch.
+  built when the X11 development files are absent or with `DGL_BACKEND=wayland`; the default build
+  stays X11 on any machine that has it. `DGL_BACKEND=both` puts X11 and Wayland in one binary that
+  picks one when it opens a window: a standalone prefers a Wayland compositor, a plugin UI an X
+  server, and `DAF_WINDOW_BACKEND` overrides a standalone's choice
+  (see [dgl/src/runtime-backend.md](dgl/src/runtime-backend.md)).
 - **Wayland plugin UIs.** CLAP advertises `CLAP_WINDOW_API_WAYLAND` as floating-only, and LV2
   declares the generic `ui:UI` class on Wayland builds so conforming hosts take the
   `ui:showInterface` path. X11 builds are unchanged in both cases.
@@ -80,9 +86,11 @@ affected `bin/` bundles, otherwise objects and binaries from the other backend a
   deliberate exception: the four characters hashed into VST3 class UIDs are still `'D','P','F',' '`,
   because changing them would orphan every already-shipped VST3 in every saved session.
 - **CI covers the shipped surface and nothing else.** `build.yml` (Makefile, macOS arm64 + the
-  Ubuntu 22.04 floor), `cmake.yml` (Linux x86_64, native ARM Linux, macOS, MSVC x64) and
-  `wayland.yml` (Wayland-only build, X11 regression, clap-validator and pluginval runs with no
-  external package repositories). Formats, UI types and architectures that are not shipped are not
+  Ubuntu 22.04 floor, and a `DGL_BACKEND=both` build tested under Xvfb), `cmake.yml` (Linux x86_64,
+  native ARM Linux, macOS, MSVC x64, and a `both` build with an out-of-tree consumer) and
+  `wayland.yml` (Wayland-only build, X11 regression, a `both` build tested under a headless Weston,
+  under Weston and Xvfb together, and with the Wayland libraries removed, clap-validator and
+  pluginval runs), all with no external package repositories. Formats, UI types and architectures that are not shipped are not
   built: no 32-bit anything, no Intel-only macOS legs, no MinGW, no Cairo or GLES UI legs. macOS
   builds universal, so the x86_64 slice is still compiled and shipped alongside arm64; what was
   dropped is the separate Intel-only CI targets, not Intel support.
