@@ -409,7 +409,7 @@ jobs:
           exported=$(readelf -sW build/libdgl-*.a | awk '$7 != "UND" && $5 == "GLOBAL" && $6 == "DEFAULT" {print $8}' \
                      | grep -E '^(wl_|xkb_|egl|dgl_)' || true)
           if [ -n "$exported" ]; then
-            echo "::error::the $1 build leaves these visible:" $exported
+            echo "::error::the $1 build leaves these visible: ${exported//$'\n'/ }"
             exit 1
           fi
           readelf -sW build/libdgl-opengl.a | awk '$7 != "UND" && $6 == "HIDDEN" {print $8}' | grep -qx wl_display_interface \
