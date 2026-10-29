@@ -104,6 +104,18 @@ jobs:
             || { echo "::error::DGL_BACKEND=both did not select the runtime backend"; exit 1; }
       - name: Build
         run: cmake --build build -j "$(nproc)"
+      # what reaches Wayland, the vendored wl_*_interface objects among it, stays inside whatever links DGL
+      - name: Verify DGL hides what reaches Wayland
+        run: |
+          libs=$(find build -name 'libdgl-*.a')
+          [ -n "$libs" ] || { echo "::error::no DGL library was built"; exit 1; }
+          # shellcheck disable=SC2086
+          exported=$(readelf -sW $libs | awk '$7 != "UND" && $5 == "GLOBAL" && $6 == "DEFAULT" {print $8}' \
+                     | grep -E '^(wl_|xkb_|egl|dgl_)' || true)
+          if [ -n "$exported" ]; then
+            echo "::error::DGL leaves these visible:" $exported
+            exit 1
+          fi
       - name: Out-of-tree consumer
         env:
           LIBGL_ALWAYS_SOFTWARE: 1
