@@ -162,10 +162,15 @@ jobs:
     - name: Build widget gallery
       run: make -C widgets/tests -j "$(nproc)"
     # -noreset: a lone Xvfb resets whenever its last client disconnects, and refuses the odd connection made
-    # during the reset, which the Window tests' back-to-back windows run into
+    # during the reset, which the Window tests' back-to-back windows run into. DAF_TEST_EXPECT_BACKEND makes
+    # the runtime backend tests fail, rather than check that nothing opens, should Xvfb not be there.
     - name: Run tests
+      env:
+        DAF_TEST_EXPECT_BACKEND: x11
       run: |
         set -o pipefail
         xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" make -C tests run | tee tests.log
         grep -q 'RuntimeBackend: program world on x11' tests.log \
           || { echo "::error::RuntimeBackend did not open its window on X11"; exit 1; }
+        grep -q 'RuntimeBackendWindow: window on x11' tests.log \
+          || { echo "::error::RuntimeBackendWindow did not open its window on X11"; exit 1; }

@@ -200,8 +200,8 @@ relies on.
 
 Two tests are built only for `both`. Both work out from the environment which backend the rule
 picks (`tests/runtime-backend.hpp`); `DAF_TEST_EXPECT_BACKEND=x11|wayland|none` names the one a
-program must get instead, so that a display server that did not start can fail the test rather
-than turn it into a check that nothing opens.
+program must get instead, which CI sets on every run so that a display server that did not start
+fails the test rather than turn it into a check that nothing opens.
 
 - `tests/RuntimeBackend.cpp` checks a program world and a module world against it, opens a GL
   window, checks the context is current and the drawing lands (read back from the X server on X11,
@@ -223,6 +223,9 @@ than turn it into a check that nothing opens.
         tests/headless-wayland.sh make -C tests run DGL_BACKEND=both SKIP_UNIT_TESTS=X11Focus
     xvfb-run -a tests/headless-wayland.sh build/tests/RuntimeBackend
 
-`build.yml` runs the `both` suite under Xvfb alone, `wayland.yml` under Weston alone and
-RuntimeBackend with both servers and each `DAF_WINDOW_BACKEND`, and `cmake.yml` builds and runs
-`tests/runtime-backend-consumer`, an application that consumes a `both` build through CMake.
+`build.yml` runs the `both` suite under Xvfb alone. `wayland.yml` runs it under Weston alone, runs
+both runtime backend tests with both servers for each `DAF_WINDOW_BACKEND` and with EGL's vendor
+libraries hidden, and runs the suite again without the Wayland libraries installed, followed by
+RuntimeBackend with `WAYLAND_DISPLAY` set, where a program has to fall back to X11, or with Wayland
+forced, open nothing. `cmake.yml` builds and runs `tests/runtime-backend-consumer`, an application
+that consumes a `both` build through CMake.

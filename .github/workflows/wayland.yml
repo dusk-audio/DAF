@@ -321,36 +321,50 @@ jobs:
           status=1
         fi
         exit $status
-    # X11Focus needs an X server, and there is none here; build.yml runs it.
+    # X11Focus needs an X server, and there is none here; build.yml runs it. DAF_TEST_EXPECT_BACKEND makes
+    # the runtime backend tests fail, rather than check that nothing opens, should Weston not be there.
     - name: Run the unit tests under a headless Wayland compositor
       env:
         LIBGL_ALWAYS_SOFTWARE: 1
+        DAF_TEST_EXPECT_BACKEND: wayland
       run: |
         set -o pipefail
         env -u DISPLAY tests/headless-wayland.sh make -C tests run -j"$(nproc)" SKIP_UNIT_TESTS=X11Focus | tee tests.log
         grep -q 'RuntimeBackend: program world on wayland' tests.log \
           || { echo "::error::RuntimeBackend did not open its window on Wayland"; exit 1; }
-    # With both servers reachable a program prefers Wayland and a module X11, and DAF_WINDOW_BACKEND overrides
-    # the program's choice alone. RuntimeBackend checks this against the environment itself; the expected backends are spelled out
-    # again here so that a rule changed in the test and the code alike still shows up.
-    - name: Run RuntimeBackend with an X server and a compositor
+        grep -q 'RuntimeBackendWindow: window on wayland' tests.log \
+          || { echo "::error::RuntimeBackendWindow did not open its window on Wayland"; exit 1; }
+    # With both servers reachable a program prefers Wayland and a module X11, DAF_WINDOW_BACKEND overrides the
+    # program's choice alone, and a compositor EGL cannot render on sends a program to X11. The expected
+    # backends are spelled out here, so that a rule changed in the tests and the code alike still shows up.
+    - name: Run the runtime backend tests with an X server and a compositor
       env:
         LIBGL_ALWAYS_SOFTWARE: 1
       run: |
         set -o pipefail
+        # check OVERRIDE MODULE PROGRAM [VAR=VALUE...]
         check() {
-          if [ -n "$1" ]; then export DAF_WINDOW_BACKEND="$1"; else unset DAF_WINDOW_BACKEND; fi
-          xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" tests/headless-wayland.sh ./build/tests/RuntimeBackend \
-            | tee run.log
-          if ! grep -q "RuntimeBackend: module world on $2" run.log \
-             || ! grep -q "RuntimeBackend: program world on $3" run.log; then
-            echo "::error::DAF_WINDOW_BACKEND='$1' should give a module world on $2 and a program world on $3"
+          local override=$1 module=$2 program=$3
+          shift 3
+          local vars=("DAF_TEST_EXPECT_BACKEND=$program" "$@")
+          [ -z "$override" ] || vars+=("DAF_WINDOW_BACKEND=$override")
+          for test in RuntimeBackend RuntimeBackendWindow; do
+            env "${vars[@]}" xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" \
+              tests/headless-wayland.sh "./build/tests/$test" | tee "$test.log"
+          done
+          if ! grep -q "RuntimeBackend: module world on $module" RuntimeBackend.log \
+             || ! grep -q "RuntimeBackend: program world on $program" RuntimeBackend.log \
+             || ! grep -q "RuntimeBackendWindow: window on $program" RuntimeBackendWindow.log; then
+            echo "::error::DAF_WINDOW_BACKEND='$override' $* should give a module world on $module and a program world on $program"
             exit 1
           fi
         }
         check ''      x11     wayland
         check x11     x11     x11
         check wayland x11     wayland
+        check ''      x11     x11     __EGL_VENDOR_LIBRARY_FILENAMES=/nonexistent/egl-vendor.json
+        grep -q 'DGL: cannot use Wayland, EGL cannot make' RuntimeBackend.log \
+          || { echo "::error::RuntimeBackend did not report EGL as the reason it left Wayland"; exit 1; }
     # A both build's plugin UIs open on X11 whenever there is an X server, so its turtle keeps declaring the
     # X11 UI class every embedding host uses, exactly as an X11 build does.
     - name: Verify the LV2 turtle still declares an X11 UI
@@ -431,11 +445,30 @@ jobs:
     - name: Run the unit tests under Xvfb
       env:
         LIBGL_ALWAYS_SOFTWARE: 1
+        DAF_TEST_EXPECT_BACKEND: x11
       run: |
         set -o pipefail
         xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" make -C tests run DGL_BACKEND=both | tee tests.log
         grep -q 'RuntimeBackend: program world on x11' tests.log \
           || { echo "::error::RuntimeBackend did not open its window on X11"; exit 1; }
+        grep -q 'RuntimeBackendWindow: window on x11' tests.log \
+          || { echo "::error::RuntimeBackendWindow did not open its window on X11"; exit 1; }
+    # With a compositor announced, a program tries Wayland first, cannot load the libraries, and opens on X11;
+    # forced onto Wayland, it opens nothing. Either way it says which library was missing.
+    - name: Try Wayland without the Wayland libraries
+      env:
+        LIBGL_ALWAYS_SOFTWARE: 1
+        WAYLAND_DISPLAY: daf-ci-no-compositor
+      run: |
+        set -o pipefail
+        DAF_TEST_EXPECT_BACKEND=x11 xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" ./build/tests/RuntimeBackend \
+          | tee automatic.log
+        DAF_TEST_EXPECT_BACKEND=none DAF_WINDOW_BACKEND=wayland xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" \
+          ./build/tests/RuntimeBackend | tee forced.log
+        for log in automatic.log forced.log; do
+          grep -q 'DGL: cannot use Wayland, libwayland-client.so.0: cannot open shared object file' "$log" \
+            || { echo "::error::RuntimeBackend did not report the missing libwayland-client ($log)"; exit 1; }
+        done
 
   # -------------------------------------------------------------------------------------------------------------------
   # Run the CLAP examples through clap-validator. Upstream CI builds CLAP plugins but never loads them.
