@@ -169,24 +169,25 @@ static bool x11ServerHasColour(PuglView* const view)
 
 int main()
 {
-    // a module's world follows its own rule, and only which backend it opens on is checked here
+    // A module's world follows its own rule, and only which backend it opens on is checked. It stays open
+    // until the end, so with both servers up an X11 world and a Wayland world share the process. That also
+    // keeps a lone Xvfb from resetting, which it does when its last client leaves, while the program's
+    // world connects again.
+    const Expected moduleExpected = expectedBackend(PUGL_MODULE);
+    PuglWorld* const moduleWorld = puglNewWorld(PUGL_MODULE, 0);
+
+    if (moduleExpected == kNone)
     {
-        const Expected expected = expectedBackend(PUGL_MODULE);
-        PuglWorld* const world = puglNewWorld(PUGL_MODULE, 0);
-
-        if (expected == kNone)
-        {
-            DAF_ASSERT_EQUAL(world, nullptr, "a module world cannot open without its backend");
-        }
-        else
-        {
-            DAF_ASSERT_NOT_EQUAL(world, nullptr, "a module world opens");
-            DAF_ASSERT_EQUAL(puglWorldIsX11(world), expected == kX11, "a module world opens on the expected backend");
-            puglFreeWorld(world);
-        }
-
-        d_stdout("RuntimeBackend: module world on %s", name(expected));
+        DAF_ASSERT_EQUAL(moduleWorld, nullptr, "a module world cannot open without its backend");
     }
+    else
+    {
+        DAF_ASSERT_NOT_EQUAL(moduleWorld, nullptr, "a module world opens");
+        DAF_ASSERT_EQUAL(puglWorldIsX11(moduleWorld), moduleExpected == kX11,
+                         "a module world opens on the expected backend");
+    }
+
+    d_stdout("RuntimeBackend: module world on %s", name(moduleExpected));
 
     const Expected expected = expectedBackend(PUGL_PROGRAM);
     PuglWorld* const world = puglNewWorld(PUGL_PROGRAM, 0);
@@ -194,6 +195,8 @@ int main()
     if (expected == kNone)
     {
         DAF_ASSERT_EQUAL(world, nullptr, "a program world cannot open without its backend");
+        if (moduleWorld != nullptr)
+            puglFreeWorld(moduleWorld);
         d_stdout("RuntimeBackend: no backend available, as expected");
         return 0;
     }
@@ -254,6 +257,9 @@ int main()
     puglHide(view);
     puglFreeView(view);
     puglFreeWorld(world);
+
+    if (moduleWorld != nullptr)
+        puglFreeWorld(moduleWorld);
 
     d_stdout("RuntimeBackend: program world on %s, window realized, drew, presented, resized and got its event",
              name(expected));
