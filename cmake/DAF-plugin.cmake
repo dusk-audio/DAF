@@ -1882,9 +1882,15 @@ function(daf__add_dgl_system_libs)
     if(_dgl_use_wayland)
       target_compile_definitions(dgl-system-libs-definitions INTERFACE "HAVE_WAYLAND")
       target_include_directories(dgl-system-libs INTERFACE "${WAYLAND_INCLUDE_DIRS}")
-      # Not daf__target_link_directories: it uses PUBLIC, which an INTERFACE library cannot take.
-      link_directories(${WAYLAND_LIBRARY_DIRS})
-      target_link_libraries(dgl-system-libs INTERFACE "${WAYLAND_LIBRARIES}")
+      if(DGL_BACKEND STREQUAL "both")
+        # Not linked: DGL loads them when Wayland is first tried, so that a machine without them still
+        # starts the program and runs it on X11. See dgl/src/pugl-extra/wayland-loader-names.h.
+        target_link_libraries(dgl-system-libs INTERFACE ${CMAKE_DL_LIBS})
+      else()
+        # Not daf__target_link_directories: it uses PUBLIC, which an INTERFACE library cannot take.
+        link_directories(${WAYLAND_LIBRARY_DIRS})
+        target_link_libraries(dgl-system-libs INTERFACE "${WAYLAND_LIBRARIES}")
+      endif()
       # The clipboard code calls pthread_sigmask to keep SIGPIPE off the GUI thread during a
       # transfer. glibc 2.34 and later have it in libc, but older ones keep it in libpthread.
       set(THREADS_PREFER_PTHREAD_FLAG TRUE)
@@ -1893,8 +1899,8 @@ function(daf__add_dgl_system_libs)
     endif()
 
     if(_dgl_use_x11 AND _dgl_use_wayland)
-      # GLX for the X11 windows comes with OPENGL_gl_LIBRARY, EGL for the Wayland ones with
-      # WAYLAND_LIBRARIES above.
+      # GLX for the X11 windows comes with OPENGL_gl_LIBRARY, EGL for the Wayland ones is loaded at
+      # runtime with the rest of Wayland.
       target_compile_definitions(dgl-system-libs-definitions INTERFACE "DGL_RUNTIME_BACKEND")
       message(STATUS "DGL windowing backend: X11 and Wayland, chosen at runtime")
     elseif(_dgl_use_x11)

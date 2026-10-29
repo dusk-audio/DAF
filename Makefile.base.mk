@@ -582,9 +582,13 @@ endif # HAVE_X11
 # installed builds exactly as it did before Wayland support existed.
 ifeq ($(DGL_BACKEND_WAYLAND),true)
 DGL_FLAGS       += $(shell $(PKG_CONFIG) --cflags wayland-client wayland-egl wayland-cursor xkbcommon) -DHAVE_WAYLAND
-DGL_SYSTEM_LIBS += $(shell $(PKG_CONFIG) --libs wayland-client wayland-egl wayland-cursor xkbcommon)
 ifeq ($(DGL_RUNTIME_BACKEND),true)
+# Not linked: DGL loads them when Wayland is first tried, so that a machine without them still starts the
+# program and runs it on X11. See dgl/src/pugl-extra/wayland-loader-names.h.
 DGL_FLAGS       += -DDGL_RUNTIME_BACKEND
+DGL_SYSTEM_LIBS += -ldl
+else
+DGL_SYSTEM_LIBS += $(shell $(PKG_CONFIG) --libs wayland-client wayland-egl wayland-cursor xkbcommon)
 endif
 # The clipboard code calls pthread_sigmask to keep SIGPIPE off the GUI thread during a transfer.
 # glibc 2.34 and later have it in libc, but older ones keep it in libpthread.
@@ -638,10 +642,11 @@ else
 # Only a build without X11 at all falls back to EGL on the Wayland platform.
 #
 # DGL_BACKEND=both needs GLX for its X11 windows and EGL for its Wayland ones, and renders desktop GL
-# on both: there is no GLES flavour of it, for the same reason the X11 arm below has none.
+# on both: there is no GLES flavour of it, for the same reason the X11 arm below has none. EGL and
+# wayland-egl are loaded at runtime with the rest of Wayland, so only their headers are used here.
 ifeq ($(DGL_RUNTIME_BACKEND),true)
 OPENGL_FLAGS = $(shell $(PKG_CONFIG) --cflags gl x11 egl wayland-egl)
-OPENGL_LIBS  = $(shell $(PKG_CONFIG) --libs gl x11 egl wayland-egl)
+OPENGL_LIBS  = $(shell $(PKG_CONFIG) --libs gl x11)
 else ifeq ($(HAVE_X11),true)
 OPENGL_FLAGS = $(shell $(PKG_CONFIG) --cflags gl x11)
 OPENGL_LIBS  = $(shell $(PKG_CONFIG) --libs gl x11)

@@ -15,10 +15,43 @@ Wayland-only build compiles to exactly the symbols it would without this support
 | Values | `DGL_BACKEND=auto` (default) or `both` | `-DDGL_BACKEND=auto` (default), `x11`, `wayland` or `both` |
 | Requires | every X11 and every Wayland development file | same |
 | Defines | `HAVE_X11`, `HAVE_WAYLAND`, `DGL_RUNTIME_BACKEND` | same, on `dgl-system-libs-definitions` |
-| Links | X11 libraries, Wayland client libraries, `gl x11 egl wayland-egl` | X11 libraries, `WAYLAND_LIBRARIES` (incl. EGL), `OPENGL_gl_LIBRARY` |
+| Links | X11 libraries, `gl x11`, `-ldl` | X11 libraries, `OPENGL_gl_LIBRARY`, `CMAKE_DL_LIBS` |
 
 `make features` reports `DGL_RUNTIME_BACKEND: Yes` for such a build. `both` is Linux only, and has no
-GLES or Vulkan flavour (see the end of this note).
+GLES or Vulkan flavour (see the end of this note). It needs every Wayland development file to build,
+but links none of the Wayland libraries, see below.
+
+## Loading Wayland at runtime
+
+A `both` binary has no DT_NEEDED entry for libwayland-client, libwayland-cursor, libwayland-egl,
+libxkbcommon or libEGL. It starts, and runs on X11 exactly as an X11 build does, on a machine that
+has none of them. They are loaded with `dlopen` the first time `puglNewWorld` tries Wayland, once
+per process, and never unloaded. If one is missing, or lacks a function DGL uses, the automatic
+choice goes on to X11 and a forced `DAF_WINDOW_BACKEND=wayland` fails, naming what was missing.
+
+- Functions: `pugl-extra/wayland-loader-names.h`, included before the library headers, turns each
+  function the Wayland backend calls into a call through a pointer of the same type (the header's
+  declaration becomes that of an accessor returning it). `pugl-extra/wayland-loader.hpp` defines the
+  accessors and fills the pointers with `dlsym`. Calls through a pointer of the real type also cover
+  `wl_proxy_marshal_flags`, the variadic function every protocol request goes through. The build
+  checks the two lists against each other and against the code: an accessor declared but not
+  defined, an entry with no accessor, or a call to any other function of these libraries, each
+  fails to compile or to link.
+- Data: the protocol code refers to the `wl_*_interface` objects of libwayland-client, and the
+  generated tables take their addresses in static initializers, before anything could be loaded.
+  Lazy PLT binding would not help with those (data references are bound when the program loads, and
+  a library named in DT_NEEDED has to exist for it to start at all), and neither would `dlsym`. A
+  `both` build therefore compiles in the core protocol vendored in `pugl-extra/wayland-protocols`,
+  header and interface objects, generated from the same `wayland.xml`. libwayland copes with a second
+  copy of an interface: it compares interfaces by name when the pointers differ.
+- Visibility: the accessors are hidden in every build, so that two DAF plugins in one host cannot
+  interpose each other's; for that, `EGLAPI` is emptied and xkbcommon's own `visibility("default")`
+  rewritten before their headers declare them. The vendored interface objects are hidden wherever
+  the build hides by default, which every release build does, exactly like the other generated
+  protocol code (see the comment on it in pugl.cpp).
+
+libGL stays linked: the X11 side needs GLX from it anyway, and with glvnd its GL entry points serve
+EGL contexts as well.
 
 ## How both backends live in one unity build
 
@@ -74,6 +107,7 @@ base class and reaches the same function one step later.
 
 1. `DAF_WINDOW_BACKEND=x11` or `DAF_WINDOW_BACKEND=wayland` forces that backend. If it cannot be
    opened, world creation fails with a message saying so. Any other value is reported and ignored.
+   Wayland counts as unopenable when its libraries cannot be loaded.
 2. A program (`PUGL_PROGRAM`, a standalone application) tries Wayland first, but only when
    `WAYLAND_DISPLAY` or `WAYLAND_SOCKET` is set: libwayland would otherwise try `wayland-0` on its
    own. Wayland counts only if the compositor accepts the connection and offers `wl_compositor` and

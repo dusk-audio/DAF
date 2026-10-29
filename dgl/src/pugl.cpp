@@ -147,11 +147,27 @@
 # ifdef __linux__
 #  include <sys/timerfd.h>
 # endif
+// A DGL_BACKEND=both build does not link the Wayland libraries: their functions are reached through
+// accessors that wayland-loader.hpp fills when Wayland is first tried, see wayland-loader-names.h, and
+// the core protocol is vendored in place of libwayland-client's interface objects.
+# ifdef DGL_RUNTIME_BACKEND
+#  include "pugl-extra/wayland-loader-names.h"
+#  include <wayland-client-core.h>
+#  include "pugl-extra/wayland-protocols/wayland-client-protocol.h"
+# endif
 # include <wayland-client.h>
 # include <wayland-cursor.h>
+// Newer xkbcommon headers mark each declaration visibility("default") themselves, which would leave
+// the accessors exported, see wayland-loader.hpp.
+# ifdef DGL_RUNTIME_BACKEND
+#  define visibility(name) visibility("hidden")
+# endif
 # include <xkbcommon/xkbcommon.h>
 # include <xkbcommon/xkbcommon-compose.h>
 # include <xkbcommon/xkbcommon-keysyms.h>
+# ifdef DGL_RUNTIME_BACKEND
+#  undef visibility
+# endif
 /* Wayland protocol bindings, pre-generated and vendored so that neither wayland-scanner nor the
    wayland-protocols data package is needed to build. See pugl-extra/wayland-protocols/README.
 
@@ -180,6 +196,9 @@
 #  pragma GCC diagnostic ignored "-Wattributes"
 # endif
 extern "C" {
+# ifdef DGL_RUNTIME_BACKEND
+#  include "pugl-extra/wayland-protocols/wayland-protocol.c"
+# endif
 # include "pugl-extra/wayland-protocols/xdg-shell-protocol.c"
 # include "pugl-extra/wayland-protocols/xdg-decoration-unstable-v1-protocol.c"
 # include "pugl-extra/wayland-protocols/viewporter-protocol.c"
@@ -201,6 +220,9 @@ extern "C" {
 #  include <EGL/egl.h>
 #  include <EGL/eglext.h>
 #  include <wayland-egl.h>
+# endif
+# ifdef DGL_RUNTIME_BACKEND
+#  include "pugl-extra/wayland-loader.hpp"
 # endif
 // NOTE: no vulkan/vulkan_wayland.h here on purpose. There is no wayland_vulkan backend to include
 // below, so the header would only be dead weight ahead of the diagnostic in the backend arm.

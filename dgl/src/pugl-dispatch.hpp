@@ -134,6 +134,13 @@ static PuglWorld* puglNewWorldOn(const PuglWindowSystem system, const PuglWorldT
 {
     if (system == kPuglWindowSystemWayland)
     {
+        // nothing of Wayland is linked, see pugl-extra/wayland-loader-names.h
+        if (const char* const failure = ::dglWaylandLoad())
+        {
+            d_stderr("DGL: cannot use Wayland, %s", failure);
+            return nullptr;
+        }
+
         pugl_wl::PuglWorld* const world = pugl_wl::puglNewWorld(type, flags);
         if (world != nullptr)
             world->system = kPuglWindowSystemWayland;
