@@ -472,7 +472,7 @@ struct FileBrowserData {
         if ((dbuscon = dbus_bus_get(DBUS_BUS_SESSION, nullptr)) != nullptr)
             dbus_connection_set_exit_on_disconnect(dbuscon, false);
 #endif
-#ifdef HAVE_X11
+#if defined(HAVE_X11) && ! defined(DGL_RUNTIME_BACKEND)
         x11display = XOpenDisplay(nullptr);
 #endif
 
@@ -539,7 +539,11 @@ void fileBrowserSetPathNamespaced(FileBrowserHandle handle, const char* filename
 FileBrowserHandle fileBrowserCreate(const bool isEmbed,
                                     const uintptr_t windowId,
                                     const double scaleFactor,
-                                    const FileBrowserOptions& options)
+                                    const FileBrowserOptions& options
+                                   #ifdef DGL_RUNTIME_BACKEND
+                                    , const bool isX11
+                                   #endif
+                                    )
 {
     String startDir(options.startDir);
 
@@ -569,11 +573,21 @@ FileBrowserHandle fileBrowserCreate(const bool isEmbed,
     ScopedPointer<FileBrowserData> handle(new FileBrowserData(options.saving));
 
 #ifdef HAVE_X11
+   #ifdef DGL_RUNTIME_BACKEND
+    // opening a display for a Wayland window could start XWayland just for this
+    if (isX11)
+        handle->x11display = XOpenDisplay(nullptr);
+
+    const uintptr_t x11WindowId = isX11 ? windowId : 0;
+   #else
+    const uintptr_t x11WindowId = windowId;
+   #endif
+
     // the parent given to the portal and to libsofd must be a top-level window, see above
     const uintptr_t x11ParentWindow = isEmbed
                                     ? static_cast<uintptr_t>(getX11TopLevelWindow(handle->x11display,
-                                                                                  static_cast<::Window>(windowId)))
-                                    : windowId;
+                                                                                  static_cast<::Window>(x11WindowId)))
+                                    : x11WindowId;
 #endif
 
 #ifdef DAF_OS_MAC
@@ -762,6 +776,14 @@ FileBrowserHandle fileBrowserCreate(const bool isEmbed,
 #endif
 
 #ifdef HAVE_X11
+   #ifdef DGL_RUNTIME_BACKEND
+    if (! isX11)
+    {
+        d_stderr2("fileBrowserCreate failed, xdg-desktop-portal is unavailable and a Wayland window has no X11 fallback");
+        return nullptr;
+    }
+   #endif
+
     Display* const x11display = handle->x11display;
     DAF_SAFE_ASSERT_RETURN(x11display != nullptr, nullptr);
 
@@ -808,6 +830,16 @@ FileBrowserHandle fileBrowserCreate(const bool isEmbed,
     (void)windowId;
     (void)scaleFactor;
 }
+
+#ifdef DGL_RUNTIME_BACKEND
+FileBrowserHandle fileBrowserCreate(const bool isEmbed,
+                                    const uintptr_t windowId,
+                                    const double scaleFactor,
+                                    const FileBrowserOptions& options)
+{
+    return fileBrowserCreate(isEmbed, windowId, scaleFactor, options, true);
+}
+#endif
 
 // --------------------------------------------------------------------------------------------------------------------
 // returns true if dialog was closed (with or without a file selection)
@@ -949,28 +981,27 @@ bool fileBrowserIdle(const FileBrowserHandle handle)
 #endif
 
 #ifdef HAVE_X11
-    Display* const x11display = handle->x11display;
-
-    if (x11display == nullptr)
-        return false;
-
-    XEvent event;
-    while (XPending(x11display) > 0)
+    // without an X11 connection, as for a Wayland window, the portal is all there is
+    if (Display* const x11display = handle->x11display)
     {
-        XNextEvent(x11display, &event);
+        XEvent event;
+        while (XPending(x11display) > 0)
+        {
+            XNextEvent(x11display, &event);
 
-        if (x_fib_handle_events(x11display, &event) == 0)
-            continue;
+            if (x_fib_handle_events(x11display, &event) == 0)
+                continue;
 
-        if (x_fib_status() > 0)
-            handle->selectedFile = x_fib_filename();
-        else
-            handle->selectedFile = kSelectedFileCancelled;
+            if (x_fib_status() > 0)
+                handle->selectedFile = x_fib_filename();
+            else
+                handle->selectedFile = kSelectedFileCancelled;
 
-        x_fib_close(x11display);
-        XCloseDisplay(x11display);
-        handle->x11display = nullptr;
-        break;
+            x_fib_close(x11display);
+            XCloseDisplay(x11display);
+            handle->x11display = nullptr;
+            break;
+        }
     }
 #endif
 

@@ -107,12 +107,27 @@ ifeq ($(DGL_BACKEND_WAYLAND),true)
 UNIT_TESTS   += Wayland
 endif
 
+# open GL windows on whichever backend a DGL_BACKEND=both build picks in the environment they run in,
+# RuntimeBackend through pugl and RuntimeBackendWindow through DGL's Window
+ifeq ($(DGL_RUNTIME_BACKEND)$(HAVE_OPENGL),truetrue)
+UNIT_TESTS   += RuntimeBackend
+UNIT_TESTS   += RuntimeBackendWindow
+../build/tests/RuntimeBackend.cpp.o: BUILD_CXX_FLAGS += $(OPENGL_FLAGS) -DDGL_OPENGL -DDGL_USE_OPENGL3
+../build/tests/RuntimeBackend$(APP_EXT): LINK_FLAGS += $(OPENGL_LIBS)
+../build/tests/RuntimeBackendWindow.cpp.o: BUILD_CXX_FLAGS += $(OPENGL_FLAGS) -DDGL_OPENGL
+../build/tests/RuntimeBackendWindow$(APP_EXT): LINK_FLAGS += $(OPENGL_LIBS)
+endif
+
 # drives the X11 backend directly, so it needs one (macOS uses Cocoa even where X11 is installed)
 ifeq ($(LINUX),true)
 ifeq ($(HAVE_X11),true)
 UNIT_TESTS   += X11Focus
 endif
 endif
+
+# leaves out tests the environment cannot run, e.g. SKIP_UNIT_TESTS=X11Focus under a Wayland compositor
+# with no X server (see headless-wayland.sh)
+UNIT_TESTS    := $(filter-out $(SKIP_UNIT_TESTS),$(UNIT_TESTS))
 
 MANUAL_TARGETS = $(MANUAL_TESTS:%=../build/tests/%$(APP_EXT))
 UNIT_TARGET    = $(UNIT_TESTS:%=../build/tests/%$(APP_EXT))

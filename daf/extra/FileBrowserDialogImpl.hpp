@@ -107,6 +107,21 @@ FileBrowserHandle fileBrowserCreate(bool isEmbed,
                                     double scaleFactor,
                                     const FileBrowserOptions& options = FileBrowserOptions());
 
+#ifdef DGL_RUNTIME_BACKEND
+/**
+  Create a new file browser dialog, for a window of a DGL_BACKEND=both build.
+
+  @p isX11 says whether @p windowId is an X11 window rather than a Wayland one; the call above assumes X11.
+  A Wayland window gets the xdg-desktop-portal dialog or none, as in a Wayland-only build, and no X11
+  connection is opened for it.
+*/
+FileBrowserHandle fileBrowserCreate(bool isEmbed,
+                                    uintptr_t windowId,
+                                    double scaleFactor,
+                                    const FileBrowserOptions& options,
+                                    bool isX11);
+#endif
+
 /**
   Idle the file browser dialog handle.@n
   Returns true if dialog was closed (with or without a file selection),

@@ -82,6 +82,17 @@ incl. a native ARM Linux runner and a single MSVC x64 leg) and `wayland.yml` (Wa
 container build, X11 regression, clap-validator, pluginval + LV2 validation). Anything relying on
 external package repositories is deliberately kept out of them.
 
+Each workflow also has a `runtime-backend` job for the `DGL_BACKEND=both` build, which picks X11 or
+Wayland at runtime (see `dgl/src/runtime-backend.md`). In `build.yml` it runs the tests under Xvfb,
+in `cmake.yml` it builds with CMake and builds an out-of-tree consumer, and in `wayland.yml` it runs
+the tests under a headless Weston, then with Xvfb and Weston together, and checks what the build
+links and exports. `wayland.yml` also has `runtime-backend-without-wayland`, which removes the
+Wayland, xkbcommon and EGL libraries and runs the tests on X11, and its Wayland-only job runs the
+unit tests under a headless Weston as well.
+
+Run steps in a container job default to `sh`, which is dash on Ubuntu and has no `pipefail`, so a
+job with `container:` whose steps need bash sets `defaults.run.shell: bash`.
+
 ## Vendored framework components
 
 `dgl/src/pugl-upstream` and `widgets/` are history-preserving git subtrees, never

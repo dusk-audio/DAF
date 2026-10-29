@@ -90,8 +90,12 @@
  *
  * A build that found *both* X11 and Wayland still advertises X11 alone. It is tempting to list
  * CLAP_WINDOW_API_WAYLAND as an extra floating-only API there, but an X11-built DGL has no
- * wl_surface to hand over: that would be advertising an API it cannot honour. Supporting both at
- * once needs runtime backend dispatch inside DGL, which is deliberately out of scope.
+ * wl_surface to hand over: that would be advertising an API it cannot honour.
+ *
+ * A DGL_BACKEND=both build has both compiled in, and advertises X11 alone as well: it opens a
+ * plugin UI's world on X11 whenever an X server is reachable (see dgl/src/pugl-dispatch.hpp), which
+ * is what the embedding API needs. Offering CLAP_WINDOW_API_WAYLAND there would take creating the
+ * world on whichever backend the host's create() asked for, which DGL cannot be told yet.
  *
  * HAVE_X11 and HAVE_WAYLAND reach this file through DGL_FLAGS, which Makefile.plugins.mk folds into
  * BASE_FLAGS (and which cmake/DAF-plugin.cmake exposes via dgl-system-libs-definitions), so the
@@ -530,9 +534,25 @@ public:
 
         fParentWindow = window->uptr;
 
-        if (fUI == nullptr)
-        {
+        const bool creatingUI = fUI == nullptr;
+
+        if (creatingUI)
             createUI();
+
+       #ifdef DGL_RUNTIME_BACKEND
+        // Embedding reparents the UI into the host's X11 window. With no X server to open it on,
+        // the UI is on Wayland and cannot be embedded. That holds as well for a UI that show()
+        // created before the host named a parent.
+        if (! fUI->isX11())
+        {
+            d_stderr("Cannot embed the UI, there is no X server for it to open on");
+            fUI = nullptr;
+            return false;
+        }
+       #endif
+
+        if (creatingUI)
+        {
             fHostGui->resize_hints_changed(fHost);
 
             // Should the window have come out at another size than get_size predicted, a parent on

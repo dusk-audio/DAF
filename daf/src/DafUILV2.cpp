@@ -241,6 +241,13 @@ public:
         return fUI.plugin_idle() ? 0 : 1;
     }
 
+   #ifdef DGL_RUNTIME_BACKEND
+    bool isX11() const noexcept
+    {
+        return fUI.isX11();
+    }
+   #endif
+
     int lv2ui_show()
     {
         return fUI.setWindowVisible(true) ? 0 : 1;
@@ -635,9 +642,22 @@ static LV2UI_Handle lv2ui_instantiate(const LV2UI_Descriptor*,
         sampleRate = 44100.0;
     }
 
-    return new UiLv2(bundlePath, winId, options, uridMap, features,
-                     controller, writeFunction, widget, instance,
-                     sampleRate, scaleFactor, appType, bgColor, fgColor, appClassName);
+    UiLv2* const ui = new UiLv2(bundlePath, winId, options, uridMap, features,
+                                controller, writeFunction, widget, instance,
+                                sampleRate, scaleFactor, appType, bgColor, fgColor, appClassName);
+
+   #ifdef DGL_RUNTIME_BACKEND
+    // An X11UI is embedded by the host reparenting the window handed back as the widget, which has to be
+    // an X11 window. With no X server to open it on, the UI is on Wayland and cannot be embedded.
+    if (winId != 0 && ! ui->isX11())
+    {
+        d_stderr("Cannot embed the UI, there is no X server for it to open on");
+        delete ui;
+        return nullptr;
+    }
+   #endif
+
+    return ui;
 }
 
 #define uiPtr ((UiLv2*)ui)

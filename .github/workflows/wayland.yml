@@ -5,8 +5,12 @@ name: wayland
 # The other CI here (build.yml, cmake.yml) always runs on machines that have the X11
 # development files installed, so it only ever exercises the X11 arm of the DGL backend selection.
 # The jobs below cover the two things that arm hides:
-#   - wayland-only          the Wayland backend actually compiles when X11 dev files are absent
+#   - wayland-only          the Wayland backend actually compiles when X11 dev files are absent,
+#                           and its tests pass against a headless Weston
 #   - wayland-x11-regression  a dual-stack machine still picks X11, exactly as it did before
+# plus the opt-in build that has both backends and picks one when a world opens:
+#   - runtime-backend       DGL_BACKEND=both under a headless Weston alone, and with Xvfb as well
+#   - runtime-backend-without-wayland  the same build on X11 with no Wayland library installed at all
 # plus two conformance gates that load the built plugins instead of only compiling them:
 #   - clap-validation       CLAP, which upstream does not run at all
 #   - plugin-validation     VST3 + LV2, replacing the `pluginval` matrix target that cmake.yml used
@@ -67,6 +71,12 @@ jobs:
     # Debian/Ubuntu Cairo development files cannot exist without X11 development files. HAVE_CAIRO is
     # therefore expected to be No here, which is also what ships: the Cairo UI variant is not built for
     # any product, so it is not covered anywhere in CI.
+    #
+    # And what the unit tests run against at the end, installed now because nothing can be installed
+    # once libx11-dev has been forced out below:
+    #   weston            the headless compositor, drawing with pixman (no GPU)
+    #   libgl1-mesa-dri   llvmpipe, Mesa's software rasterizer
+    #   libegl-mesa0      Mesa's EGL vendor library, which glvnd's libEGL dispatches to
     - name: Set up dependencies
       env:
         DEBIAN_FRONTEND: noninteractive
@@ -74,7 +84,8 @@ jobs:
         apt-get update -qq
         apt-get install -yq --no-install-recommends \
           build-essential ca-certificates git pkg-config \
-          libegl-dev libgl-dev libwayland-dev libxkbcommon-dev
+          libegl-dev libgl-dev libwayland-dev libxkbcommon-dev \
+          libegl-mesa0 libgl1-mesa-dri weston
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
@@ -115,6 +126,7 @@ jobs:
         assert 'HAVE_DGL: Yes'
         assert 'HAVE_STUB: Yes'
         assert 'DGL_BACKEND_WAYLAND: Yes'
+        assert 'DGL_RUNTIME_BACKEND: No'
     - name: Build DGL
       run: |
         make -C dgl -j$(nproc)
@@ -180,6 +192,17 @@ jobs:
         grep -rq 'ui:idleInterface' bin/d_meters.lv2/*.ttl \
           || { echo "::error::the UI no longer declares ui:idleInterface"; status=1; }
         exit $status
+    # Now that the windows have a compositor to open on, the whole unit test suite, Window tests
+    # included, not only the Wayland unit test above. The suite links the DGL libraries built with the
+    # file browser and web view, as the top-level Makefile builds them, hence the rebuild; the steps
+    # above wanted them without.
+    - name: Run the unit tests under a headless Wayland compositor
+      env:
+        LIBGL_ALWAYS_SOFTWARE: 1
+      run: |
+        make -C dgl clean
+        make -C dgl -j"$(nproc)" USE_FILE_BROWSER=true USE_WEB_VIEW=true
+        env -u DISPLAY tests/headless-wayland.sh make -C tests run -j"$(nproc)"
 
   wayland-x11-regression:
     runs-on: ubuntu-latest
@@ -200,10 +223,11 @@ jobs:
           grep -qx "$1" features.txt || { echo "::error::expected 'make features' to report '$1'"; exit 1; }
         }
         # Both stacks are present, and X11 must win. DGL_BACKEND_WAYLAND is the gate that decides whether
-        # any Wayland cflags or libs enter the build at all.
+        # any Wayland cflags or libs enter the build at all, and the runtime backend is opt-in only.
         assert 'HAVE_X11: Yes'
         assert 'HAVE_WAYLAND: Yes'
         assert 'DGL_BACKEND_WAYLAND: No'
+        assert 'DGL_RUNTIME_BACKEND: No'
     - name: Build DGL
       run: |
         make -C dgl -j$(nproc)
@@ -241,6 +265,242 @@ jobs:
         grep -rq 'ui:showInterface' bin/d_meters.lv2/*.ttl \
           || { echo "::error::the UI no longer declares ui:showInterface"; status=1; }
         exit $status
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # DGL_BACKEND=both: X11 and Wayland compiled into the same DGL, one of them picked when a world opens (see
+  # dgl/src/runtime-backend.md). build.yml runs this build's tests under Xvfb alone, which covers the X11 half.
+  # This job covers the rest: the tests under a headless Weston with no X server, then RuntimeBackend with both
+  # servers up, with DAF_WINDOW_BACKEND unset and forcing either backend.
+
+  runtime-backend:
+    runs-on: ubuntu-latest
+    # read by every make below, the recursive ones included
+    env:
+      DGL_BACKEND: both
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    # Both stacks' development files, Cairo's to build the Cairo Window test too, D-Bus's for the file browser's
+    # portal path, and what the tests run against: weston (headless, pixman), Mesa's llvmpipe and EGL vendor
+    # library, Xvfb, and the dbus-daemon RuntimeBackendWindow runs a stand-in portal on.
+    - name: Set up dependencies
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -yq \
+          libcairo2-dev libdbus-1-dev libegl-dev libgl-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev \
+          libxkbcommon-dev libxrandr-dev \
+          libegl-mesa0 libgl1-mesa-dri weston xvfb dbus
+    - name: Show detected features
+      run: |
+        make features | tee features.txt
+        assert() {
+          grep -qx "$1" features.txt || { echo "::error::expected 'make features' to report '$1'"; exit 1; }
+        }
+        assert 'HAVE_X11: Yes'
+        assert 'HAVE_WAYLAND: Yes'
+        assert 'DGL_BACKEND_WAYLAND: Yes'
+        assert 'DGL_RUNTIME_BACKEND: Yes'
+    # The unit tests link the DGL libraries built with the file browser and web view, as the top-level
+    # Makefile builds them.
+    - name: Build DGL
+      run: make -C dgl -j"$(nproc)" USE_FILE_BROWSER=true USE_WEB_VIEW=true
+    # This library links X11 and GLX like an X11 build, and reaches Wayland, xkbcommon and EGL only through
+    # pointers it fills when it first tries Wayland, so it must not reference a single symbol of theirs.
+    - name: Verify how the built objects reach each backend
+      run: |
+        nm --undefined-only build/libdgl-opengl.a > syms.txt
+        status=0
+        for symbol in XOpenDisplay glXGetCurrentContext; do
+          grep -qw "$symbol" syms.txt \
+            || { echo "::error::libdgl-opengl.a does not reference $symbol"; status=1; }
+        done
+        if grep -E ' (wl_|xkb_|egl)[A-Za-z_]+$' syms.txt; then
+          echo "::error::libdgl-opengl.a references the Wayland, xkbcommon or EGL libraries it should load at runtime"
+          status=1
+        fi
+        exit $status
+    # X11Focus needs an X server, and there is none here; build.yml runs it. DAF_TEST_EXPECT_BACKEND makes
+    # the runtime backend tests fail, rather than check that nothing opens, should Weston not be there.
+    - name: Run the unit tests under a headless Wayland compositor
+      env:
+        LIBGL_ALWAYS_SOFTWARE: 1
+        DAF_TEST_EXPECT_BACKEND: wayland
+      run: |
+        set -o pipefail
+        env -u DISPLAY tests/headless-wayland.sh make -C tests run -j"$(nproc)" SKIP_UNIT_TESTS=X11Focus | tee tests.log
+        grep -q 'RuntimeBackend: program world on wayland' tests.log \
+          || { echo "::error::RuntimeBackend did not open its window on Wayland"; exit 1; }
+        grep -q 'RuntimeBackendWindow: window on wayland' tests.log \
+          || { echo "::error::RuntimeBackendWindow did not open its window on Wayland"; exit 1; }
+        grep -q 'RuntimeBackendWindow: the file chosen in the portal reached the wayland window' tests.log \
+          || { echo "::error::RuntimeBackendWindow did not get a file through the stand-in portal"; exit 1; }
+    # With both servers reachable a program prefers Wayland and a module X11, DAF_WINDOW_BACKEND overrides the
+    # program's choice alone, and a compositor EGL cannot render on sends a program to X11. The expected
+    # backends are spelled out here, so that a rule changed in the tests and the code alike still shows up.
+    # On an output of scale 2, a Wayland window has to follow it there and an X11 window has to keep its own.
+    - name: Run the runtime backend tests with an X server and a compositor
+      env:
+        LIBGL_ALWAYS_SOFTWARE: 1
+      run: |
+        set -o pipefail
+        # check OVERRIDE MODULE PROGRAM [VAR=VALUE...]
+        check() {
+          local override=$1 module=$2 program=$3
+          shift 3
+          local vars=("DAF_TEST_EXPECT_BACKEND=$program" "$@")
+          [ -z "$override" ] || vars+=("DAF_WINDOW_BACKEND=$override")
+          for test in RuntimeBackend RuntimeBackendWindow; do
+            env "${vars[@]}" xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" \
+              tests/headless-wayland.sh "./build/tests/$test" | tee "$test.log"
+          done
+          if ! grep -q "RuntimeBackend: module world on $module" RuntimeBackend.log \
+             || ! grep -q "RuntimeBackend: program world on $program" RuntimeBackend.log \
+             || ! grep -q "RuntimeBackendWindow: window on $program" RuntimeBackendWindow.log; then
+            echo "::error::DAF_WINDOW_BACKEND='$override' $* should give a module world on $module and a program world on $program"
+            exit 1
+          fi
+        }
+        check ''      x11     wayland
+        check x11     x11     x11
+        check wayland x11     wayland
+        check ''      x11     x11     __EGL_VENDOR_LIBRARY_FILENAMES=/nonexistent/egl-vendor.json
+        grep -q 'DGL: cannot use Wayland, EGL cannot make' RuntimeBackend.log \
+          || { echo "::error::RuntimeBackend did not report EGL as the reason it left Wayland"; exit 1; }
+        check ''      x11     wayland DAF_TEST_WAYLAND_SCALE=2
+        check x11     x11     x11     DAF_TEST_WAYLAND_SCALE=2
+    # A both build's plugin UIs open on X11 whenever there is an X server, so its turtle keeps declaring the
+    # X11 UI class every embedding host uses, exactly as an X11 build does.
+    - name: Verify the LV2 turtle still declares an X11 UI
+      run: |
+        make -C examples/Meters -j"$(nproc)" USE_FILE_BROWSER=true USE_WEB_VIEW=true
+        make -C utils/lv2-ttl-generator
+        ./utils/generate-ttl.sh
+        grep -qE '^[[:space:]]*a ui:X11UI ;$' bin/d_meters.lv2/manifest.ttl \
+          || { echo "::error::manifest.ttl of a DGL_BACKEND=both build no longer declares ui:X11UI"; exit 1; }
+    # Nothing a both build produces may need the Wayland libraries to load, or export the pointers and protocol
+    # objects it uses to reach them: plugins sharing a host would interpose each other's.
+    - name: Verify the plugins neither link nor export Wayland
+      run: |
+        status=0
+        for binary in bin/d_meters bin/d_meters-vst.so bin/d_meters.clap bin/d_meters.lv2/*.so \
+                      bin/d_meters.vst3/Contents/*/*.so; do
+          [ -f "$binary" ] || { echo "::error::$binary was not built"; status=1; continue; }
+          echo "$binary: $(readelf -d "$binary" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | tr '\n' ' ')"
+          if readelf -d "$binary" | grep -E 'NEEDED.*(libwayland|libxkbcommon|libEGL)'; then
+            echo "::error::$binary links a library a both build should load at runtime"
+            status=1
+          fi
+          if nm -D --defined-only "$binary" | grep -E ' (dgl_|wl_[a-z_]+_interface$|xdg_|zxdg_|wp_)'; then
+            echo "::error::$binary exports what a both build uses to reach Wayland"
+            status=1
+          fi
+        done
+        exit $status
+    # The vendored core protocol defines the wl_*_interface objects libwayland-client exports; a plugin exporting them
+    # would stand in for the library's own in a host that loads it RTLD_GLOBAL. A pragma hides them, independent of
+    # the -fvisibility=hidden a debug build leaves out, so check a debug build as well. It rebuilds DGL, so it comes last.
+    - name: Verify release and debug builds hide what reaches Wayland
+      run: |
+        check() {
+          local exported
+          exported=$(readelf -sW build/libdgl-*.a | awk '$7 != "UND" && $5 == "GLOBAL" && $6 == "DEFAULT" {print $8}' \
+                     | grep -E '^(wl_|xkb_|egl|dgl_)' || true)
+          if [ -n "$exported" ]; then
+            echo "::error::the $1 build leaves these visible: ${exported//$'\n'/ }"
+            exit 1
+          fi
+          readelf -sW build/libdgl-opengl.a | awk '$7 != "UND" && $6 == "HIDDEN" {print $8}' | grep -qx wl_display_interface \
+            || { echo "::error::the $1 build has no hidden wl_display_interface, so there was nothing to check"; exit 1; }
+        }
+        check release
+        make -C dgl clean
+        make -C dgl -j"$(nproc)" DEBUG=true USE_FILE_BROWSER=true USE_WEB_VIEW=true
+        check debug
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # A DGL_BACKEND=both binary has to start, and run on X11 exactly as an X11 build does, on a machine with none of the
+  # Wayland libraries: it loads them only when it tries Wayland. Build with every development file here, then take
+  # the Wayland, xkbcommon and EGL runtime libraries away again and run the tests under Xvfb.
+
+  runtime-backend-without-wayland:
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    # Run steps default to sh in a container, and the test steps below need bash for pipefail.
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Set up dependencies
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        apt-get update -qq
+        apt-get install -yq --no-install-recommends \
+          build-essential ca-certificates git pkg-config \
+          libdbus-1-dev libegl-dev libgl-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev libxkbcommon-dev \
+          libxrandr-dev libgl1-mesa-dri xauth xvfb dbus-daemon
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    # The unit tests link the DGL libraries built with the file browser and web view, as the top-level
+    # Makefile builds them.
+    - name: Build DGL and the tests
+      run: |
+        make -C dgl -j"$(nproc)" DGL_BACKEND=both USE_FILE_BROWSER=true USE_WEB_VIEW=true
+        make -C tests -j"$(nproc)" DGL_BACKEND=both
+    - name: Verify no test binary links the Wayland libraries
+      run: |
+        readelf -d build/tests/RuntimeBackend | grep NEEDED
+        status=0
+        for binary in build/tests/*; do
+          [ -f "$binary" ] && [ -x "$binary" ] || continue
+          if readelf -d "$binary" | grep -E 'NEEDED.*(libwayland|libxkbcommon|libEGL)'; then
+            echo "::error::$binary links a library a both build should load at runtime"
+            status=1
+          fi
+        done
+        exit $status
+    # --force-depends: the development packages still depend on them, which no longer matters once
+    # everything is built
+    - name: Remove the Wayland, xkbcommon and EGL libraries
+      run: |
+        dpkg --remove --force-depends libwayland-client0 libwayland-cursor0 libwayland-egl1 libxkbcommon0 libegl1
+        if ldconfig -p | grep -E 'libwayland-(client|cursor|egl)\.so|libxkbcommon\.so|libEGL\.so'; then
+          echo "::error::the libraries are still installed"
+          exit 1
+        fi
+    - name: Run the unit tests under Xvfb
+      env:
+        LIBGL_ALWAYS_SOFTWARE: 1
+        DAF_TEST_EXPECT_BACKEND: x11
+      run: |
+        set -o pipefail
+        xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" make -C tests run DGL_BACKEND=both | tee tests.log
+        grep -q 'RuntimeBackend: program world on x11' tests.log \
+          || { echo "::error::RuntimeBackend did not open its window on X11"; exit 1; }
+        grep -q 'RuntimeBackendWindow: window on x11' tests.log \
+          || { echo "::error::RuntimeBackendWindow did not open its window on X11"; exit 1; }
+        grep -q 'RuntimeBackendWindow: the file chosen in the portal reached the x11 window' tests.log \
+          || { echo "::error::RuntimeBackendWindow did not get a file through the stand-in portal"; exit 1; }
+    # With a compositor announced, a program tries Wayland first, cannot load the libraries, and opens on X11;
+    # forced onto Wayland, it opens nothing. Either way it says which library was missing.
+    - name: Try Wayland without the Wayland libraries
+      env:
+        LIBGL_ALWAYS_SOFTWARE: 1
+        WAYLAND_DISPLAY: daf-ci-no-compositor
+      run: |
+        set -o pipefail
+        DAF_TEST_EXPECT_BACKEND=x11 xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" ./build/tests/RuntimeBackend \
+          | tee automatic.log
+        DAF_TEST_EXPECT_BACKEND=none DAF_WINDOW_BACKEND=wayland xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" \
+          ./build/tests/RuntimeBackend | tee forced.log
+        for log in automatic.log forced.log; do
+          grep -q 'DGL: cannot use Wayland, libwayland-client.so.0: cannot open shared object file' "$log" \
+            || { echo "::error::RuntimeBackend did not report the missing libwayland-client ($log)"; exit 1; }
+        done
 
   # -------------------------------------------------------------------------------------------------------------------
   # Run the CLAP examples through clap-validator. Upstream CI builds CLAP plugins but never loads them.

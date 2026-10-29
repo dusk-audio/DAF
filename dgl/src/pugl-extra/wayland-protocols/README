@@ -54,6 +54,16 @@ Interface versions in the generated code:
   zxdg_exporter_v2, zxdg_exported_v2                                  1
   zxdg_importer_v2, zxdg_imported_v2                                  1
 
+The core protocol, wayland.xml, is vendored as well, for DGL_BACKEND=both builds only. Those load
+libwayland-client at runtime instead of linking it (see dgl/src/pugl-extra/wayland-loader-names.h),
+so the wl_*_interface objects that the protocol code refers to cannot come from the library: they
+are compiled in from wayland-protocol.c, with the matching wayland-client-protocol.h used in place
+of the system's. A Wayland-only build keeps using the system's header and libwayland's objects.
+
+  XML file                          origin
+  --------------------------------  ---------------------------------------------------------
+  wayland.xml                       protocol/wayland.xml of the wayland 1.26.0 release
+
 Note that these are the versions the *bindings* can speak. wayland.c binds each global at
 `MIN(advertised, what this backend actually implements)`, so a newer protocol version here never
 makes the backend demand more of a compositor than before.
@@ -72,6 +82,11 @@ With wayland-scanner installed, from this directory:
         wayland-scanner client-header "$p.xml" "$p-client-protocol.h"
         wayland-scanner private-code   "$p.xml" "$p-protocol.c"
     done
+    wayland-scanner -c client-header wayland.xml wayland-client-protocol.h
+    wayland-scanner private-code      wayland.xml wayland-protocol.c
+
+The core header is generated with -c, so that it includes wayland-client-core.h rather than the
+system's wayland-client.h.
 
 To also refresh the XML, download it from the upstream paths in the table above and update the
 commit and date recorded here.

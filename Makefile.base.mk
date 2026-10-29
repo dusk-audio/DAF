@@ -453,8 +453,49 @@ HAVE_WAYLAND       = $(HAVE_WAYLAND_LIBS)
 # existing dual-stack build. DGL_BACKEND_WAYLAND is the "Wayland is really being used" gate and is
 # what the flag blocks below key off; it mirrors the `#elif defined(HAVE_WAYLAND)` arm that only
 # becomes reachable once HAVE_X11 is absent.
+#
+# DGL_BACKEND overrides that rule, as the CMake option of the same name does:
+#   auto     the rule above, the default
+#   x11      X11, and an error where its development files are missing
+#   wayland  Wayland alone, built as on a system without the X11 development files
+#   both     X11 and Wayland compiled into the same DGL, with DGL_RUNTIME_BACKEND defined, and
+#            puglNewWorld picks one of them when the program opens its first window (see
+#            dgl/src/runtime-backend.md). It needs every development file of both backends.
+ifeq ($(DGL_BACKEND),x11)
 ifneq ($(HAVE_X11),true)
+$(error DGL_BACKEND=x11 needs the X11 development files, x11.pc was not found)
+endif
+else ifeq ($(DGL_BACKEND),wayland)
+ifneq ($(HAVE_WAYLAND),true)
+$(error DGL_BACKEND=wayland needs the wayland-client, wayland-egl, wayland-cursor, xkbcommon and egl development files)
+endif
+HAVE_X11 = false
+endif
+ifeq ($(DGL_BACKEND),both)
+ifneq ($(HAVE_X11),true)
+$(error DGL_BACKEND=both needs the X11 development files, x11.pc was not found)
+endif
+ifneq ($(HAVE_WAYLAND),true)
+$(error DGL_BACKEND=both needs the wayland-client, wayland-egl, wayland-cursor, xkbcommon and egl development files)
+endif
+DGL_BACKEND_WAYLAND = true
+DGL_RUNTIME_BACKEND = true
+else ifneq ($(HAVE_X11),true)
 DGL_BACKEND_WAYLAND = $(HAVE_WAYLAND)
+endif
+endif
+
+ifneq (,$(filter-out auto x11 wayland both,$(DGL_BACKEND)))
+$(error DGL_BACKEND must be auto, x11, wayland or both, not '$(DGL_BACKEND)')
+endif
+# A plugin Makefile can set DGL_BACKEND itself and then builds DGL through a recursive make (see Makefile.plugins.mk),
+# which has to see it too: a value set in a Makefile reaches a sub-make only when exported.
+export DGL_BACKEND
+ifeq ($(HAIKU_OR_MACOS_OR_WASM_OR_WINDOWS),true)
+ifeq ($(DGL_BACKEND),both)
+$(error DGL_BACKEND=both is only for Linux and other X11/Wayland systems)
+else ifneq (,$(filter x11 wayland,$(DGL_BACKEND)))
+$(warning DGL_BACKEND=$(DGL_BACKEND) has no effect here, it is only for Linux and other X11/Wayland systems)
 endif
 endif
 
@@ -561,7 +602,14 @@ endif # HAVE_X11
 # installed builds exactly as it did before Wayland support existed.
 ifeq ($(DGL_BACKEND_WAYLAND),true)
 DGL_FLAGS       += $(shell $(PKG_CONFIG) --cflags wayland-client wayland-egl wayland-cursor xkbcommon) -DHAVE_WAYLAND
+ifeq ($(DGL_RUNTIME_BACKEND),true)
+# Not linked: DGL loads them when Wayland is first tried, so that a machine without them still starts the
+# program and runs it on X11. See dgl/src/pugl-extra/wayland-loader-names.h.
+DGL_FLAGS       += -DDGL_RUNTIME_BACKEND
+DGL_SYSTEM_LIBS += -ldl
+else
 DGL_SYSTEM_LIBS += $(shell $(PKG_CONFIG) --libs wayland-client wayland-egl wayland-cursor xkbcommon)
+endif
 # The clipboard code calls pthread_sigmask to keep SIGPIPE off the GUI thread during a transfer.
 # glibc 2.34 and later have it in libc, but older ones keep it in libpthread.
 DGL_FLAGS       += -pthread
@@ -612,7 +660,14 @@ OPENGL_LIBS  = -lopengl32
 else
 # X11 keeps GLX even when Wayland is also available, matching the backend choice made in pugl.hpp.
 # Only a build without X11 at all falls back to EGL on the Wayland platform.
-ifeq ($(HAVE_X11),true)
+#
+# DGL_BACKEND=both needs GLX for its X11 windows and EGL for its Wayland ones, and renders desktop GL
+# on both: there is no GLES flavour of it, for the same reason the X11 arm below has none. EGL and
+# wayland-egl are loaded at runtime with the rest of Wayland, so only their headers are used here.
+ifeq ($(DGL_RUNTIME_BACKEND),true)
+OPENGL_FLAGS = $(shell $(PKG_CONFIG) --cflags gl x11 egl wayland-egl)
+OPENGL_LIBS  = $(shell $(PKG_CONFIG) --libs gl x11)
+else ifeq ($(HAVE_X11),true)
 OPENGL_FLAGS = $(shell $(PKG_CONFIG) --cflags gl x11)
 OPENGL_LIBS  = $(shell $(PKG_CONFIG) --libs gl x11)
 else ifeq ($(DGL_BACKEND_WAYLAND),true)
@@ -930,6 +985,7 @@ features:
 	$(call print_available,HAVE_XRANDR)
 	@echo === Selected DGL backend
 	$(call print_available,DGL_BACKEND_WAYLAND)
+	$(call print_available,DGL_RUNTIME_BACKEND)
 
 # ---------------------------------------------------------------------------------------------------------------------
 # Extra rules for MOD Audio stuff

@@ -68,10 +68,12 @@ jobs:
         make -j ${{ env.JOBS }}
     - name: Build widget gallery
       run: make -C widgets/tests -j ${{ env.JOBS }}
+    # -noreset: a lone Xvfb resets whenever its last client disconnects, and refuses the odd connection made
+    # during the reset, which the Window tests' back-to-back windows run into
     - name: Run tests
       if: ${{ runner.os == 'Linux' }}
       run: |
-        xvfb-run make -C tests run
+        xvfb-run -s "-screen 0 1280x1024x24 -noreset" make -C tests run
     - name: ImGui modifier focus regression
       if: ${{ runner.os == 'Linux' }}
       env:
@@ -126,3 +128,54 @@ jobs:
       run: |
         make clean >/dev/null
         env UI_TYPE=opengl3 make -j ${{ env.JOBS }} -C examples/Parameters jack
+
+  # DGL_BACKEND=both: X11 and Wayland compiled into the same DGL, one of them picked when a world opens
+  # (dgl/src/runtime-backend.md). Under xvfb-run there is an X server and no compositor, so the tests
+  # here cover the X11 half, RuntimeBackend checking that it is the one picked. wayland.yml runs the
+  # Wayland half, and both servers at once, under a headless Weston.
+  runtime-backend:
+    runs-on: ubuntu-22.04
+    # read by every make below, the recursive ones included
+    env:
+      DGL_BACKEND: both
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    # The build job's packages, plus the Wayland client libraries and EGL the second backend needs, and the
+    # dbus-daemon RuntimeBackendWindow runs a stand-in file chooser portal on
+    - name: Set up dependencies
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -yq dbus libasound2-dev libcairo2-dev libdbus-1-dev libegl-dev libgl1-mesa-dev liblo-dev libpulse-dev libsdl2-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev libxkbcommon-dev libxrandr-dev xvfb
+    - name: Show detected features
+      run: |
+        make features | tee features.txt
+        grep -qx 'DGL_RUNTIME_BACKEND: Yes' features.txt \
+          || { echo "::error::DGL_BACKEND=both did not select the runtime backend"; exit 1; }
+    - name: Without any warnings
+      env:
+        CFLAGS: -Werror
+        CXXFLAGS: -Werror
+      run: |
+        make clean >/dev/null
+        make -j "$(nproc)"
+    - name: Build widget gallery
+      run: make -C widgets/tests -j "$(nproc)"
+    # -noreset: a lone Xvfb resets whenever its last client disconnects, and refuses the odd connection made
+    # during the reset, which the Window tests' back-to-back windows run into. DAF_TEST_EXPECT_BACKEND makes
+    # the runtime backend tests fail, rather than check that nothing opens, should Xvfb not be there.
+    - name: Run tests
+      env:
+        DAF_TEST_EXPECT_BACKEND: x11
+      run: |
+        set -o pipefail
+        xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" make -C tests run | tee tests.log
+        grep -q 'RuntimeBackend: program world on x11' tests.log \
+          || { echo "::error::RuntimeBackend did not open its window on X11"; exit 1; }
+        grep -q 'RuntimeBackendWindow: window on x11' tests.log \
+          || { echo "::error::RuntimeBackendWindow did not open its window on X11"; exit 1; }
+        grep -q 'RuntimeBackendWindow: the file chosen in the portal reached the x11 window' tests.log \
+          || { echo "::error::RuntimeBackendWindow did not get a file through the stand-in portal"; exit 1; }

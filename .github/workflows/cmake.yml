@@ -67,6 +67,72 @@ jobs:
           suffix: _22_04
           target: ${{ matrix.target }}
 
+  # ---------------------------------------------------------------------------
+  # DGL_BACKEND=both (dgl/src/runtime-backend.md) through CMake: every library
+  # and example with X11 and Wayland compiled into DGL, then an out-of-tree
+  # project that consumes DAF the way an application does
+  # (tests/runtime-backend-consumer) and opens its window. There is only an X
+  # server here; wayland.yml runs the Wayland side under a headless compositor.
+  #
+  # Inline steps rather than dpf-cmake-action, which has no way to pass a
+  # configure option. The packages are the action's linux-x86_64 set (as in
+  # ubuntu-arm below), plus the Wayland client libraries and EGL, and Xvfb and
+  # Mesa's software rasterizer for the consumer's window.
+  # ---------------------------------------------------------------------------
+  runtime-backend:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -yqq \
+            build-essential cmake pkg-config gperf \
+            libasound2-dev libdbus-1-dev libgl1-mesa-dev libglib2.0-dev \
+            liblo-dev libx11-dev libxcursor-dev libxext-dev libxrandr-dev \
+            libegl-dev libwayland-dev libxkbcommon-dev \
+            libgl1-mesa-dri xvfb
+      - name: Configure
+        run: |
+          set -o pipefail
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDGL_BACKEND=both | tee configure.log
+          grep -q 'DGL windowing backend: X11 and Wayland, chosen at runtime' configure.log \
+            || { echo "::error::DGL_BACKEND=both did not select the runtime backend"; exit 1; }
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+      # what reaches Wayland, the vendored wl_*_interface objects among it, stays inside whatever links DGL
+      - name: Verify DGL hides what reaches Wayland
+        run: |
+          libs=$(find build -name 'libdgl-*.a')
+          [ -n "$libs" ] || { echo "::error::no DGL library was built"; exit 1; }
+          # shellcheck disable=SC2086
+          exported=$(readelf -sW $libs | awk '$7 != "UND" && $5 == "GLOBAL" && $6 == "DEFAULT" {print $8}' \
+                     | grep -E '^(wl_|xkb_|egl|dgl_)' || true)
+          if [ -n "$exported" ]; then
+            echo "::error::DGL leaves these visible: ${exported//$'\n'/ }"
+            exit 1
+          fi
+      - name: Out-of-tree consumer
+        env:
+          LIBGL_ALWAYS_SOFTWARE: 1
+        run: |
+          cmake -S tests/runtime-backend-consumer -B build-consumer -DCMAKE_BUILD_TYPE=Release -DDGL_BACKEND=both
+          cmake --build build-consumer -j "$(nproc)"
+          xvfb-run -a ctest --test-dir build-consumer --output-on-failure
+      # A both build loads the Wayland libraries when it first tries Wayland, so an application linking it
+      # must not need them to start.
+      - name: Verify the consumer does not link the Wayland libraries
+        run: |
+          readelf -d build-consumer/runtime-backend-consumer | grep NEEDED
+          if readelf -d build-consumer/runtime-backend-consumer | grep -E 'NEEDED.*(libwayland|libxkbcommon|libEGL)'; then
+            echo "::error::the consumer links a library a both build should load at runtime"
+            exit 1
+          fi
+
   # No ubuntu-24-04 job: 22.04 is the product glibc floor, and a newer-toolchain
   # canary above it is not a configuration anything is shipped on. build.yml
   # dropped its own 24.04 leg for the same reason, so there is no canary left
