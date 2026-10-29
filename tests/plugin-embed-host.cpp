@@ -33,6 +33,12 @@
 #include "travesty/factory.h"
 #include "travesty/host.h"
 #include "travesty/view.h"
+
+// as DafPluginVST2.cpp does: vst.h names a calling convention GCC does not know
+#ifndef __cdecl
+# define __cdecl
+#endif
+
 #include "xaymar-vst2/vst.h"
 
 #include <X11/Xlib.h>
