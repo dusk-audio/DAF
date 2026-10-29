@@ -150,10 +150,41 @@
 // A DGL_BACKEND=both build does not link the Wayland libraries: their functions are reached through
 // accessors that wayland-loader.hpp fills when Wayland is first tried, see wayland-loader-names.h, and
 // the core protocol is vendored in place of libwayland-client's interface objects.
+//
+// Those objects carry the names libwayland-client exports, so they must not be exported themselves, in a
+// debug build without -fvisibility=hidden included: from a plugin loaded RTLD_GLOBAL ahead of the
+// library, they would take the place of the library's own, which would point into the plugin once it
+// is unloaded. The pragma marks their declarations and definitions hidden. The types must not be hidden
+// along with them, or every structure holding a pointer to one would warn, so they are declared ahead of
+// it: wayland-client-core.h has the general ones, and these are the protocol's own objects.
 # ifdef DGL_RUNTIME_BACKEND
 #  include "pugl-extra/wayland-loader-names.h"
 #  include <wayland-client-core.h>
+struct wl_buffer;
+struct wl_callback;
+struct wl_compositor;
+struct wl_data_device;
+struct wl_data_device_manager;
+struct wl_data_offer;
+struct wl_data_source;
+struct wl_fixes;
+struct wl_keyboard;
+struct wl_output;
+struct wl_pointer;
+struct wl_region;
+struct wl_registry;
+struct wl_seat;
+struct wl_shell;
+struct wl_shell_surface;
+struct wl_shm;
+struct wl_shm_pool;
+struct wl_subcompositor;
+struct wl_subsurface;
+struct wl_surface;
+struct wl_touch;
+#  pragma GCC visibility push(hidden)
 #  include "pugl-extra/wayland-protocols/wayland-client-protocol.h"
+#  pragma GCC visibility pop
 # endif
 # include <wayland-client.h>
 # include <wayland-cursor.h>
@@ -190,14 +221,18 @@
    the build's global -fvisibility=hidden (see Makefile.base.mk), which release builds set.  DEBUG
    builds do not, so a debug plugin loaded into a host that also uses xdg-shell can have its
    xdg_*_interface symbols interposed by the host's copies. The layouts are generated from the same
-   protocol XML, so in practice this is benign, but it is worth knowing when debugging one. */
+   protocol XML, so in practice this is benign, but it is worth knowing when debugging one.  The core
+   protocol a DGL_BACKEND=both build vendors is the exception, hidden in every build by the pragma
+   around it, since its objects would stand in for libwayland-client's own. */
 # if defined(__GNUC__)
 #  pragma GCC diagnostic push
 #  pragma GCC diagnostic ignored "-Wattributes"
 # endif
 extern "C" {
 # ifdef DGL_RUNTIME_BACKEND
+#  pragma GCC visibility push(hidden)
 #  include "pugl-extra/wayland-protocols/wayland-protocol.c"
+#  pragma GCC visibility pop
 # endif
 # include "pugl-extra/wayland-protocols/xdg-shell-protocol.c"
 # include "pugl-extra/wayland-protocols/xdg-decoration-unstable-v1-protocol.c"
