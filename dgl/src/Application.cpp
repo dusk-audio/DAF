@@ -59,6 +59,12 @@ BUILD_CONFIG_SENTINEL(fail_to_link_is_mismatch_dgl_no_shared_resources_on)
 BUILD_CONFIG_SENTINEL(fail_to_link_is_mismatch_dgl_no_shared_resources_off)
 #endif
 
+#ifdef DGL_RUNTIME_BACKEND
+BUILD_CONFIG_SENTINEL(fail_to_link_is_mismatch_dgl_runtime_backend_on)
+#else
+BUILD_CONFIG_SENTINEL(fail_to_link_is_mismatch_dgl_runtime_backend_off)
+#endif
+
 #undef BUILD_CONFIG_SENTINEL
 
 static inline
@@ -84,6 +90,11 @@ bool daf_check_build_status() noexcept
       fail_to_link_is_mismatch_dgl_no_shared_resources_on.ok &&
      #else
       fail_to_link_is_mismatch_dgl_no_shared_resources_off.ok &&
+     #endif
+     #ifdef DGL_RUNTIME_BACKEND
+      fail_to_link_is_mismatch_dgl_runtime_backend_on.ok &&
+     #else
+      fail_to_link_is_mismatch_dgl_runtime_backend_off.ok &&
      #endif
       true
    );
