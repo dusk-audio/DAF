@@ -121,6 +121,10 @@ UNIT_TESTS   += X11Focus
 endif
 endif
 
+# leaves out tests the environment cannot run, e.g. SKIP_UNIT_TESTS=X11Focus under a Wayland compositor
+# with no X server (see headless-wayland.sh)
+UNIT_TESTS    := $(filter-out $(SKIP_UNIT_TESTS),$(UNIT_TESTS))
+
 MANUAL_TARGETS = $(MANUAL_TESTS:%=../build/tests/%$(APP_EXT))
 UNIT_TARGET    = $(UNIT_TESTS:%=../build/tests/%$(APP_EXT))
 CHECK_TARGETS  = $(BUILD_CHECKS:%=../build/tests/%.cpp.o)
