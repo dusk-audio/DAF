@@ -222,6 +222,13 @@ public:
         return fUI.getScaleFactor();
     }
 
+   #ifdef DGL_RUNTIME_BACKEND
+    bool isX11() const noexcept
+    {
+        return fUI.isX11();
+    }
+   #endif
+
     void setSampleRate(const double newSampleRate)
     {
         fUI.setSampleRate(newSampleRate, true);
@@ -650,6 +657,18 @@ public:
            #endif
 
             fVstUI = new UIVst(fAudioMaster, fEffect, this, &fPlugin, (intptr_t)ptr, fLastScaleFactor);
+
+           #ifdef DGL_RUNTIME_BACKEND
+            // The host embeds the UI by reparenting it into its X11 window. With no X server to open it on,
+            // the UI is on Wayland and cannot be embedded.
+            if (! fVstUI->isX11())
+            {
+                d_stderr("Cannot embed the UI, there is no X server for it to open on");
+                delete fVstUI;
+                fVstUI = nullptr;
+                return 0;
+            }
+           #endif
 
            #if DAF_PLUGIN_WANT_FULL_STATE
             // Update current state from plugin side
