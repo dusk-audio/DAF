@@ -17,7 +17,8 @@
 // compiles: the portal parent handle, the file browser, the web view, the clipboard and following pugl's
 // scale factor each take the X11 or the Wayland branch by the window's backend. This test opens a DGL
 // window on whichever backend the environment gives a program (see runtime-backend.hpp) and checks that
-// each of them took that backend's branch.
+// each of them took that backend's branch. Last, it checks that an Application asking for a backend gets
+// that one or none.
 
 #include "tests.hpp"
 #include "runtime-backend.hpp"
@@ -419,6 +420,57 @@ private:
 
 // --------------------------------------------------------------------------------------------------------------------
 
+// Whether a program left to the selection rule, DAF_WINDOW_BACKEND aside, takes Wayland here, which it does when
+// a compositor is announced and can be used.
+static bool waylandUsable()
+{
+    const char* const forced = std::getenv("DAF_WINDOW_BACKEND");
+    const std::string forcedValue(forced != nullptr ? forced : "");
+    unsetenv("DAF_WINDOW_BACKEND");
+
+    DGL_NAMESPACE::PuglWorld* const world = DGL_NAMESPACE::puglNewWorld(DGL_NAMESPACE::PUGL_PROGRAM, 0);
+    const bool usable = world != nullptr && ! DGL_NAMESPACE::puglWorldIsX11(world);
+    if (world != nullptr)
+        DGL_NAMESPACE::puglFreeWorld(world);
+
+    if (forced != nullptr)
+        setenv("DAF_WINDOW_BACKEND", forcedValue.c_str(), 1);
+
+    return usable;
+}
+
+// An application that asks for a windowing system gets that one, whichever a program or a module would take and
+// whatever DAF_WINDOW_BACKEND says, or none at all where it cannot be used.
+static int checkRequestedWindowSystems()
+{
+    using DGL_NAMESPACE::Application;
+
+    const Application::WindowSystem x11 = isSet("DISPLAY") ? Application::kWindowSystemX11
+                                                           : Application::kWindowSystemAuto;
+    const Application::WindowSystem wayland = waylandUsable() ? Application::kWindowSystemWayland
+                                                              : Application::kWindowSystemAuto;
+
+    {
+        const Application app(true, Application::kTypeAuto, Application::kWindowSystemX11);
+        DAF_ASSERT_EQUAL(app.getWindowSystem(), x11, "a program that asks for X11 gets it, or nothing");
+    }
+    {
+        const Application app(true, Application::kTypeAuto, Application::kWindowSystemWayland);
+        DAF_ASSERT_EQUAL(app.getWindowSystem(), wayland, "a program that asks for Wayland gets it, or nothing");
+    }
+    {
+        const Application app(false, Application::kTypeAuto, Application::kWindowSystemWayland);
+        DAF_ASSERT_EQUAL(app.getWindowSystem(), wayland, "a module that asks for Wayland gets it, or nothing");
+    }
+
+    d_stdout("RuntimeBackendWindow: an application asking for X11 got %s, one asking for Wayland got %s",
+             x11 == Application::kWindowSystemX11 ? "x11" : "none",
+             wayland == Application::kWindowSystemWayland ? "wayland" : "none");
+    return 0;
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+
 int main()
 {
     // The file browser below must not reach the session's portal, which would put its dialog on the desktop: it
@@ -438,8 +490,8 @@ int main()
     // RuntimeBackend checks that no world opens then; a DGL Application expects one
     if (expected == kNone)
     {
-        d_stdout("RuntimeBackendWindow: no backend available, nothing to check");
-        return 0;
+        d_stdout("RuntimeBackendWindow: no backend available, no window to check");
+        return checkRequestedWindowSystems();
     }
 
     DGL_NAMESPACE::Application app(true);
@@ -586,7 +638,9 @@ int main()
 
     d_stdout("RuntimeBackendWindow: window on %s took that backend's portal handle, file browser, web view, "
              "clipboard and scale", backendName(expected));
-    return 0;
+
+    // while this application keeps its connection open, so that a lone Xvfb does not reset in between
+    return checkRequestedWindowSystems();
 }
 
 // --------------------------------------------------------------------------------------------------------------------

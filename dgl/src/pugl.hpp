@@ -181,6 +181,10 @@ bool puglWin32IsInActiveWindow(const PuglView* view);
 bool puglWorldIsX11(const PuglWorld* world);
 bool puglViewIsX11(const PuglView* view);
 
+// DGL specific, a world on X11 (x11 true) or Wayland, whichever the selection rule would pick
+// For an Application that asks for one. Null, with a message saying why, when that system cannot be used.
+PuglWorld* puglNewWorldOnSystem(PuglWorldType type, PuglWorldFlags flags, bool x11);
+
 #define DGL_VIEW_IS_X11(view)     puglViewIsX11(view)
 #define DGL_VIEW_IS_WAYLAND(view) (! puglViewIsX11(view))
 

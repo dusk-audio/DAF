@@ -109,8 +109,8 @@ static void app_idle(void* const app)
 }
 #endif
 
-Application::Application(const bool isStandalone, const Type type)
-    : pData(new PrivateData(isStandalone, type))
+Application::Application(const bool isStandalone, const Type type, const WindowSystem windowSystem)
+    : pData(new PrivateData(isStandalone, type, windowSystem))
 {
     // build config sentinels
    #ifdef DAF_DEBUG
@@ -141,8 +141,8 @@ Application::Application(const bool isStandalone, const Type type)
     DAF_SAFE_ASSERT(daf_check_build_status());
 }
 
-Application::Application(int argc, char* argv[])
-    : pData(new PrivateData(true, kTypeAuto))
+Application::Application(int argc, char* argv[], const WindowSystem windowSystem)
+    : pData(new PrivateData(true, kTypeAuto, windowSystem))
 {
    #if defined(HAVE_X11) && defined(DAF_OS_LINUX) && defined(DGL_USE_WEB_VIEW)
     if (argc >= 2 && std::strcmp(argv[1], "dpf-ld-linux-webview") == 0)

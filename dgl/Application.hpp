@@ -101,15 +101,33 @@ public:
     };
 
    /**
+      Windowing system to open the application's windows on.
+
+      Only Linux and the other X11/Wayland systems have one to choose. A DGL_BACKEND=both build picks X11 or
+      Wayland at runtime, by the rule in dgl/src/runtime-backend.md, unless the application asks for one.
+      The request is final: if that system cannot be used, or the build does not have it, no window opens
+      and a message says why, rather than the application ending up on the other one.
+      It takes the place of the DAF_WINDOW_BACKEND environment variable.
+
+      On macOS, Windows and the other platforms with a single windowing system the request is ignored.
+    */
+    enum WindowSystem {
+        kWindowSystemAuto,
+        kWindowSystemX11,
+        kWindowSystemWayland,
+    };
+
+   /**
       Constructor for standalone or plugin application.
     */
-    Application(bool isStandalone = true, Type type = kTypeAuto);
+    Application(bool isStandalone = true, Type type = kTypeAuto, WindowSystem windowSystem = kWindowSystemAuto);
 
    /**
       Constructor for a standalone application.
       This specific constructor is required if using web views in standalone applications.
+      On Linux a web view needs X11, see WindowSystem.
     */
-    Application(int argc, char* argv[]);
+    Application(int argc, char* argv[], WindowSystem windowSystem = kWindowSystemAuto);
 
    /**
       Destructor.
@@ -163,6 +181,12 @@ public:
       This function never return kTypeAuto.
    */
     Type getType() const noexcept;
+
+   /**
+      Return the windowing system the application's windows open on, kWindowSystemX11 or kWindowSystemWayland.
+      Returns kWindowSystemAuto where the platform has no choice of one, and when none could be opened.
+   */
+    WindowSystem getWindowSystem() const noexcept;
 
    /**
       Add a callback function to be triggered on every idle cycle.

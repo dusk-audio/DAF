@@ -194,6 +194,8 @@ jobs:
           || { echo "::error::RuntimeBackendWindow did not open its window on X11"; exit 1; }
         grep -q 'RuntimeBackendWindow: the file chosen in the portal reached the x11 window' tests.log \
           || { echo "::error::RuntimeBackendWindow did not get a file through the stand-in portal"; exit 1; }
+        grep -q 'RuntimeBackendWindow: an application asking for X11 got x11, one asking for Wayland got none' tests.log \
+          || { echo "::error::an application asking for X11 should get it, and one asking for Wayland nothing"; exit 1; }
 
   # The one check of this workflow that main's ruleset requires. It passes when every job above
   # passed, or was skipped because .github/code-changed.sh found nothing to build. A job added to

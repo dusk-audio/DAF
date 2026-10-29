@@ -128,6 +128,17 @@ share `PuglFileDrag`, the base class `FileDragX11.hpp` derives from.
 
 `puglNewWorld` picks the backend once per world, and every view in that world stays on it.
 
+An application can ask for a backend itself, with the `WindowSystem` argument of DGL's `Application`
+constructors (`kWindowSystemX11` or `kWindowSystemWayland`, `kWindowSystemAuto` by default). Its world
+then opens on that backend through `puglNewWorldOnSystem`, whatever the rule below would pick, for a
+program and a module alike, and in place of `DAF_WINDOW_BACKEND`, which is reported as ignored when it
+names the other one. The request is final: where that backend cannot be used, no world opens and a
+message says why, as for a forced `DAF_WINDOW_BACKEND`. A Wayland request with neither `WAYLAND_DISPLAY`
+nor `WAYLAND_SOCKET` set lets libwayland try `wayland-0`, as a forced Wayland does. A single-backend
+build refuses a request for the backend it does not have; `Application::getWindowSystem` reports where
+the windows open, `kWindowSystemAuto` when nowhere. A standalone web view UI asks for X11 this way, see
+below. Otherwise:
+
 1. For a program, `DAF_WINDOW_BACKEND=x11` or `DAF_WINDOW_BACKEND=wayland` forces that backend. If
    it cannot be used, world creation fails with a message saying so. Any other value is reported and
    ignored.
@@ -167,7 +178,9 @@ build answers with a constant, so the test folds away there. The places that nee
   `openFileBrowser` passes `fileBrowserCreate` the view's backend, and the file browser then opens
   no X11 connection: the portal gets no parent and centres the dialog, as in a Wayland-only build,
   and without a portal the call fails instead of falling back to the X11-only libsofd dialog. A
-  Wayland view gets no web view either, which a Wayland-only build cannot create.
+  Wayland view gets no web view either, which a Wayland-only build cannot create. A standalone whose UI is
+  a web view (`DAF_UI_USE_WEB_VIEW` in a JACK or DSSI build) therefore asks for X11, XWayland included,
+  even on a Wayland desktop, and opens nothing where there is no X server rather than a blank window.
 - `DafUI.cpp`: a UI whose world is on Wayland takes no desktop scale factor (0) and follows the
   scale its compositor gives the window, as in a Wayland-only build, without reading `Xft.dpi` from
   an X server that may be reachable too; `DAF_SCALE_FACTOR` and a scale from the host still apply.
@@ -193,8 +206,9 @@ relies on.
 - The graphics-backend accessors (`puglSetBackend`, `puglGetBackend`, `puglGlBackend`,
   `puglStubBackend`, `puglGetProcAddress`, `puglEnterContext`, `puglLeaveContext`) are not part of
   the forwarding layer: they belong to one backend. DGL uses `puglSetMatchingBackendForCurrentBuild`.
-- CLAP keeps advertising only the X11 window API. Offering `CLAP_WINDOW_API_WAYLAND` needs a way to
-  create a world on the backend the host asked for, which DGL's `Application` cannot express yet.
+- CLAP keeps advertising only the X11 window API. Offering `CLAP_WINDOW_API_WAYLAND` needs the UI's
+  world on the backend the host names in `clap_plugin_gui.create()`, which an `Application` can now ask
+  for, but the wrapper does not do so yet.
 
 ## Tests
 
@@ -218,6 +232,9 @@ fails the test rather than turn it into a check that nothing opens.
   window and none for a Wayland one. The portal sends the call's reply, a `Response` for another
   request and the dialog's own `Response` back to back, as a portal serving two dialogs might,
   and the window must get the file from its own. Where no `dbus-daemon` can be started, it says so and skips that.
+  Last, it asks for an `Application` on each backend, a program on X11 and on Wayland and a module on Wayland,
+  and checks that each gets the one it asked for wherever that can be used, whatever a program or module would
+  pick and whatever `DAF_WINDOW_BACKEND` says, and nothing where it cannot, rather than the other backend.
   The paste is checked by counting what its wait loop pumps: a paste whose offer types have yet to
   arrive has to wait on the window's own backend alone. With `DAF_TEST_WAYLAND_SCALE=N`, which
   `headless-wayland.sh` also gives Weston's output, a Wayland window has to follow that output to

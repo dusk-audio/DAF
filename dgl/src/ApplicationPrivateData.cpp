@@ -51,11 +51,57 @@ const char* Application::getClassName() const noexcept
     return puglGetWorldString(pData->world, PUGL_CLASS_NAME);
 }
 
+Application::WindowSystem Application::getWindowSystem() const noexcept
+{
+    if (pData->world == nullptr)
+        return kWindowSystemAuto;
+
+   #if defined(DGL_RUNTIME_BACKEND)
+    return puglWorldIsX11(pData->world) ? kWindowSystemX11 : kWindowSystemWayland;
+   #elif defined(DGL_USING_X11)
+    return kWindowSystemX11;
+   #elif defined(DGL_USING_WAYLAND)
+    return kWindowSystemWayland;
+   #else
+    return kWindowSystemAuto;
+   #endif
+}
+
 // --------------------------------------------------------------------------------------------------------------------
 
-Application::PrivateData::PrivateData(const bool standalone, const Type type)
-    : world(puglNewWorld(standalone ? PUGL_PROGRAM : PUGL_MODULE,
-                         (standalone ? PUGL_WORLD_THREADS : 0))),
+// A world on the windowing system the application asked for, see Application::WindowSystem
+static PuglWorld* newWorld(const bool standalone, const Application::WindowSystem windowSystem)
+{
+    const PuglWorldType type = standalone ? PUGL_PROGRAM : PUGL_MODULE;
+    const PuglWorldFlags flags = standalone ? PUGL_WORLD_THREADS : 0;
+
+   #if defined(DGL_RUNTIME_BACKEND)
+    if (windowSystem != Application::kWindowSystemAuto)
+        return puglNewWorldOnSystem(type, flags, windowSystem == Application::kWindowSystemX11);
+   #elif defined(DGL_USING_X11) || defined(DGL_USING_WAYLAND)
+   # ifdef DGL_USING_X11
+    const Application::WindowSystem missing = Application::kWindowSystemWayland;
+   # else
+    const Application::WindowSystem missing = Application::kWindowSystemX11;
+   # endif
+    if (windowSystem == missing)
+    {
+        d_stderr2("DGL: the application asked for %s, which this build does not have, see DGL_BACKEND",
+                  missing == Application::kWindowSystemX11 ? "X11" : "Wayland");
+        return nullptr;
+    }
+   #else
+    // a single windowing system, nothing to choose
+    (void)windowSystem;
+   #endif
+
+    return puglNewWorld(type, flags);
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+
+Application::PrivateData::PrivateData(const bool standalone, const Type type, const WindowSystem windowSystem)
+    : world(newWorld(standalone, windowSystem)),
       isModern(false),
       isStandalone(standalone),
       isStarting(true),
