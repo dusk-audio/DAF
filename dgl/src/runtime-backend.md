@@ -143,8 +143,8 @@ share `PuglFileDrag`, the base class `FileDragX11.hpp` derives from.
    follows, under the same condition as for a program. An LV2 UI that the host wants to embed
    fails to instantiate when it could not open on X11, rather than hand the host a Wayland surface
    as an X11 window.
-4. With nothing left, `puglNewWorld` prints which of `WAYLAND_DISPLAY` and `DISPLAY` it saw and
-   returns null.
+4. With nothing left, `puglNewWorld` prints the `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` and `DISPLAY` it
+   saw and returns null.
 
 `WAYLAND_SOCKET` hands the process one connection, and libwayland takes it over on the first
 connect, unsetting the variable. So the first world that tries Wayland owns that connection, and

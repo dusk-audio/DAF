@@ -265,6 +265,10 @@ PuglWorld* puglNewWorld(const PuglWorldType type, const PuglWorldFlags flags)
         }
     }
 
+    // libwayland unsets WAYLAND_SOCKET when it takes the socket over, so the messages below report it as it was
+    char waylandSocket[32];
+    std::snprintf(waylandSocket, sizeof(waylandSocket), "%s", puglEnvOrUnset("WAYLAND_SOCKET"));
+
     for (const PuglWindowSystem system : order)
     {
         if (system == kPuglWindowSystemNone)
@@ -274,14 +278,15 @@ PuglWorld* puglNewWorld(const PuglWorldType type, const PuglWorldFlags flags)
     }
 
     if (forced)
-        d_stderr2("DGL: DAF_WINDOW_BACKEND=%s, but %s cannot be used here (WAYLAND_DISPLAY=%s, DISPLAY=%s)",
+        d_stderr2("DGL: DAF_WINDOW_BACKEND=%s, but %s cannot be used here (WAYLAND_DISPLAY=%s, WAYLAND_SOCKET=%s, "
+                  "DISPLAY=%s)",
                   order[0] == kPuglWindowSystemX11 ? "x11" : "wayland",
                   order[0] == kPuglWindowSystemX11 ? "X11" : "Wayland",
-                  puglEnvOrUnset("WAYLAND_DISPLAY"), puglEnvOrUnset("DISPLAY"));
+                  puglEnvOrUnset("WAYLAND_DISPLAY"), waylandSocket, puglEnvOrUnset("DISPLAY"));
     else
         d_stderr2("DGL: no windowing system to open a window on, neither a Wayland compositor nor an X server "
-                  "could be reached (WAYLAND_DISPLAY=%s, DISPLAY=%s)",
-                  puglEnvOrUnset("WAYLAND_DISPLAY"), puglEnvOrUnset("DISPLAY"));
+                  "could be reached (WAYLAND_DISPLAY=%s, WAYLAND_SOCKET=%s, DISPLAY=%s)",
+                  puglEnvOrUnset("WAYLAND_DISPLAY"), waylandSocket, puglEnvOrUnset("DISPLAY"));
 
     return nullptr;
 }
