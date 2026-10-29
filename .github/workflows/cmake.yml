@@ -111,6 +111,15 @@ jobs:
           cmake -S tests/runtime-backend-consumer -B build-consumer -DCMAKE_BUILD_TYPE=Release -DDGL_BACKEND=both
           cmake --build build-consumer -j "$(nproc)"
           xvfb-run -a ctest --test-dir build-consumer --output-on-failure
+      # A both build loads the Wayland libraries when it first tries Wayland, so an application linking it
+      # must not need them to start.
+      - name: Verify the consumer does not link the Wayland libraries
+        run: |
+          readelf -d build-consumer/runtime-backend-consumer | grep NEEDED
+          if readelf -d build-consumer/runtime-backend-consumer | grep -E 'NEEDED.*(libwayland|libxkbcommon|libEGL)'; then
+            echo "::error::the consumer links a library a both build should load at runtime"
+            exit 1
+          fi
 
   # No ubuntu-24-04 job: 22.04 is the product glibc floor, and a newer-toolchain
   # canary above it is not a configuration anything is shipped on. build.yml

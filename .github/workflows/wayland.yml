@@ -10,6 +10,7 @@ name: wayland
 #   - wayland-x11-regression  a dual-stack machine still picks X11, exactly as it did before
 # plus the opt-in build that has both backends and picks one when a world opens:
 #   - runtime-backend       DGL_BACKEND=both under a headless Weston alone, and with Xvfb as well
+#   - runtime-backend-without-wayland  the same build on X11 with no Wayland library installed at all
 # plus two conformance gates that load the built plugins instead of only compiling them:
 #   - clap-validation       CLAP, which upstream does not run at all
 #   - plugin-validation     VST3 + LV2, replacing the `pluginval` matrix target that cmake.yml used
@@ -305,16 +306,20 @@ jobs:
     # Makefile builds them.
     - name: Build DGL
       run: make -C dgl -j"$(nproc)" USE_FILE_BROWSER=true USE_WEB_VIEW=true
-    # The inverse of the check in wayland-x11-regression: this library must carry both backends, each with
-    # its own way of getting a GL context onto a window.
-    - name: Verify the built objects carry both backends
+    # This library links X11 and GLX like an X11 build, and reaches Wayland, xkbcommon and EGL only through
+    # pointers it fills when it first tries Wayland, so it must not reference a single symbol of theirs.
+    - name: Verify how the built objects reach each backend
       run: |
         nm --undefined-only build/libdgl-opengl.a > syms.txt
         status=0
-        for symbol in XOpenDisplay glXGetCurrentContext wl_display_connect xkb_context_new eglGetCurrentContext; do
+        for symbol in XOpenDisplay glXGetCurrentContext; do
           grep -qw "$symbol" syms.txt \
             || { echo "::error::libdgl-opengl.a does not reference $symbol"; status=1; }
         done
+        if grep -E ' (wl_|xkb_|egl)[A-Za-z_]+$' syms.txt; then
+          echo "::error::libdgl-opengl.a references the Wayland, xkbcommon or EGL libraries it should load at runtime"
+          status=1
+        fi
         exit $status
     # X11Focus needs an X server, and there is none here; build.yml runs it.
     - name: Run the unit tests under a headless Wayland compositor
@@ -355,6 +360,82 @@ jobs:
         ./utils/generate-ttl.sh
         grep -qE '^[[:space:]]*a ui:X11UI ;$' bin/d_meters.lv2/manifest.ttl \
           || { echo "::error::manifest.ttl of a DGL_BACKEND=both build no longer declares ui:X11UI"; exit 1; }
+    # Nothing a both build produces may need the Wayland libraries to load, or export the pointers and protocol
+    # objects it uses to reach them: plugins sharing a host would interpose each other's.
+    - name: Verify the plugins neither link nor export Wayland
+      run: |
+        status=0
+        for binary in bin/d_meters bin/d_meters-vst.so bin/d_meters.clap bin/d_meters.lv2/*.so \
+                      bin/d_meters.vst3/Contents/*/*.so; do
+          [ -f "$binary" ] || { echo "::error::$binary was not built"; status=1; continue; }
+          echo "$binary: $(readelf -d "$binary" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | tr '\n' ' ')"
+          if readelf -d "$binary" | grep -E 'NEEDED.*(libwayland|libxkbcommon|libEGL)'; then
+            echo "::error::$binary links a library a both build should load at runtime"
+            status=1
+          fi
+          if nm -D --defined-only "$binary" | grep -E ' (dgl_|wl_[a-z_]+_interface$|xdg_|zxdg_|wp_)'; then
+            echo "::error::$binary exports what a both build uses to reach Wayland"
+            status=1
+          fi
+        done
+        exit $status
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # A DGL_BACKEND=both binary has to start, and run on X11 exactly as an X11 build does, on a machine with none of the
+  # Wayland libraries: it loads them only when it tries Wayland. Build with every development file here, then take
+  # the Wayland, xkbcommon and EGL runtime libraries away again and run the tests under Xvfb.
+
+  runtime-backend-without-wayland:
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+    - name: Set up dependencies
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        apt-get update -qq
+        apt-get install -yq --no-install-recommends \
+          build-essential ca-certificates git pkg-config \
+          libegl-dev libgl-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev libxkbcommon-dev libxrandr-dev \
+          libgl1-mesa-dri xauth xvfb
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    # The unit tests link the DGL libraries built with the file browser and web view, as the top-level
+    # Makefile builds them.
+    - name: Build DGL and the tests
+      run: |
+        make -C dgl -j"$(nproc)" DGL_BACKEND=both USE_FILE_BROWSER=true USE_WEB_VIEW=true
+        make -C tests -j"$(nproc)" DGL_BACKEND=both
+    - name: Verify no test binary links the Wayland libraries
+      run: |
+        readelf -d build/tests/RuntimeBackend | grep NEEDED
+        status=0
+        for binary in build/tests/*; do
+          [ -f "$binary" ] && [ -x "$binary" ] || continue
+          if readelf -d "$binary" | grep -E 'NEEDED.*(libwayland|libxkbcommon|libEGL)'; then
+            echo "::error::$binary links a library a both build should load at runtime"
+            status=1
+          fi
+        done
+        exit $status
+    # --force-depends: the development packages still depend on them, which no longer matters once
+    # everything is built
+    - name: Remove the Wayland, xkbcommon and EGL libraries
+      run: |
+        dpkg --remove --force-depends libwayland-client0 libwayland-cursor0 libwayland-egl1 libxkbcommon0 libegl1
+        if ldconfig -p | grep -E 'libwayland-(client|cursor|egl)\.so|libxkbcommon\.so|libEGL\.so'; then
+          echo "::error::the libraries are still installed"
+          exit 1
+        fi
+    - name: Run the unit tests under Xvfb
+      env:
+        LIBGL_ALWAYS_SOFTWARE: 1
+      run: |
+        set -o pipefail
+        xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" make -C tests run DGL_BACKEND=both | tee tests.log
+        grep -q 'RuntimeBackend: program world on x11' tests.log \
+          || { echo "::error::RuntimeBackend did not open its window on X11"; exit 1; }
 
   # -------------------------------------------------------------------------------------------------------------------
   # Run the CLAP examples through clap-validator. Upstream CI builds CLAP plugins but never loads them.
