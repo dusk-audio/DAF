@@ -133,6 +133,13 @@ context is current and the drawing lands (read back from the X server on X11, a 
 Wayland), resizes it, and sends it a `PUGL_CLIENT` event. `tests/Wayland.cpp` and
 `tests/X11Focus.cpp` drive each backend's half of a `both` build directly.
 
-Run it under Xvfb with `WAYLAND_DISPLAY` unset, under a headless compositor with `DISPLAY` unset
-(for example `mutter --headless --wayland --no-x11 --virtual-monitor 1280x720`), with both, and with
-`DAF_WINDOW_BACKEND` set either way.
+`tests/headless-wayland.sh` runs a command against a headless Weston of its own, with a private
+`XDG_RUNTIME_DIR`. CI uses it for Wayland alone and, under `xvfb-run`, for both servers at once:
+
+    env -u DISPLAY LIBGL_ALWAYS_SOFTWARE=1 \
+        tests/headless-wayland.sh make -C tests run DGL_BACKEND=both SKIP_UNIT_TESTS=X11Focus
+    xvfb-run -a tests/headless-wayland.sh build/tests/RuntimeBackend
+
+`build.yml` runs the `both` suite under Xvfb alone, `wayland.yml` under Weston alone and
+RuntimeBackend with both servers and each `DAF_WINDOW_BACKEND`, and `cmake.yml` builds and runs
+`tests/runtime-backend-consumer`, an application that consumes a `both` build through CMake.
