@@ -1213,15 +1213,17 @@ puglDispatchViewEvents(PuglView* view)
    process reaches a drop target as messages to that window, and stalls while
    nothing dispatches them. A module leaves them to its host, which pumps the
    thread and owns the other windows on it. Bounded as puglDispatchViewEvents
-   is, by a mark posted to the thread. */
+   is, by a mark posted to the thread, and by the time the pass started when a
+   modal loop inside a dispatched message (a message box, a menu, a drag) has
+   taken the mark. Times are compared as GetTickCount wraps. */
 static PuglStatus
 puglDispatchThreadEvents(void)
 {
-  long markTime = 0;
-  MSG  msg;
+  DWORD limit = GetTickCount();
+  MSG   msg;
   while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
     if (!msg.hwnd && msg.message == PUGL_LOCAL_MARK_MSG) {
-      markTime = GetMessageTime();
+      limit = (DWORD)GetMessageTime();
     } else if (msg.message == WM_QUIT) {
       // whoever asked to quit runs a loop of its own, which needs to see it
       PostQuitMessage((int)msg.wParam);
@@ -1229,7 +1231,7 @@ puglDispatchThreadEvents(void)
     } else {
       TranslateMessage(&msg);
       DispatchMessage(&msg);
-      if (markTime != 0 && GetMessageTime() > markTime) {
+      if ((LONG)((DWORD)GetMessageTime() - limit) > 0) {
         break;
       }
     }

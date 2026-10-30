@@ -748,12 +748,26 @@ static void testMultithreadedApartment()
 // the message loop
 
 static int probeMessages = 0;
+static bool probeEatsMark = false, probeMarkEaten = false, probeReposts = false;
 
 static LRESULT CALLBACK probeProcedure(const HWND hwnd, const UINT message, const WPARAM wParam, const LPARAM lParam)
 {
     if (message == WM_USER + 7)
     {
         ++probeMessages;
+        return 0;
+    }
+    if (message == WM_USER + 8)
+    {
+        // as a modal loop does, taking every message of the thread, the pump's mark among them
+        MSG msg;
+        if (probeEatsMark && PeekMessageW(&msg, reinterpret_cast<HWND>(-1), PUGL_LOCAL_MARK_MSG, PUGL_LOCAL_MARK_MSG, PM_REMOVE))
+            probeMarkEaten = true;
+        probeEatsMark = false;
+
+        // and a window that always has more to do
+        if (probeReposts)
+            PostMessageW(hwnd, WM_USER + 8, 0, 0);
         return 0;
     }
     return DefWindowProcW(hwnd, message, wParam, lParam);
@@ -795,6 +809,32 @@ static void testMessageLoop()
     MSG msg;
     check(PeekMessageW(&msg, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE) && msg.wParam == 3,
           "and leaves a quit message for the loop it is meant for");
+
+    // a modal loop inside a dispatched message takes the pump's mark, and a window keeps posting to itself
+    {
+        std::atomic<bool> returned(false);
+        std::thread watchdog([&] {
+            for (int i = 0; i < 500 && ! returned; ++i)
+                Sleep(10);
+            if (! returned)
+            {
+                std::fprintf(stderr, "FileDropWin: FAILED a program world's pass ends without its mark (still running after 5 s)\n");
+                std::fflush(stderr);
+                ExitProcess(1);
+            }
+        });
+        probeEatsMark = probeReposts = true;
+        probeMarkEaten = false;
+        PostMessageW(probe, WM_USER + 8, 0, 0);
+        puglUpdate(program, 0.0);
+        returned = true;
+        watchdog.join();
+        check(probeMarkEaten, "a program world's pass ends without its mark, the queue never empty");
+
+        probeReposts = false;
+        while (PeekMessageW(&msg, probe, 0, 0, PM_REMOVE))
+            DispatchMessageW(&msg);
+    }
 
     puglFreeView(programView);
     puglFreeWorld(program);

@@ -526,7 +526,9 @@ exports stay as they are.
   stalled: the source sat in its first call to `DragEnter` until the test gave up on it. A plugin is
   fine: its host pumps the whole thread. A program world now dispatches the rest of its thread's
   messages as well, after its views', bounded the way the views' loops are, by a mark posted to the
-  thread; a `WM_QUIT` it meets is posted again and ends the pass, for the loop it was meant for. A
+  thread. A modal loop inside a dispatched message (a message box, a menu, an outgoing drag) can take
+  that mark, and a window that always has more to do would then keep the pass from ending, so until the
+  mark is seen the pass also ends at the first message newer than its start. A `WM_QUIT` it meets is posted again and ends the pass, for the loop it was meant for. A
   module world keeps the filtered loop, since its host pumps the thread and the other windows on it are
   the host's.
 - `WM_DROPFILES` (`DragAcceptFiles`) would avoid COM and the loop question, but it only reports the
