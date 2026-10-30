@@ -378,24 +378,15 @@ private:
         return message;
     }
 
-    // The absolute paths of the files a drag carries, in UTF-8. False when there is none, or when the drag
-    // carries virtual files (Outlook, a zip folder), which are no files on disk yet.
+    // The absolute paths of the files a drag carries in CF_HDROP, in UTF-8. False when there is none. Virtual
+    // files (Outlook, a zip folder) come as a file group descriptor without CF_HDROP, and are refused so;
+    // one offered next to CF_HDROP does not hide the files on disk.
     static bool readFiles(IDataObject* const data, std::vector<std::string>& paths)
     {
         if (data == nullptr)
             return false;
 
-        FORMATETC format = { 0, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
-
-        static const wchar_t* const descriptors[] = { L"FileGroupDescriptorW", L"FileGroupDescriptor" };
-        for (size_t i = 0; i < sizeof(descriptors) / sizeof(descriptors[0]); ++i)
-        {
-            format.cfFormat = static_cast<CLIPFORMAT>(RegisterClipboardFormatW(descriptors[i]));
-            if (format.cfFormat != 0 && data->QueryGetData(&format) == S_OK)
-                return false;
-        }
-
-        format.cfFormat = CF_HDROP;
+        FORMATETC format = { CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
         STGMEDIUM medium;
         std::memset(&medium, 0, sizeof(medium));
         if (data->GetData(&format, &medium) != S_OK)

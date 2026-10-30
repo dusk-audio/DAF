@@ -491,10 +491,13 @@ exports stay as they are.
   (length first, paths can pass `MAX_PATH`) and converts with `WideCharToMultiByte(CP_UTF8,
   WC_ERR_INVALID_CHARS)`, skipping a path with an unpaired surrogate. A path that is neither a drive
   path (`C:\`) nor a UNC one (`\\server\share`, `\\?\C:\`) is skipped too. Virtual files
-  (`FileGroupDescriptorW` or `FileGroupDescriptor`, from Outlook or a zip folder) are refused, whatever
-  else the data object offers. The list is read once, at the enter, and reaches the session through
-  `dataPaths` right after the first `position` asks for it: the session takes paths as well as a
-  `text/uri-list`, since a Windows path is no `file:` URI.
+  (`FileGroupDescriptorW` or `FileGroupDescriptor`, from Outlook or a zip folder) come without
+  `CF_HDROP` and are refused for that; a descriptor offered next to `CF_HDROP` does not hide the files
+  on disk. The shell's data object for an ordinary file offers both: `FileDrop` (`CF_HDROP`) next to
+  `FileGroupDescriptorW` and `FileContents`, as Explorer's copy verb shows on the test VM. The list is
+  read once, at the enter, and reaches the session through `dataPaths` right after the first `position`
+  asks for it: the session takes paths as well as a `text/uri-list`, since a Windows path is no `file:`
+  URI.
 - `*pdwEffect` is `DROPEFFECT_COPY` when accepted and the source allows copy, `DROPEFFECT_NONE`
   otherwise, whatever `grfKeyState` says: Shift asks Explorer for a move. A source that allows no copy
   is refused without reading its data. `Drop` reports copy when the application took the files.
@@ -634,8 +637,8 @@ Local only, on this box and never on the user's display:
   `IDataObject` holding `CF_HDROP`, over a real pugl window. Opt-in and opt-out (registration, one
   `OleInitialize` per registration, an embedded view and one without a window refused); accept and
   refuse; copy whatever `grfKeyState` says, a source without copy refused; client coordinates and the
-  drag's modifiers; a drop not taken; virtual files and data without `CF_HDROP` refused; a path past
-  `MAX_PATH`; paths with an unpaired surrogate, and relative ones, skipped; the window deleted, and
+  drag's modifiers; a drop not taken; a descriptor next to `CF_HDROP` taken, virtual files and data
+  without `CF_HDROP` refused; a path past `MAX_PATH`; paths with an unpaired surrogate, and relative ones, skipped; the window deleted, and
   opting out, inside each callback, OLE staying up until the call returns; a target that loses its last
   reference inside a call; an unrealized view answering none; an opt-out from outside whose leave opts
   in again while calls arrive, which wait for the opt-out; the `RPC_E_CHANGED_MODE` refusal; and the

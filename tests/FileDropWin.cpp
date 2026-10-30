@@ -395,18 +395,29 @@ static void testDrag(PuglWorld* const world)
         }
     }
 
-    // virtual files and data without files
+    // file group descriptors, with files on disk and without
     {
         const wchar_t* const descriptors[] = { L"FileGroupDescriptorW", L"FileGroupDescriptor" };
         for (size_t i = 0; i < 2; ++i)
         {
             FakeData* const data = new FakeData(threeFiles());
             data->descriptor = descriptors[i];
-            check(enter(target, data, screenPoint(hwnd, 5, 5)) == DROPEFFECT_NONE
-                  && over(target, screenPoint(hwnd, 6, 6)) == DROPEFFECT_NONE
-                  && drop(target, data, screenPoint(hwnd, 6, 6)) == DROPEFFECT_NONE, "virtual files are refused");
-            check(rec.take().empty(), "and the view never hears of them");
+            check(enter(target, data, screenPoint(hwnd, 5, 5)) == DROPEFFECT_COPY && rec.take() == "ENTER;"
+                  && rec.files.size() == 3 && rec.files[0] == "C:\\Audio\\kick.wav",
+                  "a descriptor next to CF_HDROP does not hide the files on disk");
+            check(drop(target, data, screenPoint(hwnd, 5, 5)) == DROPEFFECT_COPY && rec.take() == "DROP;",
+                  "and they can be dropped");
             data->Release();
+
+            FakeData* const virtualOnly = new FakeData(threeFiles());
+            virtualOnly->descriptor = descriptors[i];
+            virtualOnly->hdrop = false;
+            check(enter(target, virtualOnly, screenPoint(hwnd, 5, 5)) == DROPEFFECT_NONE
+                  && over(target, screenPoint(hwnd, 6, 6)) == DROPEFFECT_NONE
+                  && drop(target, virtualOnly, screenPoint(hwnd, 6, 6)) == DROPEFFECT_NONE,
+                  "virtual files without CF_HDROP are refused");
+            check(rec.take().empty(), "and the view never hears of them");
+            virtualOnly->Release();
         }
 
         FakeData* const data = new FakeData(threeFiles());
