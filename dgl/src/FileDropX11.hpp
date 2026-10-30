@@ -430,7 +430,8 @@ private:
 
     void onSelectionNotify(const XSelectionEvent& event)
     {
-        if (event.target != world->impl->atoms.text_uri_list)
+        // a window that has gone took its conversions and their properties with it
+        if (event.target != world->impl->atoms.text_uri_list || view == nullptr)
             return;
 
         // A refusal names no property, so it is matched by its request's time. One that matches no request in
