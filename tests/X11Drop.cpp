@@ -147,6 +147,7 @@ struct Source
     Atom enter, position, status, leave, drop, finished, selection, typeList, copy, move, uri, incr, text, targets;
     std::string payload;
     bool serve = true;            // answer SelectionRequests as they come
+    bool zeroTime = false;        // answer with CurrentTime instead of the request's time, as some owners do
     bool incremental = false;     // answer through INCR
     size_t chunk = 64 * 1024;
     std::vector<XEvent> messages; // the ClientMessages the window sent
@@ -260,7 +261,7 @@ struct Source
         event.xselection.requestor = request.requestor;
         event.xselection.selection = request.selection;
         event.xselection.target = request.target;
-        event.xselection.time = request.time;
+        event.xselection.time = zeroTime ? CurrentTime : request.time;
         event.xselection.property = supplied ? request.property : None;
         XSendEvent(dpy, request.requestor, False, NoEventMask, &event);
         XFlush(dpy);
@@ -367,16 +368,22 @@ static void settle(Application& app, Source& source, const int ms = 150)
     pump(app, source, [] { return false; }, ms);
 }
 
-static bool hasProperty(Display* const dpy, const ::Window window, const Atom property)
+// whether the window carries none of the properties a drop target receives the file list into
+static bool noDropProperty(Display* const dpy, const ::Window window)
 {
     int count = 0;
     Atom* const atoms = XListProperties(dpy, window, &count);
     bool found = false;
     for (int i = 0; i < count; ++i)
-        found = found || atoms[i] == property;
+    {
+        char* const name = XGetAtomName(dpy, atoms[i]);
+        found = found || (name != nullptr && std::strncmp(name, "_DGL_XDND_DATA", 14) == 0);
+        if (name != nullptr)
+            XFree(name);
+    }
     if (atoms != nullptr)
         XFree(atoms);
-    return found;
+    return ! found;
 }
 
 static long awareVersion(Display* const dpy, const ::Window window, const Atom aware)
@@ -407,7 +414,6 @@ int main()
     DAF_ASSERT_NOT_EQUAL(dpy, nullptr, "an X server is reachable");
 
     const Atom aware = XInternAtom(dpy, "XdndAware", False);
-    const Atom dataProperty = XInternAtom(dpy, "_DGL_XDND_DATA", False);
 
     Application app(true, Application::kTypeAuto, Application::kWindowSystemX11);
     DAF_ASSERT_EQUAL(app.getWindowSystem(), Application::kWindowSystemX11, "the application opens its windows on X11");
@@ -499,7 +505,7 @@ int main()
     source.send(target, source.leave, 0, 0, 0, 0);
     settle(app, source, 50);
     check(win->take().empty(), "no leave after a drop");
-    check(! hasProperty(dpy, target, dataProperty), "no DGL property left on the window");
+    check(noDropProperty(dpy, target), "no DGL property left on the window");
 
     // a move requested, through a type list, at version 4: still a copy, and v4 has no finished fields
     source.messages.clear();
@@ -585,7 +591,7 @@ int main()
     source.serve = true;
     check(win->take().empty(), "a drag that left during the conversion never reaches the window");
     check(source.count(source.status) == 0, "nor is its position answered after it left");
-    check(! hasProperty(dpy, target, dataProperty), "and its late answer leaves nothing on the window");
+    check(noDropProperty(dpy, target), "and its late answer leaves nothing on the window");
 
     // a new drag before the last one ended
     source.messages.clear();
@@ -598,12 +604,16 @@ int main()
     {
         Source other(otherDisplay);
         other.payload = "file:///tmp/other.wav\r\n";
+        other.serve = false;
         other.sendEnter(target, 5, uriOnly);
         const Time otherTime = other.stamp + 1;
         other.sendPosition(target, originX + 20, originY + 20, otherTime, other.copy);
-        check(pump(app, other, [&] { return other.count(other.status) == 1; }), "the second drag is answered");
+        check(pump(app, other, [&] { return other.requests.size() == 1; }), "the second drag asks for its files");
         source.answer(source.requests[0]);
         settle(app, source, 100);
+        check(win->take().empty(), "the first drag's late answer, with the second's request in flight, is not taken");
+        other.answer(other.requests[0]);
+        check(pump(app, other, [&] { return other.count(other.status) == 1; }), "the second drag is answered");
         check(win->take() == "ENTER;", "the window hears the second drag only");
         check(win->files.size() == 1 && win->files[0] == "/tmp/other.wav", "with its files");
         other.send(target, other.drop, 0, static_cast<long>(otherTime + 1), 0, 0);
@@ -650,7 +660,7 @@ int main()
         source.send(target, source.leave, 0, 0, 0, 0);
         settle(app, source, 50);
         check(win->take() == "LEAVE;", "and its leave");
-        check(! hasProperty(dpy, target, dataProperty), "no DGL property left after INCR");
+        check(noDropProperty(dpy, target), "no DGL property left after INCR");
 
         // past the ceiling: refused, and the rest of the transfer drained
         list.clear();
@@ -671,7 +681,7 @@ int main()
         source.send(target, source.leave, 0, 0, 0, 0);
         settle(app, source, 100);
         check(win->take().empty(), "and the window heard nothing");
-        check(! hasProperty(dpy, target, dataProperty), "no DGL property left after a drained transfer");
+        check(noDropProperty(dpy, target), "no DGL property left after a drained transfer");
 
         source.incremental = false;
         source.payload = "file:///tmp/a.wav\r\n";
@@ -801,6 +811,116 @@ int main()
         win->take();
     }
     source.serve = true;
+
+    // Late answers and conversions of earlier drags, each against a window of its own, so that nothing an
+    // earlier case left behind decides the outcome.
+
+    // an owner that answers with CurrentTime rather than the request's time still has its answer taken
+    check(freshWindow(), "a window for an owner that answers with time 0 opts in");
+    source.messages.clear();
+    source.requests.clear();
+    source.zeroTime = true;
+    source.sendEnter(target, 5, uriOnly);
+    source.sendPosition(target, originX + 10, originY + 10, source.stamp + 20, source.copy);
+    check(pump(app, source, [&] { return source.count(source.status) == 1; }, 1000),
+          "an answer with time 0 is answered at once");
+    if (const XClientMessageEvent* const status = source.last(source.status))
+        check((status->data.l[1] & 1) == 1, "and taken");
+    check(win->take() == "ENTER;", "and reaches the window");
+    source.zeroTime = false;
+    source.send(target, source.leave, 0, 0, 0, 0);
+    settle(app, source, 50);
+    win->take();
+
+    // two drags leave while their conversions are in flight, a third asks; the first late answer must not
+    // pass for the third drag's list, which arrives after it
+    check(freshWindow(), "a window for late answers opts in");
+    source.messages.clear();
+    source.requests.clear();
+    source.serve = false;
+    for (int drag = 0; drag < 3; ++drag)
+    {
+        source.sendEnter(target, 5, uriOnly);
+        source.sendPosition(target, originX + 10, originY + 10, source.stamp + 30 + drag, source.copy);
+        pump(app, source, [&] { return source.requests.size() == static_cast<size_t>(drag + 1); });
+        if (drag < 2)
+            source.send(target, source.leave, 0, 0, 0, 0);
+    }
+    check(source.requests.size() == 3, "three drags ask for their files");
+    if (source.requests.size() == 3)
+    {
+        source.payload = "file:///tmp/first.wav\r\n";
+        source.answer(source.requests[0]);
+        settle(app, source, 100);
+        check(win->take().empty(), "the first drag's late answer is not taken for the third's");
+        source.payload = "file:///tmp/third.wav\r\n";
+        source.answer(source.requests[2]);
+        check(pump(app, source, [&] { return source.count(source.status) == 1; }), "the third drag's own answer is taken");
+        check(win->take() == "ENTER;" && win->files.size() == 1 && win->files[0] == "/tmp/third.wav",
+              "with the third drag's files");
+        source.payload = "file:///tmp/second.wav\r\n";
+        source.answer(source.requests[1]);
+        settle(app, source, 100);
+        check(win->take().empty(), "and the second drag's late answer changes nothing");
+    }
+    source.serve = true;
+    source.send(target, source.leave, 0, 0, 0, 0);
+    settle(app, source, 50);
+    win->take();
+    check(noDropProperty(dpy, target), "late answers leave nothing on the window");
+
+    // an INCR transfer of a drag that left keeps writing its chunks: they must not land in the next drag's list
+    check(freshWindow(), "a window for an abandoned INCR transfer opts in");
+    {
+        std::string list;
+        for (int i = 0; i < 60; ++i)
+        {
+            char line[64];
+            std::snprintf(line, sizeof(line), "file:///tmp/incr-a-%02d.wav\r\n", i);
+            list += line;
+        }
+        source.payload = list;
+        source.incremental = true;
+        source.chunk = 64;
+        source.incrOffset = 0;
+        source.incrDone = true;
+        source.messages.clear();
+        source.requests.clear();
+        source.sendEnter(target, 5, uriOnly);
+        source.sendPosition(target, originX + 10, originY + 10, source.stamp + 40, source.copy);
+        check(pump(app, source, [&] { return source.incrOffset >= 128; }), "an INCR transfer gets under way");
+        source.send(target, source.leave, 0, 0, 0, 0);
+        for (int i = 0; i < 5; ++i)
+            app.idle();
+
+        Display* const nextDisplay = XOpenDisplay(nullptr);
+        {
+            Source next(nextDisplay);
+            next.payload = "file:///tmp/incr-b.wav\r\n";
+            next.serve = false;
+            next.sendEnter(target, 5, uriOnly);
+            next.sendPosition(target, originX + 20, originY + 20, next.stamp + 1, next.copy);
+            check(pump(app, next, [&] { return next.requests.size() == 1; }), "the next drag asks for its files");
+            // the next drag's answer, and right behind it a chunk of the abandoned transfer
+            next.answer(next.requests[0]);
+            source.nextChunk();
+            check(pump(app, next, [&] { return next.count(next.status) == 1; }), "the next drag is answered");
+            check(win->take() == "ENTER;" && win->files.size() == 1 && win->files[0] == "/tmp/incr-b.wav",
+                  "with its own list, untouched by the abandoned transfer");
+            next.send(target, next.leave, 0, 0, 0, 0);
+            pump(app, source, [&] { return source.incrDone; });
+            check(source.incrDone, "the abandoned transfer is drained to its end");
+            settle(app, source, 50);
+        }
+        XCloseDisplay(nextDisplay);
+        win->take();
+        check(noDropProperty(dpy, target), "and leaves nothing on the window");
+        source.incremental = false;
+        source.chunk = 64 * 1024;
+        source.payload = "file:///tmp/a.wav\r\n";
+        // the next source took the selection
+        source.reopen();
+    }
 
     // opting out removes XdndAware and ends a drag for the window with a leave
     check(freshWindow(), "the window opts in");

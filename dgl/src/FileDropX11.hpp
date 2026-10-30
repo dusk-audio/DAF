@@ -3,22 +3,47 @@
 // Included after the X11 backend, inside the DGL namespace: the XDND target of a view that accepts file
 // drops. See drop-targets.md, whose section on X11 gives the reason for each rule below.
 
+/// Conversions of a file list a target can have in flight at once, each with a property of its own
+#define PUGL_X11_DROP_TRANSFERS 4
+
 // What the targets of a world share: the atoms, interned at the first opt-in, and every target.
 struct PuglX11DropWorld
 {
-    Atom aware, enter, position, status, leave, drop, finished, selection, typeList, copy, incr, property;
+    Atom aware, enter, position, status, leave, drop, finished, selection, typeList, copy, incr;
+    Atom properties[PUGL_X11_DROP_TRANSFERS]; // _DGL_XDND_DATA0 and on, what a conversion is received into
     std::vector<PuglX11DropTarget*> targets;
     char hostName[256];
     int depth; // calls into a target on the stack; targets are only freed with none
 
     PuglX11DropWorld() noexcept
         : aware(None), enter(None), position(None), status(None), leave(None), drop(None), finished(None),
-          selection(None), typeList(None), copy(None), incr(None), property(None), targets(), hostName(),
+          selection(None), typeList(None), copy(None), incr(None), properties(), targets(), hostName(),
           depth(0) {}
+
+    bool isProperty(const Atom atom) const noexcept
+    {
+        for (size_t i = 0; i < PUGL_X11_DROP_TRANSFERS; ++i)
+            if (properties[i] == atom)
+                return true;
+        return false;
+    }
 };
 
 struct PuglX11DropTarget : PuglDropHost
 {
+    /*
+       A conversion of the file list, on a property of its own: a late answer to an earlier drag, or the
+       chunks of its INCR transfer, are then told apart from the current one by their property, whatever
+       time the owner reports in its SelectionNotify.
+    */
+    struct Transfer {
+        bool requested;   // its SelectionNotify is due
+        bool incremental; // its INCR chunks are coming
+        bool current;     // the session waits for it; any other is drained and its data thrown away
+        Time time;        // of its request, which a refusal, naming no property, is matched by
+        double deadline;  // when one nobody waits for any more is given up
+    };
+
     PuglWorld* const world;
     PuglX11DropWorld& shared;
     PuglView* view;            // null once the view has gone; the world frees the target at a later tick
@@ -29,13 +54,8 @@ struct PuglX11DropTarget : PuglDropHost
     unsigned version;          // the XDND version spoken with it
     bool watching;             // StructureNotifyMask is selected on the source, for its DestroyNotify
     Time stamp;                // the timestamp the next conversion uses
-    Time requestTime;          // that of the conversion in flight
-    Time staleTime;            // that of a conversion an earlier drag left unanswered
-    bool requesting;           // a SelectionNotify is due
-    bool incremental;          // an INCR transfer is in progress
-    bool draining;             // the chunks of an INCR transfer nobody wants any more are thrown away
-    double drainDeadline;
-    std::vector<char> buffer;
+    Transfer transfers[PUGL_X11_DROP_TRANSFERS];
+    std::vector<char> buffer;  // the current conversion's INCR chunks so far
     std::deque<XEvent> queue; // what waits for the current call to return, see post; type 0 is a tick
     bool busy;
 
@@ -50,12 +70,7 @@ struct PuglX11DropTarget : PuglDropHost
           version(0),
           watching(false),
           stamp(CurrentTime),
-          requestTime(CurrentTime),
-          staleTime(CurrentTime),
-          requesting(false),
-          incremental(false),
-          draining(false),
-          drainDeadline(0.0),
+          transfers(),
           buffer(),
           queue(),
           busy(false) {}
@@ -132,10 +147,21 @@ struct PuglX11DropTarget : PuglDropHost
         if (! session.isActive())
             forgetSource();
 
-        requesting = incremental = draining = false;
+        // the properties go with the window
+        for (size_t i = 0; i < PUGL_X11_DROP_TRANSFERS; ++i)
+            transfers[i] = Transfer();
         buffer.clear();
         accepting = false;
         view = nullptr;
+    }
+
+    // whether a conversion nobody waits for any more is still running, which the tick drains
+    bool lingering() const noexcept
+    {
+        for (size_t i = 0; i < PUGL_X11_DROP_TRANSFERS; ++i)
+            if (! transfers[i].current && busyTransfer(transfers[i]))
+                return true;
+        return false;
     }
 
     // ----------------------------------------------------------------------------------------------------------------
@@ -146,16 +172,33 @@ struct PuglX11DropTarget : PuglDropHost
         if (view == nullptr)
             return;
 
-        if (requesting)
-            staleTime = requestTime;
+        abandonTransfer();
 
-        requestTime = stamp;
-        requesting = true;
-        incremental = draining = false;
+        // a property no conversion is using, or with every one busy, the one closest to being given up
+        size_t slot = PUGL_X11_DROP_TRANSFERS;
+        for (size_t i = 0; i < PUGL_X11_DROP_TRANSFERS && slot == PUGL_X11_DROP_TRANSFERS; ++i)
+            if (! busyTransfer(transfers[i]))
+                slot = i;
+
+        if (slot == PUGL_X11_DROP_TRANSFERS)
+        {
+            slot = 0;
+            for (size_t i = 1; i < PUGL_X11_DROP_TRANSFERS; ++i)
+                if (transfers[i].deadline < transfers[slot].deadline)
+                    slot = i;
+            XDeleteProperty(display(), window, shared.properties[slot]);
+        }
+
+        Transfer& transfer = transfers[slot];
+        transfer.requested = true;
+        transfer.incremental = false;
+        transfer.current = true;
+        transfer.time = stamp;
+        transfer.deadline = 0.0;
         buffer.clear();
 
         // lesson 2: the timestamp of the message that allows the conversion, never another field
-        XConvertSelection(display(), shared.selection, world->impl->atoms.text_uri_list, shared.property,
+        XConvertSelection(display(), shared.selection, world->impl->atoms.text_uri_list, shared.properties[slot],
                           window, stamp);
         XFlush(display());
     }
@@ -218,11 +261,16 @@ private:
     {
         session.tick(now);
 
-        if (draining && now >= drainDeadline)
+        for (size_t i = 0; i < PUGL_X11_DROP_TRANSFERS; ++i)
         {
-            draining = false;
+            Transfer& transfer = transfers[i];
+
+            if (transfer.current || ! busyTransfer(transfer) || now < transfer.deadline)
+                continue;
+
+            transfer.requested = transfer.incremental = false;
             if (view != nullptr)
-                XDeleteProperty(display(), window, shared.property);
+                XDeleteProperty(display(), window, shared.properties[i]);
         }
     }
 
@@ -370,21 +418,33 @@ private:
 
     void onSelectionNotify(const XSelectionEvent& event)
     {
-        const bool current = requesting && event.target == world->impl->atoms.text_uri_list
-                          && (event.time == requestTime || event.time != staleTime);
+        if (event.target != world->impl->atoms.text_uri_list)
+            return;
 
-        if (! current)
+        // A refusal names no property, so it is matched by its request's time. One that matches no request in
+        // flight is left alone: the deadline settles a conversion that never answers.
+        Transfer* transfer = nullptr;
+        if (event.property != None)
+            transfer = transferOf(event.property);
+        else
+            for (size_t i = 0; i < PUGL_X11_DROP_TRANSFERS && transfer == nullptr; ++i)
+                if (transfers[i].requested && transfers[i].time == event.time)
+                    transfer = &transfers[i];
+
+        if (transfer == nullptr)
+            return;
+
+        // an answer nobody waits for on one of the target's properties
+        if (! transfer->requested)
         {
-            // the answer to a conversion of an earlier drag
-            if (event.property != None && view != nullptr)
-                XDeleteProperty(display(), window, event.property);
+            XDeleteProperty(display(), window, event.property);
             return;
         }
 
-        requesting = false;
+        transfer->requested = false;
 
         if (event.property == None)
-            return session.dataFailed();
+            return failTransfer(*transfer);
 
         Atom type = None;
         int format = 0;
@@ -396,7 +456,8 @@ private:
         {
             if (data != nullptr)
                 XFree(data);
-            return session.dataFailed();
+            XDeleteProperty(display(), window, event.property);
+            return failTransfer(*transfer);
         }
 
         // ICCCM 2.7.2: deleting the INCR property, which the read above did, asks for the first chunk
@@ -404,8 +465,9 @@ private:
         {
             if (data != nullptr)
                 XFree(data);
-            incremental = true;
-            buffer.clear();
+            transfer->incremental = true;
+            if (transfer->current)
+                buffer.clear();
             return;
         }
 
@@ -414,9 +476,18 @@ private:
             if (data != nullptr)
                 XFree(data);
             XDeleteProperty(display(), window, event.property);
-            return session.dataFailed();
+            return failTransfer(*transfer);
         }
 
+        // the late answer of an earlier drag, read and thrown away
+        if (! transfer->current)
+        {
+            if (data != nullptr)
+                XFree(data);
+            return;
+        }
+
+        transfer->current = false;
         session.data(reinterpret_cast<const char*>(data), count, shared.hostName);
 
         if (data != nullptr)
@@ -428,12 +499,16 @@ private:
         if (event.state != PropertyNewValue || view == nullptr)
             return;
 
-        // the source writing the answer to a conversion; its SelectionNotify follows
-        if (requesting)
+        Transfer* const transfer = transferOf(event.atom);
+        if (transfer == nullptr)
+            return;
+
+        // the owner writing the answer to a conversion; its SelectionNotify follows
+        if (transfer->requested)
             return;
 
         // a chunk nobody asked for
-        if (! incremental && ! draining)
+        if (! transfer->incremental)
         {
             XDeleteProperty(display(), window, event.atom);
             return;
@@ -448,71 +523,96 @@ private:
                                              static_cast<long>(PUGL_DROP_MAX_PAYLOAD / 4), True, AnyPropertyType,
                                              &type, &format, &count, &after, &data) == Success;
 
-        if (draining)
+        // a chunk the read could not take whole is deleted all the same, so that the owner goes on
+        if (! read || after != 0)
         {
             if (data != nullptr)
                 XFree(data);
-            if (! read || after != 0)
-                XDeleteProperty(display(), window, event.atom);
-            else if (count == 0)
-                draining = false;
-            return;
+            XDeleteProperty(display(), window, event.atom);
+            return failTransfer(*transfer);
         }
 
         // the zero-length chunk ends the transfer
-        if (read && count == 0 && after == 0)
+        if (count == 0)
         {
             if (data != nullptr)
                 XFree(data);
 
-            incremental = false;
+            transfer->incremental = false;
+            if (! transfer->current)
+                return;
+
+            transfer->current = false;
             std::vector<char> list;
             list.swap(buffer);
             session.data(list.empty() ? nullptr : list.data(), list.size(), shared.hostName);
             return;
         }
 
-        if (! read || after != 0 || format != 8 || buffer.size() + count > PUGL_DROP_MAX_PAYLOAD)
+        // drained: a chunk of a transfer nobody waits for any more
+        if (! transfer->current)
         {
-            if (data != nullptr)
-                XFree(data);
-            if (read && after != 0)
-                XDeleteProperty(display(), window, event.atom);
+            XFree(data);
+            return;
+        }
 
-            incremental = false;
-            buffer.clear();
-            startDraining();
-            return session.dataFailed();
+        if (format != 8 || buffer.size() + count > PUGL_DROP_MAX_PAYLOAD)
+        {
+            XFree(data);
+            return failTransfer(*transfer);
         }
 
         buffer.insert(buffer.end(), data, data + count);
         XFree(data);
     }
 
-    // A transfer the session no longer wants is left to finish on its own, or drained.
-    void settleTransfer()
+    static bool busyTransfer(const Transfer& transfer) noexcept
     {
-        if (session.wantsData())
-            return;
+        return transfer.requested || transfer.incremental;
+    }
 
-        if (requesting)
-        {
-            requesting = false;
-            staleTime = requestTime;
-        }
+    Transfer* transferOf(const Atom property) noexcept
+    {
+        for (size_t i = 0; i < PUGL_X11_DROP_TRANSFERS; ++i)
+            if (shared.properties[i] == property)
+                return &transfers[i];
+        return nullptr;
+    }
 
-        if (incremental)
+    // The conversion the session waits for is no longer wanted: it is left to finish on its own, and drained
+    void abandonTransfer()
+    {
+        for (size_t i = 0; i < PUGL_X11_DROP_TRANSFERS; ++i)
         {
-            incremental = false;
-            buffer.clear();
-            startDraining();
+            Transfer& transfer = transfers[i];
+
+            if (transfer.current && busyTransfer(transfer))
+            {
+                transfer.current = false;
+                transfer.deadline = puglGetTime(world) + PUGL_DROP_HELD_TIMEOUT;
+                buffer.clear();
+            }
         }
     }
 
-    void startDraining()
+    // A conversion that came to nothing; one still sending INCR chunks is drained
+    void failTransfer(Transfer& transfer)
     {
-        draining = true;
-        drainDeadline = puglGetTime(world) + PUGL_DROP_HELD_TIMEOUT;
+        const bool wanted = transfer.current;
+        transfer.current = false;
+        transfer.deadline = puglGetTime(world) + PUGL_DROP_HELD_TIMEOUT;
+
+        if (wanted)
+        {
+            buffer.clear();
+            session.dataFailed();
+        }
+    }
+
+    void settleTransfer()
+    {
+        if (! session.wantsData())
+            abandonTransfer();
     }
 
     void endDrag()
@@ -607,7 +707,7 @@ static bool puglX11DropFilter(PuglWorld* const world, const XEvent* const event)
         return true;
 
     case PropertyNotify:
-        if (event->xproperty.atom != shared->property)
+        if (! shared->isProperty(event->xproperty.atom))
             return false;
         if ((target = puglX11DropFind(shared, event->xproperty.window)) != nullptr)
             target->post(*event);
@@ -655,7 +755,7 @@ static void puglX11DropTick(PuglWorld* const world)
     }
 
     for (size_t i = 0; i < shared->targets.size(); ++i)
-        if (shared->targets[i]->session.getDeadline() > 0.0 || shared->targets[i]->draining)
+        if (shared->targets[i]->session.getDeadline() > 0.0 || shared->targets[i]->lingering())
             shared->targets[i]->postTick();
 }
 
@@ -723,16 +823,20 @@ PuglStatus puglSetAcceptsFileDrops(PuglView* const view, const bool accept)
         if (shared == nullptr)
             return PUGL_NO_MEMORY;
 
-        char names[12][16] = {
+        char names[11 + PUGL_X11_DROP_TRANSFERS][16] = {
             "XdndAware", "XdndEnter", "XdndPosition", "XdndStatus", "XdndLeave", "XdndDrop",
-            "XdndFinished", "XdndSelection", "XdndTypeList", "XdndActionCopy", "INCR", "_DGL_XDND_DATA",
+            "XdndFinished", "XdndSelection", "XdndTypeList", "XdndActionCopy", "INCR",
         };
-        char* list[12];
-        for (int i = 0; i < 12; ++i)
+        char* list[11 + PUGL_X11_DROP_TRANSFERS];
+        for (int i = 0; i < 11 + PUGL_X11_DROP_TRANSFERS; ++i)
+        {
+            if (i >= 11)
+                std::snprintf(names[i], sizeof(names[i]), "_DGL_XDND_DATA%d", i - 11);
             list[i] = names[i];
+        }
 
-        Atom atoms[12] = {};
-        if (! XInternAtoms(wimpl->display, list, 12, False, atoms))
+        Atom atoms[11 + PUGL_X11_DROP_TRANSFERS] = {};
+        if (! XInternAtoms(wimpl->display, list, 11 + PUGL_X11_DROP_TRANSFERS, False, atoms))
         {
             delete shared;
             return PUGL_FAILURE;
@@ -749,7 +853,8 @@ PuglStatus puglSetAcceptsFileDrops(PuglView* const view, const bool accept)
         shared->typeList  = atoms[8];
         shared->copy      = atoms[9];
         shared->incr      = atoms[10];
-        shared->property  = atoms[11];
+        for (int i = 0; i < PUGL_X11_DROP_TRANSFERS; ++i)
+            shared->properties[i] = atoms[11 + i];
 
         // a URI may name this machine as its host, see PuglDropFiles
         if (gethostname(shared->hostName, sizeof(shared->hostName)) != 0)

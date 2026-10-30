@@ -210,8 +210,7 @@ guarantees:
 - Deadlines: 2 s for the data once requested (the drag is refused from then on), 5 s for a held drop.
 - Nothing is freed during a dispatch, so an application may delete its window inside any callback, and
   the event's files stay readable until that callback returns. A view that goes away, or stops
-  accepting, only detaches the session, which then refuses the rest of
-  the drag at the protocol level. The X11 target belongs to its view, so `puglUnrealize` hands it to the
+  accepting, only detaches the session, which then refuses the rest of the drag at the protocol level. The X11 target belongs to its view, so `puglUnrealize` hands it to the
   world, which frees it at the next tick, after any dispatch on the stack has returned. Once a drop is
   being taken or refused, the drag stays with the session until its end has told the source: a drop
   dispatched still finishes with the application's answer, and one refused (in the late enter of a
@@ -266,9 +265,9 @@ anyway); one that opts out again deletes the property.
 
 Atoms: interned at the first opt-in with a single `XInternAtoms` call and kept on the world:
 `XdndAware`, `XdndEnter`, `XdndPosition`, `XdndStatus`, `XdndLeave`, `XdndDrop`, `XdndFinished`,
-`XdndSelection`, `XdndTypeList`, `XdndActionCopy`, `INCR`, and `DGL_XDND_DATA`, the property DGL
-receives into. A fixed name, since the server never frees an atom. `text/uri-list` is interned by
-x11.c already.
+`XdndSelection`, `XdndTypeList`, `XdndActionCopy`, `INCR`, and `_DGL_XDND_DATA0` to `_DGL_XDND_DATA3`,
+the properties DGL receives into. Fixed names, since the server never frees an atom. `text/uri-list` is
+interned by x11.c already.
 
 Messages, all format 32, XIDs read as `::Window(uint32_t(l[0]))` like FileDragX11.hpp:
 
@@ -282,33 +281,39 @@ Messages, all format 32, XIDs read as `::Window(uint32_t(l[0]))` like FileDragX1
 | XdndFinished, sent | l[0] our window; v5: l[1] bit 0 accepted, l[2] action | Lesson 3: at v5, l[2] is `XdndActionCopy` when the application took the files and None otherwise. Below v5, l[1] = l[2] = 0. |
 
 Messages count only from the session's source. A Position before any Enter, from another window, or
-from a source below version 3, is ignored and gets no answer, as XDND has it. A new Enter, from any source, ends the current session as if it had left: the
-application gets its leave if it had its enter, and a held drop gets `XdndFinished` refusing.
+from a source below version 3, is ignored and gets no answer, as XDND has it. A new Enter, from any
+source, ends the current session as if it had left: the application gets its leave if it had its enter,
+and a held drop gets `XdndFinished` refusing.
 
-The conversion: `XConvertSelection(XdndSelection, text/uri-list, DGL_XDND_DATA, window, time)`, with
-the first Position's l[3], and back to the event loop. Nothing waits. A drop that arrives while it is in
-flight waits for it, up to the held drop's deadline. The filter takes the `SelectionNotify` before `handleSelectionNotify`, which knows only
-`CLIPBOARD`, and matches it by requestor window, selection, property and the request's time. The
-answer to a stale request (a session that left, a drag that followed it) is recognised by that time,
-its property deleted, and nothing else done. A notify with property None means the source could not
-convert: refuse. JUCE converted with l[2] of the Position, which is the packed coordinates; the test
-below checks the time the source sees.
+The conversion: `XConvertSelection(XdndSelection, text/uri-list, property, window, time)` with the first
+Position's l[3], and back to the event loop. Nothing waits. A drop that arrives while it is in flight
+waits for it, up to the held drop's deadline. Each conversion takes the first of the four properties no
+other conversion is using, so that the late answer of an earlier drag (one that left, one a new drag
+replaced) and the chunks of its INCR transfer are told from the current conversion by their property,
+whatever time the owner reports: some answer with CurrentTime rather than the request's time. The filter
+takes the `SelectionNotify` before `handleSelectionNotify`, which knows only `CLIPBOARD`. A late answer
+is read, thrown away and its property deleted. A refusal (property None) names no property, so it is
+matched by its request's time, and one that matches no request in flight is left to the deadline: a
+current answer is never mistaken for a stale one. JUCE converted with l[2] of the Position, which is the
+packed coordinates; the test below checks the time the source sees.
 
 Reading: `XGetWindowProperty(..., delete True, AnyPropertyType)`, bounded by the payload ceiling, and
 refused when `bytes_after` is not zero. An `INCR` type starts an incremental transfer (ICCCM 2.7.2):
-the delete asks the owner for the first chunk, and each `PropertyNotify` with `PropertyNewValue` for
-`DGL_XDND_DATA` on the window (pugl selects `PropertyChangeMask` already) is read with delete and
-appended, up to a zero-length chunk. A transfer past the ceiling, or one whose session ended, turns to
-draining: each further chunk is deleted unread, up to the zero-length one or the deadline, so the
-source is not left waiting on a property nobody deletes and nothing stays on the window. A
-`PropertyNewValue` on the property with no transfer in progress is deleted as well. No DGL property
-outlives its session.
+the delete asks the owner for the first chunk, and each `PropertyNotify` with `PropertyNewValue` for that
+conversion's property on the window (pugl selects `PropertyChangeMask` already) is read with delete and
+appended, up to a zero-length chunk. A transfer past the ceiling, or one nobody waits for any more, is
+drained: each further chunk is deleted unread, up to the zero-length one or the deadline, so the
+source is not left waiting on a property nobody deletes and nothing stays on the window. Another
+conversion meanwhile uses another property, so the chunks never land in its list. A
+`PropertyNewValue` on one of the properties with no transfer in progress is deleted as well. No DGL
+property outlives its conversion.
 
 Deadlines are checked at the top of `dispatchX11Events`. It runs on every pass of `puglUpdate` and
 `puglX11UpdateWithoutExposures`, events or not, and DGL never calls `puglUpdate` without a timeout.
 The data has 2 s after the request (the owed status goes out refusing and the session stays refused
-until it leaves), a held drop 5 s (`XdndFinished` refusing), draining 5 s. A source that converts
-slowly cannot make DAF's own outgoing drag give up first: `X11FileDrag` waits 5 s after the release.
+until it leaves), a held drop 5 s (`XdndFinished` refusing), a conversion nobody waits for any more 5 s,
+after which its property is deleted. A source that converts slowly cannot make DAF's own outgoing drag
+give up first: `X11FileDrag` waits 5 s after the release.
 
 A source that dies: its window is selected for `StructureNotifyMask` on pugl's connection for as long
 as the session lasts (under the error trap, deselected at the end), and its `DestroyNotify`, which
