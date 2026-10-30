@@ -853,6 +853,63 @@ static void testMessageLoop()
     UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
 }
 
+// A view whose own mark a modal loop takes, and which always has more to do: its pass ends all the same
+static WNDPROC viewProcedure = nullptr;
+static bool viewMarkEaten = false, viewReposts = false;
+
+static LRESULT CALLBACK busyViewProcedure(const HWND hwnd, const UINT message, const WPARAM wParam, const LPARAM lParam)
+{
+    if (message != WM_USER + 9)
+        return CallWindowProcW(viewProcedure, hwnd, message, wParam, lParam);
+
+    MSG msg;
+    if (! viewMarkEaten && PeekMessageW(&msg, hwnd, PUGL_LOCAL_MARK_MSG, PUGL_LOCAL_MARK_MSG, PM_REMOVE))
+        viewMarkEaten = true;
+    if (viewReposts)
+        PostMessageW(hwnd, WM_USER + 9, 0, 0);
+    return 0;
+}
+
+static void testViewLoop()
+{
+    // a module world, which runs the views' passes alone
+    PuglWorld* const module = puglNewWorld(PUGL_MODULE, 0);
+    puglSetWorldString(module, PUGL_CLASS_NAME, "DafFileDropWinViewLoop");
+    PuglView* const view = newView(module);
+    const HWND hwnd = view->impl->hwnd;
+    viewProcedure = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(hwnd, GWLP_WNDPROC,
+                                                                reinterpret_cast<LONG_PTR>(busyViewProcedure)));
+
+    std::atomic<bool> returned(false);
+    std::thread watchdog([&] {
+        for (int i = 0; i < 500 && ! returned; ++i)
+            Sleep(10);
+        if (! returned)
+        {
+            std::fprintf(stderr, "FileDropWin: FAILED a view's pass ends without its mark (still running after 5 s)\n");
+            std::fflush(stderr);
+            ExitProcess(1);
+        }
+    });
+
+    // posted ahead of the mark the pass posts, so that it runs first and takes the mark
+    viewMarkEaten = false;
+    viewReposts = true;
+    PostMessageW(hwnd, WM_USER + 9, 0, 0);
+    puglUpdate(module, 0.0);
+    returned = true;
+    watchdog.join();
+    check(viewMarkEaten, "a view's pass ends without its mark, its queue never empty");
+
+    viewReposts = false;
+    MSG msg;
+    while (PeekMessageW(&msg, hwnd, 0, 0, PM_REMOVE))
+        DispatchMessageW(&msg);
+    SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(viewProcedure));
+    puglFreeView(view);
+    puglFreeWorld(module);
+}
+
 // --------------------------------------------------------------------------------------------------------------------
 
 int main()
@@ -872,6 +929,7 @@ int main()
     check(! oleUp(), "nothing is left initialised");
 
     testMessageLoop();
+    testViewLoop();
 
     std::printf("FileDropWin: %d checks, %d failures\n", checks, failures);
     return failures != 0 ? 1 : 0;

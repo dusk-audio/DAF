@@ -1191,15 +1191,18 @@ puglDispatchViewEvents(PuglView* view)
      when it is received, then break the loop on the first message that was
      created afterwards. */
 
-  long markTime = 0;
-  MSG  msg;
+  /* DGL: until the mark is seen, the pass also ends at the first message
+     newer than its own start, since a modal loop inside a dispatched message
+     can take the mark. Times are compared as GetTickCount wraps. */
+  DWORD limit = GetTickCount();
+  MSG   msg;
   while (PeekMessage(&msg, view->impl->hwnd, 0, 0, PM_REMOVE)) {
     if (msg.message == PUGL_LOCAL_MARK_MSG) {
-      markTime = GetMessageTime();
+      limit = (DWORD)GetMessageTime();
     } else {
       TranslateMessage(&msg);
       DispatchMessage(&msg);
-      if (markTime != 0 && GetMessageTime() > markTime) {
+      if ((LONG)((DWORD)GetMessageTime() - limit) > 0) {
         break;
       }
     }
