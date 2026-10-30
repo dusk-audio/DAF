@@ -287,7 +287,7 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
 
 - (PuglStatus)dispatchCurrentConfiguration
 {
-  if (puglview->stage < PUGL_VIEW_STAGE_REALIZED) {
+  if (!puglview || puglview->stage < PUGL_VIEW_STAGE_REALIZED) {
     return PUGL_SUCCESS;
   }
 
@@ -328,7 +328,8 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
 {
   [super setIsVisible:flag];
 
-  if (flag != (puglview->lastConfigure.style & PUGL_VIEW_STYLE_MAPPED)) {
+  if (puglview &&
+      flag != (puglview->lastConfigure.style & PUGL_VIEW_STYLE_MAPPED)) {
     [self dispatchCurrentConfiguration];
   }
 }
@@ -336,6 +337,10 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
 - (void)setIsZoomed:(BOOL)flag
 {
   [super setIsZoomed:flag];
+
+  if (!puglview) {
+    return;
+  }
 
   const bool wasZoomed = (puglview->lastConfigure.style &
                           (PUGL_VIEW_STYLE_TALL | PUGL_VIEW_STYLE_WIDE));
@@ -1623,7 +1628,8 @@ puglUnrealize(PuglView* const view)
     [impl->wrapperView removeFromSuperview];
   }
 
-  if (impl->window) {
+  if (impl->window &&
+      !puglMacDropDefersClose(impl->wrapperView, impl->window)) {
     [impl->window close];
   }
 
@@ -1693,7 +1699,9 @@ puglFreeViewInternals(PuglView* view)
         [view->impl->wrapperView removeFromSuperview];
       }
 
-      if (view->impl->window) {
+      if (view->impl->window &&
+          !puglMacDropDefersClose(view->impl->wrapperView,
+                                  view->impl->window)) {
         [view->impl->window close];
       }
 

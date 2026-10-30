@@ -32,6 +32,7 @@ static BOOL puglMacDropPrepare(PuglWrapperView* wrapper, id<NSDraggingInfo> info
 static BOOL puglMacDropPerform(PuglWrapperView* wrapper, id<NSDraggingInfo> info);
 static void puglMacDropDetach(PuglWrapperView* wrapper);
 static void puglMacDropFree(PuglWrapperView* wrapper);
+static bool puglMacDropDefersClose(PuglWrapperView* wrapper, PuglWindow* window);
 
 struct PuglWorldInternalsImpl {
   NSApplication*            app;

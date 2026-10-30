@@ -163,6 +163,7 @@ struct Fixture
         puglSetBackend(view, puglStubBackend());
         puglSetSizeHint(view, PUGL_DEFAULT_SIZE, 320, 240);
         check(puglRealize(view) == PUGL_SUCCESS, "a top-level view realizes");
+        check(puglShow(view, PUGL_SHOW_PASSIVE) == PUGL_SUCCESS, "it shows");
         wrapper = [view->impl->wrapperView retain];
         scale = viewScaleFactor(view);
         check(scale == 2.0, "the test window is a Retina one");
@@ -216,6 +217,41 @@ static DuskFileDropTestDrag* dragOf(NSPasteboard* const pasteboard, const NSDrag
     drag->location = NSZeroPoint;
     drag->mask = mask;
     return drag;
+}
+
+// Counts the closes of a window, from AppKit's own notification
+struct CloseCounter
+{
+    NSWindow* const window;
+    int* const closes;
+    id observer;
+
+    explicit CloseCounter(NSWindow* const w)
+        : window([w retain]),
+          closes(new int(0))
+    {
+        int* const count = closes;
+        observer = [[[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillCloseNotification
+                                                                     object:window
+                                                                      queue:nil
+                                                                 usingBlock:^(NSNotification*) { ++*count; }] retain];
+    }
+
+    ~CloseCounter()
+    {
+        [[NSNotificationCenter defaultCenter] removeObserver:observer];
+        [observer release];
+        [window release];
+        delete closes;
+    }
+
+    int count() const { return *closes; }
+};
+
+// Lets what was scheduled for the next turn of the run loop run
+static void turnRunLoop()
+{
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
 }
 
 static NSString* const kPath = @"/tmp/Dusk drop/take 1.wav";
@@ -455,6 +491,8 @@ static void testDeletedInside(const PuglEventType type)
     const std::string when = std::string("view freed inside its ") + nameOf(type);
     Fixture f;
     f.recorder.freeOn = type;
+    const CloseCounter window([f.wrapper window]);
+    check([window.window isVisible], (when + ": the window is on screen").c_str());
 
     DuskFileDropTestDrag* const drag = fileDrag();
     NSDragOperation answer;
@@ -464,6 +502,17 @@ static void testDeletedInside(const PuglEventType type)
     check(f.recorder.view == nullptr, (when + ": the view went").c_str());
     check(! f.recorder.events.empty() && f.recorder.events.back() == type, (when + ": the callback ran last").c_str());
 
+    // AppKit tells the source Generic when the window closes during the drop
+    check(window.count() == 0 && ! [window.window isVisible], (when + ": its window is hidden, not yet closed").c_str());
+    turnRunLoop();
+    check(window.count() == 1, (when + ": and closed once the call has returned").c_str());
+
+    // cut off from the view that went, whatever AppKit still sends it
+    PuglWindow* const native = static_cast<PuglWindow*>(window.window);
+    check(native->puglview == nullptr && [native delegate] == nil, (when + ": the window no longer knows the view").c_str());
+    [native setIsVisible:NO];
+    [native setIsZoomed:NO];
+    [native dispatchCurrentConfiguration];
     if (type == PUGL_DRAG_ENTER || type == PUGL_DRAG_MOTION)
         check(answer == NSDragOperationNone, (when + ": the drag is refused").c_str());
     if (type == PUGL_DROP)
@@ -580,9 +629,11 @@ static void testRetired()
 {
     {
         Fixture f;
+        const CloseCounter window([f.wrapper window]);
         DuskFileDropTestDrag* const drag = fileDrag();
         check([f.wrapper draggingEntered:(id<NSDraggingInfo>)drag] == NSDragOperationCopy, "a drag before unrealize");
         check(puglUnrealize(f.recorder.view) == PUGL_SUCCESS, "the view unrealizes mid-drag");
+        check(window.count() == 1, "outside a call of ours the window closes at once");
         check(f.recorder.events == eventsOf({ PUGL_DRAG_ENTER }), "a view going away hears no leave");
         checkSilent(f, drag, "unrealized");
     }

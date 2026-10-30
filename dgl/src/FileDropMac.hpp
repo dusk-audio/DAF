@@ -362,6 +362,21 @@ static void puglMacDropFree(PuglWrapperView* const wrapper)
     wrapper->dropTarget = nullptr;
 }
 
+// AppKit tells the source of a drop whose destination window closed while the drop was performed Generic,
+// whatever the view answered. A window closed inside a call of ours is hidden now and closed once AppKit is
+// done with the drag, cut off from its view, which goes away first.
+static bool puglMacDropDefersClose(PuglWrapperView* const wrapper, PuglWindow* const window)
+{
+    if (wrapper == nil || wrapper->dropTarget == nullptr || ! wrapper->dropTarget->busy)
+        return false;
+
+    window->puglview = NULL;
+    [window setDelegate:nil];
+    [window orderOut:nil];
+    [window performSelector:@selector(close) withObject:nil afterDelay:0];
+    return true;
+}
+
 // --------------------------------------------------------------------------------------------------------------------
 // DGL extension declared in pugl.hpp
 
