@@ -39,6 +39,7 @@ struct FakeData : IDataObject
     bool hdrop = true;
     const wchar_t* descriptor = nullptr; // a virtual-file format offered as well
     int reads = 0;
+    int requests = 0; // GetData calls for CF_HDROP, answered or not
 
     explicit FakeData(std::vector<std::wstring> files) : paths(std::move(files)) {}
 
@@ -66,6 +67,7 @@ struct FakeData : IDataObject
     {
         if (format == nullptr || medium == nullptr) return E_POINTER;
         std::memset(medium, 0, sizeof(*medium));
+        if (format->cfFormat == CF_HDROP) ++requests;
         if (format->cfFormat != CF_HDROP || ! hdrop) return DV_E_FORMATETC;
         if ((format->tymed & TYMED_HGLOBAL) == 0) return DV_E_TYMED;
         ++reads;
@@ -417,6 +419,7 @@ static void testDrag(PuglWorld* const world)
                   && drop(target, virtualOnly, screenPoint(hwnd, 6, 6)) == DROPEFFECT_NONE,
                   "virtual files without CF_HDROP are refused");
             check(rec.take().empty(), "and the view never hears of them");
+            check(virtualOnly->requests == 0, "nor is the source asked to render CF_HDROP it does not offer");
             virtualOnly->Release();
         }
 
@@ -425,6 +428,7 @@ static void testDrag(PuglWorld* const world)
         check(enter(target, data, screenPoint(hwnd, 5, 5)) == DROPEFFECT_NONE, "data without CF_HDROP is refused");
         target->DragLeave();
         check(rec.take().empty(), "without the view hearing of it");
+        check(data->requests == 0, "or the source being asked for it");
         data->Release();
     }
 

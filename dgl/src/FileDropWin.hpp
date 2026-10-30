@@ -386,7 +386,11 @@ private:
         if (data == nullptr)
             return false;
 
+        // asked first, so that a source that does not offer it is never asked to render it
         FORMATETC format = { CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+        if (data->QueryGetData(&format) != S_OK)
+            return false;
+
         STGMEDIUM medium;
         std::memset(&medium, 0, sizeof(medium));
         if (data->GetData(&format, &medium) != S_OK)

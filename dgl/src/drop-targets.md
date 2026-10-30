@@ -496,10 +496,14 @@ exports stay as they are.
   (`FileGroupDescriptorW` or `FileGroupDescriptor`, from Outlook or a zip folder) come without
   `CF_HDROP` and are refused for that; a descriptor offered next to `CF_HDROP` does not hide the files
   on disk. The shell's data object for an ordinary file offers both: `FileDrop` (`CF_HDROP`) next to
-  `FileGroupDescriptorW` and `FileContents`, as Explorer's copy verb shows on the test VM. The list is
-  read once, at the enter, and reaches the session through `dataPaths` right after the first `position`
-  asks for it: the session takes paths as well as a `text/uri-list`, since a Windows path is no `file:`
-  URI.
+  `FileGroupDescriptorW` and `FileContents`, as Explorer's copy verb shows on the test VM. An entry
+  inside a zip file has `Shell IDList Array`, `FileGroupDescriptorW` and `FileContents` only, whether
+  from the zip folder's `GetUIObjectOf` or from the copy verb, and no `CF_HDROP`: asked for it anyway,
+  the zip folder fails at once and extracts nothing, a 150 MB entry included, so nothing reaches
+  `%TEMP%`. The target asks `QueryGetData` first all the same, so a source that does not offer
+  `CF_HDROP` is never asked to render one. The list is read once, at the enter, and reaches the session
+  through `dataPaths` right after the first `position` asks for it: the session takes paths as well as a
+  `text/uri-list`, since a Windows path is no `file:` URI.
 - `*pdwEffect` is `DROPEFFECT_COPY` when accepted and the source allows copy, `DROPEFFECT_NONE`
   otherwise, whatever `grfKeyState` says: Shift asks Explorer for a move. A source that allows no copy
   is refused without reading its data. `Drop` reports copy when the application took the files.
