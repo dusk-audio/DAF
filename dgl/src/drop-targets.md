@@ -48,7 +48,8 @@ protected:
 
 - `setAcceptingFileDrops(true)` returns false and changes nothing for an embedded window, a window
   without a view, a Wayland compositor without `wl_data_device_manager`, and on platforms without
-  drop support (macOS and Windows until phase 2, Haiku, WebAssembly). `setAcceptingFileDrops(false)`
+  drop support (macOS until phase 2, Haiku, WebAssembly), and on Windows a thread in COM's
+  multi-threaded apartment. `setAcceptingFileDrops(false)`
   always succeeds. It can be called at any time, a drag in progress included: turning it off ends
   the drag for the application with `onFileDragLeave` if it had seen the enter, and refuses the rest.
 - Each drag gives `onFileDragEnter` once, then any number of `onFileDragMove`, then either
@@ -170,6 +171,7 @@ The same shape as the outgoing drag:
 | `dgl/src/FileDropWayland.hpp` (new) | Wayland pass, after wayland.c | the data-device drag session, the receive pipe, the Wayland `puglSetAcceptsFileDrops` |
 | `wayland.c`, `wayland.h` | Wayland pass | hooks in the data device and data offer listeners, the poll set and its dispatch, `puglUnrealize`, world teardown; the per-world pointer and the per-view flag |
 | `FileDropMac.hpp`, `FileDropWin.hpp` (phase 2) | Cocoa and Win32 backends | `NSDraggingDestination`, `IDropTarget` |
+| `win.c`, `win.h` (phase 2) | Win32 | hooks: forgetting the target in `puglUnrealize` and `puglFreeViewInternals`, the program world's thread loop and the put-off `OleUninitialize` calls in `puglDispatchWinEvents`, world teardown; the per-view pointer |
 
 The hooks are declared in `x11.h` and `wayland.h`, inside the pass, and defined by the header that
 follows the backend, so a both build has one set per pass and a single-backend build only its own.
@@ -194,7 +196,7 @@ struct PuglDropHost {
 ```
 
 The session takes the protocol's events (`begin(offersFiles, attached)`, `position(x, y, time, mods,
-now)`, `data(bytes, size, hostName)`, `dataFailed()`, `leave()`, `drop(time, mods, now)`, `tick(now)`)
+now)`, `data(bytes, size, hostName)`, `dataPaths(paths)`, `dataFailed()`, `leave()`, `drop(time, mods, now)`, `tick(now)`)
 and the view's (`detach(notify)` when it stops accepting, `abandon()` when it goes), tells the backend
 where it stands (`isActive()`, `wantsData()`, `isDispatching()`, `getDeadline()`), and guarantees:
 
@@ -226,7 +228,8 @@ where it stands (`isActive()`, `wantsData()`, `isDispatching()`, `getDeadline()`
   is handled once the opt-out is done, rather than torn down by it.
 
 The unit tests drive exactly this with a fake host and no display. macOS and Windows can use it in
-phase 2, with data that arrives synchronously at enter.
+phase 2, with data that arrives synchronously at enter. Windows hands its paths over with
+`dataPaths`, which takes a list already decoded instead of a `text/uri-list`.
 
 ## Paths from text/uri-list
 
@@ -447,26 +450,47 @@ exports stay as they are.
   `RegisterDragDrop(hwnd)` by `puglSetAcceptsFileDrops`, revoked on opt-out and in `puglUnrealize`
   and `puglFreeViewInternals` before `DestroyWindow`. It needs `OleInitialize` on the thread, a
   single-threaded apartment, matched by one `OleUninitialize` when revoked. `RPC_E_CHANGED_MODE`, a
-  thread already in the multi-threaded apartment, fails the opt-in with a message.
+  thread already in the multi-threaded apartment, fails the opt-in with a message and leaves the
+  thread's apartment alone. Opting in twice registers once.
+- The target is the view's from its first opt-in until the view goes. Opting out revokes it before the
+  application's leave, and opting in again registers the same object, so a leave that opts in again
+  works and the drag it lets in waits for the opt-out to finish (below).
 - `DragEnter` asks the `IDataObject` for `CF_HDROP` in `TYMED_HGLOBAL`, reads it with `DragQueryFileW`
   (length first, paths can pass `MAX_PATH`) and converts with `WideCharToMultiByte(CP_UTF8,
-  WC_ERR_INVALID_CHARS)`, skipping a path with an unpaired surrogate. Virtual files
-  (`CFSTR_FILEDESCRIPTOR`, from Outlook or a zip folder) are refused.
+  WC_ERR_INVALID_CHARS)`, skipping a path with an unpaired surrogate. A path that is neither a drive
+  path (`C:\`) nor a UNC one (`\\server\share`, `\\?\C:\`) is skipped too. Virtual files
+  (`FileGroupDescriptorW` or `FileGroupDescriptor`, from Outlook or a zip folder) are refused, whatever
+  else the data object offers. The list is read once, at the enter, and reaches the session through
+  `dataPaths` right after the first `position` asks for it: the session takes paths as well as a
+  `text/uri-list`, since a Windows path is no `file:` URI.
 - `*pdwEffect` is `DROPEFFECT_COPY` when accepted and the source allows copy, `DROPEFFECT_NONE`
-  otherwise, whatever `grfKeyState` says: Shift asks Explorer for a move. `Drop` reports copy when the
-  application took the files.
+  otherwise, whatever `grfKeyState` says: Shift asks Explorer for a move. A source that allows no copy
+  is refused without reading its data. `Drop` reports copy when the application took the files.
 - Position: the `POINTL` is in screen coordinates, and `ScreenToClient(hwnd)` gives client pixels, what
-  `WM_MOUSEMOVE` reports.
+  `WM_MOUSEMOVE` reports. `Drop` keeps the position of the last `DragOver`, which OLE sends at the drop
+  point first. Time is `GetMessageTime()`, as for pugl's other Windows events. Modifiers: Shift, Ctrl and
+  Alt from `grfKeyState`, the rest (Super, the locks) from `GetKeyState`.
 - The target object keeps a pointer to the view that `puglUnrealize` clears; a call after that answers
-  `DROPEFFECT_NONE`.
+  `DROPEFFECT_NONE` and reaches nothing. Each call holds a reference to the target until it returns,
+  since the view, which holds another, may go inside its callback.
+- Calls cannot nest. A call that arrives while the target is inside the session, from a nested event
+  loop in a callback or in the leave of an opt-out, is answered `DROPEFFECT_NONE` at once, since OLE
+  wants its answer before the view could be asked, and is handled in order once the outer call returns,
+  as on X11 and Wayland.
+- `OleUninitialize` is put off while an `IDropTarget` call is on the thread's stack: a window deleted
+  inside its `onFileDrop` during a drag from another process would otherwise tear the apartment down
+  under the call that is still running. The calls put off are made at the end of the next
+  `puglDispatchWinEvents`, or when the world is freed.
 - The message loop. A drag from another process (Explorer) calls the target through COM, which reaches
   a single-threaded apartment as messages to OLE's hidden window on the target thread. pugl's Windows
   loop only peeks the messages of the world's own windows (`PeekMessage(&msg, view->impl->hwnd, ...)`
-  in `puglDispatchViewEvents`), so in a standalone program nothing dispatches those calls and the drag
-  stalls. A plugin is fine: its host pumps the whole thread. Phase 2 has to test a drag from another
-  process, not only the same-process one `FileDragWinNative.cpp` does. A program world dispatches the
-  rest of its thread's messages as well, so that OLE reaches the target; a module world keeps the
-  filtered loop, since its host pumps the thread and the other windows on it are the host's.
+  in `puglDispatchViewEvents`), so in a standalone program nothing dispatched those calls and the drag
+  stalled: the source sat in its first call to `DragEnter` until the test gave up on it. A plugin is
+  fine: its host pumps the whole thread. A program world now dispatches the rest of its thread's
+  messages as well, after its views', bounded the way the views' loops are, by a mark posted to the
+  thread; a `WM_QUIT` it meets is posted again and ends the pass, for the loop it was meant for. A
+  module world keeps the filtered loop, since its host pumps the thread and the other windows on it are
+  the host's.
 - `WM_DROPFILES` (`DragAcceptFiles`) would avoid COM and the loop question, but it only reports the
   drop: no enter, no motion, no answer per position.
 - An elevated process does not get drops from a non-elevated Explorer (UIPI). That is the system's
@@ -563,9 +587,24 @@ Local only, on this box and never on the user's display:
   a fake `NSDraggingInfo` over `[NSPasteboard pasteboardWithUniqueName]`, and an interactive drop of
   the existing `CocoaFileDrag` onto an opted-in DGL window (the `tests/native-file-drag` pattern,
   `DAF_FILE_DRAG_INTERACTIVE`), then Finder by hand.
-- Windows, phase 2 on the VM: a unit test, CI-able, calling the `IDropTarget` methods with a fake
-  `IDataObject` holding `CF_HDROP`; the interactive same-process drop (`WindowsFileDrag` onto an
-  opted-in DGL window); and a drag from another process, a helper or Explorer, for the message loop.
+- Windows, phase 2 on the VM. `tests/FileDropWin.cpp`, a ctest of `tests/native-file-drag` that
+  cmake.yml's msvc-win64 job runs: the `IDropTarget` methods called as OLE calls them, with a fake
+  `IDataObject` holding `CF_HDROP`, over a real pugl window. Opt-in and opt-out (registration, one
+  `OleInitialize` per registration, an embedded view and one without a window refused); accept and
+  refuse; copy whatever `grfKeyState` says, a source without copy refused; client coordinates and the
+  drag's modifiers; a drop not taken; virtual files and data without `CF_HDROP` refused; a path past
+  `MAX_PATH`; paths with an unpaired surrogate, and relative ones, skipped; the window deleted, and
+  opting out, inside each callback, OLE staying up until the call returns; a target that loses its last
+  reference inside a call; an unrealized view answering none; an opt-out from outside whose leave opts
+  in again while calls arrive, which wait for the opt-out; the `RPC_E_CHANGED_MODE` refusal; and the
+  loops of a program world and a module world, with a window of the thread standing in for OLE's.
+  `tests/FileDropWinNative.cpp`, under `DAF_FILE_DRAG_INTERACTIVE` on an unlocked desktop: a standalone
+  DGL window receives `WindowsFileDrag` from a DGL window of its own process, then a drag from a second
+  process (the program again, with `--source`) calling `DoDragDrop` with `CF_HDROP`, once with copy
+  allowed and once with copy and move and Shift held. Each source must hear a copy. Without the thread
+  loop the second process's drag stalls before the first `DragEnter`. Explorer as the source is left to
+  a person: injected input selected the file in Explorer on the test VM but never started its drag.
+  `file-drop-native --target 60` opens the window alone for that.
 
 ## Files
 
@@ -593,8 +632,9 @@ Phase 2:
   `dgl/src/pugl-platform.hpp`, `dgl/src/pugl.mm`, `tests/FileDropCocoa.cpp` (new),
   `tests/native-file-drag/`, `tests/Makefile`.
 - Windows: `dgl/src/FileDropWin.hpp` (new), `dgl/src/pugl-upstream/src/win.c` and `win.h`,
-  `dgl/src/pugl-platform.hpp`, `dgl/src/pugl.cpp`, `tests/FileDropWin.cpp` (new),
-  `tests/native-file-drag/`, `tests/Makefile`.
+  `dgl/src/pugl-platform.hpp`, `dgl/src/pugl.cpp`, `dgl/src/FileDrop.hpp` (`dataPaths`),
+  `dgl/Window.hpp`, `tests/FileDropWin.cpp` (new), `tests/FileDropWinNative.cpp` (new),
+  `tests/FileDrop.cpp`, `tests/native-file-drag/`, `tests/Makefile`.
 
 ## Decided
 
@@ -617,5 +657,5 @@ The owner's answers to the questions this design raised:
 9. A window that has not opted in stays silent towards Mutter's XDND, as it is today.
 10. Directories pass through unchecked.
 
-Still open: nothing for phase 1b. Phase 2 owes the checks the macOS and Windows sections list,
-above all a drag from another process on Windows.
+Still open: nothing for phase 1b. Phase 2 owes the checks the macOS section lists. On Windows a
+drag from Explorer is the one check left to a person at the desktop.
