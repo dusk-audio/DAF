@@ -53,6 +53,7 @@ struct PuglX11DropTarget : PuglDropHost
     ::Window source;           // the source of the drag over the window, None between drags
     unsigned version;          // the XDND version spoken with it
     bool watching;             // StructureNotifyMask is selected on the source, for its DestroyNotify
+    long sourceMask;           // what this connection had selected on the source before, given back at the end
     Time stamp;                // the timestamp the next conversion uses
     Transfer transfers[PUGL_X11_DROP_TRANSFERS];
     size_t lastSlot;           // the transfer the latest conversion took; the next looks from the one after
@@ -70,6 +71,7 @@ struct PuglX11DropTarget : PuglDropHost
           source(None),
           version(0),
           watching(false),
+          sourceMask(NoEventMask),
           stamp(CurrentTime),
           transfers(),
           lastSlot(PUGL_X11_DROP_TRANSFERS - 1),
@@ -332,7 +334,11 @@ private:
         source = from;
         version = std::min(speaks, 5U);
 
-        XSelectInput(display(), source, StructureNotifyMask);
+        // A selection is the connection's whole mask on the window, so one of the application's own windows on
+        // this connection keeps what it had selected, and gets it back when the drag ends
+        XWindowAttributes attributes;
+        sourceMask = XGetWindowAttributes(display(), source, &attributes) ? attributes.your_event_mask : NoEventMask;
+        XSelectInput(display(), source, sourceMask | StructureNotifyMask);
         watching = true;
 
         // lesson 4: the enter has no position, so nothing reaches the view yet and no status is sent
@@ -649,10 +655,11 @@ private:
     void forgetSource()
     {
         if (watching && source != None)
-            XSelectInput(display(), source, NoEventMask);
+            XSelectInput(display(), source, sourceMask);
 
         watching = false;
         source = None;
+        sourceMask = NoEventMask;
         version = 0;
     }
 
@@ -737,20 +744,15 @@ static bool puglX11DropFilter(PuglWorld* const world, const XEvent* const event)
         return true;
 
     case DestroyNotify:
-    {
-        // a source window, not one of ours, so findView would not know it
-        bool taken = false;
+        // A source window, which findView knows only when it is one of pugl's own: the event goes on to pugl
+        // all the same, so that a view of this world used as a source forgets its window
         for (size_t i = 0; i < shared->targets.size(); ++i)
         {
             target = shared->targets[i];
             if (target->watching && target->source == event->xdestroywindow.window)
-            {
-                taken = true;
                 target->post(*event);
-            }
         }
-        return taken;
-    }
+        return false;
     }
 
     return false;

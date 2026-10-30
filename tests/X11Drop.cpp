@@ -152,6 +152,29 @@ static bool conversionLingers(DGL_NAMESPACE::PuglWorld* const world)
     return false;
 }
 
+// the connection the world's drop targets work on, which is pugl's
+static Display* worldDisplay(DGL_NAMESPACE::PuglWorld* const world)
+{
+   #ifdef DGL_RUNTIME_BACKEND
+    const DGL_NAMESPACE::pugl_x11::PuglWorld* const x11 = static_cast<DGL_NAMESPACE::pugl_x11::PuglWorld*>(world);
+   #else
+    const DGL_NAMESPACE::PuglWorld* const x11 = world;
+   #endif
+    return x11->impl->display;
+}
+
+// what a connection has selected on a window
+static long eventMask(Display* const display, const ::Window window)
+{
+    XWindowAttributes attributes;
+    return XGetWindowAttributes(display, window, &attributes) ? attributes.your_event_mask : -1L;
+}
+
+static DGL_NAMESPACE::PuglStatus ignoreEvent(DGL_NAMESPACE::PuglView*, const DGL_NAMESPACE::PuglEvent*)
+{
+    return DGL_NAMESPACE::PUGL_SUCCESS;
+}
+
 // whether a drop target of the world has a drag going, at the protocol level
 static bool dragActive(DGL_NAMESPACE::PuglWorld* const world)
 {
@@ -732,6 +755,66 @@ int main()
     check(source.messages.empty(), "and nothing is sent to the source it names");
     source.serve = true;
     source.reopen();
+
+    // A source window of the target's own connection, as one of the application's own would be: what that
+    // connection selected on it is the application's, so the window keeps its events through the drag and after.
+    // The messages name the source in l[0], whichever connection sends them.
+    {
+        Display* const own = worldDisplay(world);
+        const ::Window ownWindow = XCreateSimpleWindow(own, DefaultRootWindow(own), 0, 0, 1, 1, 0, 0, 0);
+        const long ownMask = ButtonPressMask | ExposureMask;
+        XSelectInput(own, ownWindow, ownMask);
+        XSync(own, False);
+        const ::Window realSource = source.win;
+        source.win = ownWindow;
+        source.sendEnter(target, 5, uriOnly);
+        source.sendPosition(target, originX + 10, originY + 10, source.stamp + 6, source.copy);
+        check(pump(app, source, [&] { return win->log == "ENTER;"; }), "a drag from a window of the target's connection");
+        check(eventMask(own, ownWindow) == (ownMask | StructureNotifyMask),
+              "keeps the window's mask while it lasts, with StructureNotifyMask added");
+        source.send(target, source.leave, 0, 0, 0, 0);
+        check(pump(app, source, [&] { return win->log == "ENTER;LEAVE;"; }), "and ends");
+        win->take();
+        source.win = realSource;
+        check(eventMask(own, ownWindow) == ownMask, "leaving the window its mask as it was");
+        XEvent press;
+        std::memset(&press, 0, sizeof(press));
+        press.xbutton.type = ButtonPress;
+        press.xbutton.display = dpy;
+        press.xbutton.window = ownWindow;
+        press.xbutton.root = DefaultRootWindow(dpy);
+        press.xbutton.button = Button1;
+        press.xbutton.same_screen = True;
+        XSendEvent(dpy, ownWindow, False, ButtonPressMask, &press);
+        XSync(dpy, False);
+        XSync(own, False);
+        check(XCheckTypedWindowEvent(own, ownWindow, ButtonPress, &press) == True, "which still gets a button press");
+        XDestroyWindow(own, ownWindow);
+        XSync(own, False);
+    }
+
+    // A view of the world as the source, whose window goes in the middle of the drag: the drag ends, and pugl
+    // still hears of the window going, which a view needs to know
+    {
+        DGL_NAMESPACE::PuglView* const ownView = DGL_NAMESPACE::puglNewView(world);
+        DGL_NAMESPACE::puglSetMatchingBackendForCurrentBuild(ownView);
+        DGL_NAMESPACE::puglSetSizeHint(ownView, DGL_NAMESPACE::PUGL_DEFAULT_SIZE, 40, 40);
+        DGL_NAMESPACE::puglSetEventFunc(ownView, ignoreEvent);
+        check(DGL_NAMESPACE::puglRealize(ownView) == DGL_NAMESPACE::PUGL_SUCCESS, "a view of the world to drag from");
+        const ::Window viewWindow = static_cast<::Window>(DGL_NAMESPACE::puglGetNativeView(ownView));
+        const ::Window realSource = source.win;
+        source.win = viewWindow;
+        source.sendEnter(target, 5, uriOnly);
+        source.sendPosition(target, originX + 10, originY + 10, source.stamp + 7, source.copy);
+        check(pump(app, source, [&] { return win->log == "ENTER;"; }), "a drag from a view of the world");
+        source.win = realSource;
+        XDestroyWindow(dpy, viewWindow);
+        XFlush(dpy);
+        check(pump(app, source, [&] { return win->log == "ENTER;LEAVE;"; }, 500), "ends when the view's window goes");
+        check(DGL_NAMESPACE::puglGetNativeView(ownView) == 0, "and pugl forgets the window");
+        win->take();
+        DGL_NAMESPACE::puglFreeView(ownView);
+    }
 
     // INCR, for a list well past what one request carries
     {
