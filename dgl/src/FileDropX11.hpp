@@ -55,6 +55,7 @@ struct PuglX11DropTarget : PuglDropHost
     bool watching;             // StructureNotifyMask is selected on the source, for its DestroyNotify
     Time stamp;                // the timestamp the next conversion uses
     Transfer transfers[PUGL_X11_DROP_TRANSFERS];
+    size_t lastSlot;           // the transfer the latest conversion took; the next looks from the one after
     std::vector<char> buffer;  // the current conversion's INCR chunks so far
     std::deque<XEvent> queue; // what waits for the current call to return, see post; type 0 is a tick
     bool busy;
@@ -71,6 +72,7 @@ struct PuglX11DropTarget : PuglDropHost
           watching(false),
           stamp(CurrentTime),
           transfers(),
+          lastSlot(PUGL_X11_DROP_TRANSFERS - 1),
           buffer(),
           queue(),
           busy(false) {}
@@ -184,11 +186,15 @@ struct PuglX11DropTarget : PuglDropHost
 
         abandonTransfer();
 
-        // a property no conversion is using, or with every one busy, the one closest to being given up
+        // A property no conversion is using, taken in turn: one given up at its deadline, whose owner may still
+        // answer, is the last to be used again. With every one busy, the one closest to being given up.
         size_t slot = PUGL_X11_DROP_TRANSFERS;
-        for (size_t i = 0; i < PUGL_X11_DROP_TRANSFERS && slot == PUGL_X11_DROP_TRANSFERS; ++i)
-            if (! busyTransfer(transfers[i]))
-                slot = i;
+        for (size_t i = 1; i <= PUGL_X11_DROP_TRANSFERS && slot == PUGL_X11_DROP_TRANSFERS; ++i)
+        {
+            const size_t next = (lastSlot + i) % PUGL_X11_DROP_TRANSFERS;
+            if (! busyTransfer(transfers[next]))
+                slot = next;
+        }
 
         if (slot == PUGL_X11_DROP_TRANSFERS)
         {
@@ -199,6 +205,7 @@ struct PuglX11DropTarget : PuglDropHost
             XDeleteProperty(display(), window, shared.properties[slot]);
         }
 
+        lastSlot = slot;
         Transfer& transfer = transfers[slot];
         transfer.requested = true;
         transfer.incremental = false;

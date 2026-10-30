@@ -137,6 +137,21 @@ static size_t dropTargets(DGL_NAMESPACE::PuglWorld* const world)
     return x11->impl->drop != nullptr ? x11->impl->drop->targets.size() : 0;
 }
 
+// whether a drop target of the world still runs a conversion nobody waits for any more
+static bool conversionLingers(DGL_NAMESPACE::PuglWorld* const world)
+{
+   #ifdef DGL_RUNTIME_BACKEND
+    const DGL_NAMESPACE::pugl_x11::PuglWorld* const x11 = static_cast<DGL_NAMESPACE::pugl_x11::PuglWorld*>(world);
+   #else
+    const DGL_NAMESPACE::PuglWorld* const x11 = world;
+   #endif
+    if (x11->impl->drop != nullptr)
+        for (size_t i = 0; i < x11->impl->drop->targets.size(); ++i)
+            if (x11->impl->drop->targets[i]->lingering())
+                return true;
+    return false;
+}
+
 // whether a drop target of the world has a drag going, at the protocol level
 static bool dragActive(DGL_NAMESPACE::PuglWorld* const world)
 {
@@ -1007,6 +1022,44 @@ int main()
         // the next source took the selection
         source.reopen();
     }
+
+    // A conversion nobody answered is given up at its deadline, which frees its property, and its owner may
+    // answer after all: the next drag's conversion must not be on that property, or the late list passes for
+    // its own.
+    check(freshWindow(), "a window for a conversion given up opts in");
+    source.messages.clear();
+    source.requests.clear();
+    source.serve = false;
+    source.sendEnter(target, 5, uriOnly);
+    source.sendPosition(target, originX + 10, originY + 10, source.stamp + 50, source.copy);
+    check(pump(app, source, [&] { return source.requests.size() == 1; }), "a drag that will leave asks for its files");
+    source.send(target, source.leave, 0, 0, 0, 0);
+    check(pump(app, source, [&] { return conversionLingers(world); }), "its conversion outlives the drag");
+    check(pump(app, source, [&] { return ! conversionLingers(world); },
+               static_cast<int>(PUGL_DROP_HELD_TIMEOUT * 1000) + 2000),
+          "and is given up at the deadline");
+    source.sendEnter(target, 5, uriOnly);
+    source.sendPosition(target, originX + 10, originY + 10, source.stamp + 51, source.copy);
+    check(pump(app, source, [&] { return source.requests.size() == 2; }), "the next drag asks for its files");
+    if (source.requests.size() == 2)
+    {
+        source.payload = "file:///tmp/given-up.wav\r\n";
+        source.answer(source.requests[0]);
+        settle(app, source, 100);
+        check(win->take().empty() && source.count(source.status) == 0,
+              "the answer of the conversion given up does not pass for the next drag's list");
+        source.payload = "file:///tmp/next.wav\r\n";
+        source.answer(source.requests[1]);
+        check(pump(app, source, [&] { return source.count(source.status) == 1; }), "the next drag's own answer is taken");
+        check(win->take() == "ENTER;" && win->files.size() == 1 && win->files[0] == "/tmp/next.wav",
+              "with its own files");
+    }
+    source.serve = true;
+    source.payload = "file:///tmp/a.wav\r\n";
+    source.send(target, source.leave, 0, 0, 0, 0);
+    settle(app, source, 50);
+    win->take();
+    check(noDropProperty(dpy, target), "a conversion given up leaves nothing on the window");
 
     // opting out removes XdndAware and ends a drag for the window with a leave
     check(freshWindow(), "the window opts in");
