@@ -606,6 +606,24 @@ int main()
         source.payload = files;
     }
 
+    // the owner refuses the conversion: the drag is refused at once, not at the deadline
+    source.messages.clear();
+    source.requests.clear();
+    source.serve = false;
+    source.sendEnter(target, 5, uriOnly);
+    source.sendPosition(target, originX + 10, originY + 10, positionTime + 45, source.copy);
+    check(pump(app, source, [&] { return source.requests.size() == 1; }), "a drag the owner will not convert for asks");
+    if (source.requests.size() == 1)
+        source.reply(source.requests[0], false);
+    check(pump(app, source, [&] { return source.count(source.status) == 1; }, 1000),
+          "a refused conversion is answered at once");
+    if (const XClientMessageEvent* const status = source.last(source.status))
+        check((status->data.l[1] & 1) == 0, "with a refusal");
+    source.send(target, source.leave, 0, 0, 0, 0);
+    settle(app, source, 50);
+    check(win->take().empty(), "and the window heard nothing");
+    source.serve = true;
+
     // the drag leaves while the conversion is in flight: the late answer is ignored and cleaned up
     source.messages.clear();
     source.requests.clear();
@@ -731,8 +749,11 @@ int main()
         source.messages.clear();
         source.requests.clear();
         source.sendEnter(target, 5, uriOnly);
+        const auto asked = std::chrono::steady_clock::now();
         source.sendPosition(target, originX + 10, originY + 10, source.stamp + 2, source.copy);
         check(pump(app, source, [&] { return source.count(source.status) == 1; }, 10000), "an oversized list is answered");
+        const std::chrono::duration<double> waited = std::chrono::steady_clock::now() - asked;
+        check(waited.count() < 0.75 * PUGL_DROP_DATA_TIMEOUT, "once the list passes the ceiling, well before the deadline");
         if (const XClientMessageEvent* const status = source.last(source.status))
             check((status->data.l[1] & 1) == 0, "with a refusal");
         pump(app, source, [&] { return source.incrDone; }, 10000);
