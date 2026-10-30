@@ -286,7 +286,8 @@ struct PuglDropHost
 
    The backend must not call into the session while it is inside one of its calls (it queues what
    arrives meanwhile), with one exception: detach and abandon, which a view going away or no longer
-   accepting drops can cause from inside any dispatch.
+   accepting drops can cause from inside any dispatch. Once a drop is being taken or refused, the drag
+   stays with the session until its end has told the source, whatever the view does meanwhile.
  */
 class PuglDropSession
 {
@@ -295,7 +296,7 @@ public:
         : host(h),
           state(kIdle),
           dispatching(false),
-          dropping(false)
+          finishing(false)
     {
         reset();
     }
@@ -466,7 +467,7 @@ public:
         state = kDetached;
         deadline = 0.0;
 
-        if (held && ! dropping)
+        if (held && ! finishing)
             return end(false);
 
         settle(false);
@@ -475,12 +476,12 @@ public:
             call(PUGL_DRAG_LEAVE);
     }
 
-    /** The view is going away: refuse what is owed and forget the drag. A drop being dispatched still finishes. */
+    /** The view is going away: refuse what is owed and forget the drag. A drop being finished still finishes. */
     void abandon()
     {
         detach(false);
 
-        if (! dropping && state != kIdle)
+        if (! finishing && state != kIdle)
             reset();
     }
 
@@ -504,7 +505,7 @@ private:
     bool accepted;   // what the view last answered
     bool held;       // a drop arrived before its file list
     bool dispatching;
-    bool dropping;
+    bool finishing;  // a drop is being taken or refused, and the source is yet to be told
     double deadline;
     double posX, posY, posTime;
     PuglMods posMods;
@@ -566,6 +567,7 @@ private:
     // the files are in and a drop is due
     void performDrop()
     {
+        finishing = true;
         held = false;
         deadline = 0.0;
 
@@ -581,15 +583,16 @@ private:
             }
         }
 
-        if (state != kAttached || ! accepted)
-            return refuseDrop();
-
-        dropping = true;
-        const PuglStatus status = call(PUGL_DROP);
-        dropping = false;
+        bool taken = false;
 
         // the view's answer stands even if it went away while answering
-        end(status == PUGL_SUCCESS);
+        if (state == kAttached && accepted)
+            taken = call(PUGL_DROP) == PUGL_SUCCESS;
+        else
+            refuseInView();
+
+        finishing = false;
+        end(taken);
     }
 
     void end(const bool taken)
@@ -598,14 +601,20 @@ private:
         host.finish(taken);
     }
 
-    // a drop where the view did not accept one, from a source that dropped anyway: the view that had the
-    // enter hears the drag leave, and the source that the drop failed
+    // a drop where the view did not accept one, from a source that dropped anyway
     void refuseDrop()
+    {
+        finishing = true;
+        refuseInView();
+        finishing = false;
+        end(false);
+    }
+
+    // the view that had the enter hears the drag leave
+    void refuseInView()
     {
         if (state == kAttached && entered && ! dispatching)
             call(PUGL_DRAG_LEAVE);
-
-        end(false);
     }
 
     DAF_DECLARE_NON_COPYABLE(PuglDropSession)

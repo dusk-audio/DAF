@@ -426,6 +426,50 @@ static void testSession()
         session.position(1, 1, 0, 0, 0);
         check(host.take() == "request;", "and asks for its own files");
     }
+
+    // The view goes away, or stops accepting drops, inside the last callback of a drop it does not take: the
+    // drag stays with the session until its end has told the source, so that the backend still knows whom to
+    // tell (an X11 target forgets its source once the session is over).
+    for (int optOut = 0; optOut < 2; ++optOut)
+    {
+        FakeHost host;
+        PuglDropSession session(host);
+        bool activeInside = false;
+        const std::function<void()> goAway = [&] {
+            if (optOut != 0)
+                session.detach(true);
+            else
+                session.abandon();
+            activeInside = session.isActive();
+        };
+
+        // inside the enter of a drop that came before its files
+        session.begin(true, true);
+        session.position(1, 1, 0, 0, 0);
+        session.drop(0, 0, 1.0);
+        host.take();
+        host.during = goAway;
+        session.data(kList, sizeof(kList) - 1, nullptr);
+        check(activeInside, optOut ? "opting out inside a held drop's enter leaves the drag to its end"
+                                   : "a view destroyed inside a held drop's enter leaves the drag to its end");
+        check(host.take() == "ENTER;failed;", "which tells the source the drop failed");
+        check(! session.isActive(), "and then forgets the drag");
+
+        // inside the leave of a drop where the view had refused
+        host.reply = PUGL_FAILURE;
+        session.begin(true, true);
+        session.position(1, 1, 0, 0, 0);
+        session.data(kList, sizeof(kList) - 1, nullptr);
+        host.take();
+        host.reply = PUGL_SUCCESS;
+        activeInside = false;
+        host.during = goAway;
+        session.drop(0, 0, 0);
+        check(activeInside, optOut ? "opting out inside a refused drop's leave leaves the drag to its end"
+                                   : "a view destroyed inside a refused drop's leave leaves the drag to its end");
+        check(host.take() == "LEAVE;failed;", "which tells the source the drop failed");
+        check(! session.isActive(), "and then forgets the drag");
+    }
 }
 
 // --------------------------------------------------------------------------------------------------------------------

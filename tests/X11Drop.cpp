@@ -42,9 +42,12 @@ static void check(const bool ok, const char* const what)
 }
 
 // --------------------------------------------------------------------------------------------------------------------
-// the window: accepts drops left of x = 100, and writes down what it hears
+// the window: accepts drops left of x = 100, and writes down what it hears. Window befriends the plugin
+// wrappers' PluginWindow, which lets the test reach the pugl world behind it.
 
-class DropWindow : public DGL_NAMESPACE::Window
+START_NAMESPACE_DAF
+
+class PluginWindow : public DGL_NAMESPACE::Window
 {
 public:
     std::string log;
@@ -52,10 +55,10 @@ public:
     double x = -1.0, y = -1.0;
     uint mod = 0xffff, time = 0;
     bool takeDrop = true;
-    std::function<void()> duringDrop;
+    std::function<void()> duringEnter, duringLeave, duringDrop;
 
-    explicit DropWindow(Application& app) : Window(app) {}
-    DropWindow(Application& app, const uintptr_t parent) : Window(app, parent, 120, 80, 1.0, false) {}
+    explicit PluginWindow(Application& app) : Window(app) {}
+    PluginWindow(Application& app, const uintptr_t parent) : Window(app, parent, 120, 80, 1.0, false) {}
 
     std::string take()
     {
@@ -64,7 +67,20 @@ public:
         return result;
     }
 
+    DGL_NAMESPACE::PuglWorld* world() const
+    {
+        return DGL_NAMESPACE::puglGetWorld(pData->view);
+    }
+
 protected:
+    // a copy: the step may delete this window, and its members with it
+    static void run(const std::function<void()>& during)
+    {
+        const std::function<void()> step(during);
+        if (step)
+            step();
+    }
+
     void note(const char* const what, const FileDropEvent& ev)
     {
         log += what;
@@ -80,7 +96,9 @@ protected:
     bool onFileDragEnter(const FileDropEvent& ev) override
     {
         note("ENTER;", ev);
-        return ev.pos.getX() < 100.0;
+        const bool answer = ev.pos.getX() < 100.0;
+        run(duringEnter);
+        return answer;
     }
 
     bool onFileDragMove(const FileDropEvent& ev) override
@@ -92,18 +110,32 @@ protected:
     void onFileDragLeave() override
     {
         log += "LEAVE;";
+        run(duringLeave);
     }
 
     bool onFileDrop(const FileDropEvent& ev) override
     {
         note("DROP;", ev);
         const bool answer = takeDrop;
-        const std::function<void()> step(duringDrop);
-        if (step)
-            step();
+        run(duringDrop);
         return answer;
     }
 };
+
+END_NAMESPACE_DAF
+
+typedef DAF_NAMESPACE::PluginWindow DropWindow;
+
+// the drop targets of the world's views, the targets of gone views not yet freed included
+static size_t dropTargets(DGL_NAMESPACE::PuglWorld* const world)
+{
+   #ifdef DGL_RUNTIME_BACKEND
+    const DGL_NAMESPACE::pugl_x11::PuglWorld* const x11 = static_cast<DGL_NAMESPACE::pugl_x11::PuglWorld*>(world);
+   #else
+    const DGL_NAMESPACE::PuglWorld* const x11 = world;
+   #endif
+    return x11->impl->drop != nullptr ? x11->impl->drop->targets.size() : 0;
+}
 
 // --------------------------------------------------------------------------------------------------------------------
 // the source
@@ -384,6 +416,7 @@ int main()
     win->setSize(300, 200);
     win->show();
     app.idle();
+    DGL_NAMESPACE::PuglWorld* const world = win->world();
 
     ::Window target = static_cast<::Window>(win->getNativeWindowHandle());
     Source source(dpy);
@@ -686,17 +719,91 @@ int main()
     if (const XClientMessageEvent* const finished = source.last(source.finished))
         check((finished->data.l[1] & 1) == 1, "with the answer it gave");
 
-    // opting out removes XdndAware and ends a drag for the window with a leave
-    win.reset(new DropWindow(app));
-    win->setSize(300, 200);
-    win->show();
-    app.idle();
-    target = static_cast<::Window>(win->getNativeWindowHandle());
-    {
+    // A window that goes inside the last callback of a drop it does not take: the source still hears that the
+    // drop failed, and the gone window's target is freed at the next tick
+    const std::function<bool()> freshWindow = [&] {
+        if (win)
+            win->close();
+        win.reset(new DropWindow(app));
+        win->setSize(300, 200);
+        win->show();
+        app.idle();
+        target = static_cast<::Window>(win->getNativeWindowHandle());
         ::Window child = None;
         XTranslateCoordinates(dpy, target, DefaultRootWindow(dpy), 0, 0, &originX, &originY, &child);
+        return win->setAcceptingFileDrops(true);
+    };
+
+    // inside the enter of a drop that came before its files
+    check(freshWindow(), "a window for a held drop opts in");
+    source.messages.clear();
+    source.requests.clear();
+    source.serve = false;
+    source.sendEnter(target, 5, uriOnly);
+    source.sendPosition(target, originX + 10, originY + 10, source.stamp + 9, source.copy);
+    check(pump(app, source, [&] { return source.requests.size() == 1; }), "a drop that will come early asks for its files");
+    source.send(target, source.drop, 0, static_cast<long>(source.stamp + 10), 0, 0);
+    settle(app, source, 50);
+    win->duringEnter = [&win] { win->close(); win.reset(); };
+    source.answer(source.requests[0]);
+    check(pump(app, source, [&] { return source.count(source.finished) == 1; }, 1000),
+          "a window deleted inside a held drop's enter still has the drop finished");
+    check(win.get() == nullptr, "by a window that deleted itself there");
+    if (const XClientMessageEvent* const finished = source.last(source.finished))
+        check((finished->data.l[1] & 1) == 0, "as not accepted");
+    app.idle();
+    check(dropTargets(world) == 0, "and the gone window's target is freed at the next tick");
+    source.serve = true;
+
+    // inside the leave of a drop where the window refused
+    check(freshWindow(), "a window for a refused drop opts in");
+    source.messages.clear();
+    source.requests.clear();
+    source.sendEnter(target, 5, uriOnly);
+    source.sendPosition(target, originX + 150, originY + 10, source.stamp + 11, source.copy);
+    check(pump(app, source, [&] { return source.count(source.status) == 1; }), "a refused position is answered");
+    win->duringLeave = [&win] { win->close(); win.reset(); };
+    source.send(target, source.drop, 0, static_cast<long>(source.stamp + 12), 0, 0);
+    check(pump(app, source, [&] { return source.count(source.finished) == 1; }, 1000),
+          "a window deleted inside a refused drop's leave still has the drop finished");
+    check(win.get() == nullptr, "by a window that deleted itself in its leave");
+    app.idle();
+    check(dropTargets(world) == 0, "and that target is freed at the next tick too");
+
+    // the same two, with the window turning drops off instead of going
+    for (int inLeave = 0; inLeave < 2; ++inLeave)
+    {
+        check(freshWindow(), "a window that will opt out opts in");
+        source.messages.clear();
+        source.requests.clear();
+        source.serve = inLeave != 0;
+        source.sendEnter(target, 5, uriOnly);
+        source.sendPosition(target, originX + (inLeave ? 150 : 10), originY + 10, source.stamp + 13, source.copy);
+        if (inLeave == 0)
+        {
+            check(pump(app, source, [&] { return source.requests.size() == 1; }), "a held drop asks for its files");
+            source.send(target, source.drop, 0, static_cast<long>(source.stamp + 14), 0, 0);
+            settle(app, source, 50);
+            win->duringEnter = [&win] { win->setAcceptingFileDrops(false); };
+            source.answer(source.requests[0]);
+        }
+        else
+        {
+            check(pump(app, source, [&] { return source.count(source.status) == 1; }), "a refused position is answered");
+            win->duringLeave = [&win] { win->setAcceptingFileDrops(false); };
+            source.send(target, source.drop, 0, static_cast<long>(source.stamp + 14), 0, 0);
+        }
+        check(pump(app, source, [&] { return source.count(source.finished) == 1; }, 1000),
+              inLeave ? "opting out inside a refused drop's leave still finishes the drop"
+                      : "opting out inside a held drop's enter still finishes the drop");
+        if (const XClientMessageEvent* const finished = source.last(source.finished))
+            check((finished->data.l[1] & 1) == 0, "as not accepted");
+        win->take();
     }
-    check(win->setAcceptingFileDrops(true), "the window opts in");
+    source.serve = true;
+
+    // opting out removes XdndAware and ends a drag for the window with a leave
+    check(freshWindow(), "the window opts in");
     source.messages.clear();
     source.sendEnter(target, 5, uriOnly);
     source.sendPosition(target, originX + 10, originY + 10, source.stamp + 7, source.copy);

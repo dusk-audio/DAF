@@ -719,6 +719,41 @@ static void testVersion3()
     compositor.leave();
     take();
 
+    // A view that deletes itself inside the last callback of a drop it does not take: the offer is still
+    // destroyed, and never finished. First inside the enter of a drop the compositor sent before the files.
+    PuglView* doomedEarly = makeView(world, true);
+    check(pump(world, [&] { return compositor.surface(4) != 0; }), "a fifth view");
+    offer = compositor.offer({ "text/uri-list" }, kCopy);
+    compositor.enter(23, compositor.surface(4), 5.0, 5.0, offer);
+    check(pump(world, [&] { return compositor.requestsOf(offer).size() == 3; }), "a drop that will come early asks for its files");
+    compositor.drop();
+    settle(world, 50);
+    heard.during = [&doomedEarly] { puglFreeView(doomedEarly); doomedEarly = nullptr; };
+    supply(compositor, offer, kList);
+    check(pump(world, [&] { return compositor.requestsOf(offer).size() == 4; }), "the held drop ends");
+    check(doomedEarly == nullptr && take() == "ENTER;", "with the view gone inside its enter");
+    check(describe(compositor.requestsOf(offer)) == "set_actions(1,1);accept(null);receive(text/uri-list);destroy;",
+          "destroying the offer, unfinished");
+    compositor.leave();
+
+    // then inside the leave of a drop where the view refused
+    PuglView* doomedLate = makeView(world, true);
+    check(pump(world, [&] { return compositor.surface(5) != 0; }), "a sixth view");
+    heard.answer = PUGL_FAILURE;
+    offer = compositor.offer({ "text/uri-list" }, kCopy);
+    compositor.enter(24, compositor.surface(5), 5.0, 5.0, offer);
+    check(pump(world, [&] { return compositor.requestsOf(offer).size() == 3; }), "a drop that will be refused asks for its files");
+    supply(compositor, offer, kList);
+    check(pump(world, [&] { return take() == "ENTER;"; }), "and is refused at its enter");
+    heard.answer = PUGL_SUCCESS;
+    heard.during = [&doomedLate] { puglFreeView(doomedLate); doomedLate = nullptr; };
+    compositor.drop();
+    check(pump(world, [&] { return compositor.requestsOf(offer).size() == 4; }), "the refused drop ends");
+    check(doomedLate == nullptr && take() == "LEAVE;", "with the view gone inside its leave");
+    check(describe(compositor.requestsOf(offer)) == "set_actions(1,1);accept(null);receive(text/uri-list);destroy;",
+          "destroying that offer, unfinished too");
+    compositor.leave();
+
     // the output's scale: positions are in buffer pixels, as the pointer's are
     compositor.enterOutput(surface);
     settle(world);

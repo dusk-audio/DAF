@@ -211,8 +211,12 @@ guarantees:
 - Nothing is freed during a dispatch, so an application may delete its window inside any callback. A
   view that goes away, or stops accepting, only detaches the session, which then refuses the rest of
   the drag at the protocol level. The X11 target belongs to its view, so `puglUnrealize` hands it to the
-  world, which frees it at the next tick, after any dispatch on the stack has returned. A drop being
-  dispatched still finishes with the application's answer.
+  world, which frees it at the next tick, after any dispatch on the stack has returned. Once a drop is
+  being taken or refused, the drag stays with the session until its end has told the source: a drop
+  dispatched still finishes with the application's answer, and one refused (in the late enter of a
+  drop that came before its files, or in the leave of a drop where the view had said no) still tells
+  the source it failed, whether the view went or opted out inside that callback. The X11 target keeps
+  its source until then, and is freed at the tick after.
 - Callbacks cannot nest. While the backend is inside the session, a protocol event that arrives (an
   application running a nested event loop, `getClipboard()` say) is queued and handled in order once
   the outer call returns, the deadline tick included.
