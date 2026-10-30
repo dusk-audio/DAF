@@ -294,12 +294,15 @@ Position's l[3], and back to the event loop. Nothing waits. A drop that arrives 
 waits for it, up to the held drop's deadline. Each conversion takes the first of the four properties no
 other conversion is using, so that the late answer of an earlier drag (one that left, one a new drag
 replaced) and the chunks of its INCR transfer are told from the current conversion by their property,
-whatever time the owner reports: some answer with CurrentTime rather than the request's time. The filter
-takes the `SelectionNotify` before `handleSelectionNotify`, which knows only `CLIPBOARD`. A late answer
-is read, thrown away and its property deleted. A refusal (property None) names no property, so it is
-matched by its request's time, and one that matches no request in flight is left to the deadline: a
-current answer is never mistaken for a stale one. JUCE converted with l[2] of the Position, which is the
-packed coordinates; the test below checks the time the source sees.
+whatever time the owner reports: some answer with CurrentTime rather than the request's time. Four
+properties cover four drags in a row whose owners have not answered within the 5 s a conversion nobody
+waits for is kept; a fifth takes over the property of the one closest to being given up, whose answer,
+should it still come, would pass for the fifth's. The filter takes the `SelectionNotify` before
+`handleSelectionNotify`, which knows only `CLIPBOARD`. A late answer is read, thrown away and its
+property deleted. A refusal (property None) names no property, so it is matched by its request's time,
+and one that matches no request in flight is left to the deadline: a current answer is never mistaken
+for a stale one. JUCE converted with l[2] of the Position, which is the packed coordinates; the test
+below checks the time the source sees.
 
 Reading: `XGetWindowProperty(..., delete True, AnyPropertyType)`, bounded by the payload ceiling, and
 refused when `bytes_after` is not zero. An `INCR` type starts an incremental transfer (ICCCM 2.7.2):
