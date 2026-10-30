@@ -150,12 +150,13 @@ One DGL extension in `pugl.hpp`, next to `puglStartFileDrag`:
 PuglStatus puglSetAcceptsFileDrops(PuglView* view, bool accept);
 ```
 
-X11 sets or deletes `XdndAware` on the view's window, at realize if asked before. Wayland sets a flag
-on the view's internals. macOS registers the wrapper view for file URLs, Windows an `IDropTarget`.
-`pugl-dispatch.hpp` forwards it with `DGL_PUGL_FORWARD` like the other DGL extensions. Nothing changes
-in the selection rule or the Wayland loader. The new code calls no public pugl function from inside a
-pass, so the table of pass-to-DGL-scope calls in runtime-backend.md stays as it is; 1b repeats the
-listing described there (an unoptimised build, every call from a pass into DGL scope) to show it.
+X11 sets or deletes `XdndAware` on the view's window, so the view has to be realized first (DGL
+realizes its windows as it creates them). Wayland sets a flag on the view's internals. macOS registers
+the wrapper view for file URLs, Windows an `IDropTarget`. `pugl-dispatch.hpp` forwards it with
+`DGL_PUGL_FORWARD` like the other DGL extensions. Nothing changes in the selection rule or the Wayland
+loader. The new code calls no public pugl function from inside a pass that the pass has not defined
+already, so the table of pass-to-DGL-scope calls in runtime-backend.md stays as it is: the listing
+described there (an unoptimised build, every call from a pass into DGL scope) finds the same eleven.
 
 ### Where the code lives
 
@@ -202,7 +203,8 @@ guarantees:
   for a drag without a usable file.
 - The current answer goes to the host whenever one is owed (X11 owes one status per position,
   coalesced while the data is on its way) and whenever it changes (Wayland's accept state).
-- Leave only after enter, and no leave after a drop.
+- Leave only after enter, and no leave after a drop. A source that drops where the view refused (one
+  that drops whatever the status said) gets a failed drop, and the view that had the enter a leave.
 - A drop that arrives before the data, from a source that did not wait for the status, is held until
   the data or the deadline, then becomes enter and, if accepted, drop; otherwise `finish(false)`.
 - Deadlines: 2 s for the data once requested (the drag is refused from then on), 5 s for a held drop.
@@ -271,16 +273,16 @@ Messages, all format 32, XIDs read as `::Window(uint32_t(l[0]))` like FileDragX1
 | XdndPosition | l[0] source; l[2] root x << 16 \| y; l[3] timestamp; l[4] requested action | One `XQueryPointer` on the window gives both its origin on the root (pointer root position minus its window position, exact wherever the pointer is) and the modifier mask; `XTranslateCoordinates` stands in when the pointer is on another screen. The first position starts the conversion with l[3] (lesson 2). l[4] is ignored. |
 | XdndStatus, sent | l[0] our window; l[1] bit 0 accept, bit 1 keep sending positions; l[2] = l[3] = 0, no rectangle; l[4] action | Lesson 3: l[4] is `XdndActionCopy` when accepting and None otherwise, also when the source asked for Move, Link or Ask. One per position, held back while the data is on its way: XDND sources wait for the status before the next position, and positions from one that does not are coalesced into one answer. |
 | XdndLeave | l[0] source | Ends the session. A conversion in flight becomes stale. |
-| XdndDrop | l[0] source; l[2] timestamp | Lesson 2: a conversion still needed at the drop uses l[2] and no other field. Always answered with XdndFinished. |
+| XdndDrop | l[0] source; l[2] timestamp | Lesson 2: the drop's timestamp is l[2], never another field. The conversion already started at the first position; a drop with no position before it is refused. Always answered with XdndFinished. |
 | XdndFinished, sent | l[0] our window; v5: l[1] bit 0 accepted, l[2] action | Lesson 3: at v5, l[2] is `XdndActionCopy` when the application took the files and None otherwise. Below v5, l[1] = l[2] = 0. |
 
-Messages count only from the session's source. A Position before any Enter, or from another window,
-is ignored. A new Enter, from any source, ends the current session as if it had left: the
+Messages count only from the session's source. A Position before any Enter, from another window, or
+from a source below version 3, is ignored and gets no answer, as XDND has it. A new Enter, from any source, ends the current session as if it had left: the
 application gets its leave if it had its enter, and a held drop gets `XdndFinished` refusing.
 
 The conversion: `XConvertSelection(XdndSelection, text/uri-list, DGL_XDND_DATA, window, time)`, with
-the Position's l[3], or the Drop's l[2] for a drop that came first, and back to the event loop.
-Nothing waits. The filter takes the `SelectionNotify` before `handleSelectionNotify`, which knows only
+the first Position's l[3], and back to the event loop. Nothing waits. A drop that arrives while it is in
+flight waits for it, up to the held drop's deadline. The filter takes the `SelectionNotify` before `handleSelectionNotify`, which knows only
 `CLIPBOARD`, and matches it by requestor window, selection, property and the request's time. The
 answer to a stale request (a session that left, a drag that followed it) is recognised by that time,
 its property deleted, and nothing else done. A notify with property None means the source could not
@@ -319,6 +321,15 @@ The round trips that remain (`XQueryPointer` per position and at the drop, the `
 the data property read) go to the X server, which answers whether or not the source is alive; none
 waits on the source.
 
+Checked on Mutter 50.5, headless, with a Wayland source's drag over an X11 window under its Xwayland
+(the Dusk Studio case): Mutter relays it at XDND version 5 to the top-level client window, answers the
+conversion at the first position long before the drop, and takes the copy in both status and finished,
+Shift held or not. The default path is the one Mutter needs, and the fallback of decision 4 is not
+implemented. Mutter addresses drags over the window's frame (its title bar) to the client window too,
+so a position there is outside the window, negative above it: the test compared the drop position with
+the X server's own pointer position once the drag let go of it. Applications hit-test as they would
+for any position.
+
 ## Wayland (wl_data_device)
 
 The data device belongs to the seat, so the session is per world: one drag at a time, over the
@@ -343,13 +354,15 @@ For an opted-in view:
   `wl_data_offer_receive(offer, "text/uri-list", write end)`, close the write end, flush.
 - The read end joins the world's poll set. `puglWaylandBuildPollFds` gets a third kind of entry next
   to the display, key repeat and timers, and the loop in `puglWaylandDispatchEvents` that treats every
-  other ready descriptor as a timer learns to tell it apart. Each wake reads what is there with the
-  existing non-blocking `puglWaylandRecvRead`, given the drop ceiling in place of the clipboard's. EOF
-  decodes and calls `data()`; a read error or the ceiling, `dataFailed()`.
+  other ready descriptor as a timer learns to tell it apart (the end of the list can show as a hang-up
+  with nothing left to read). Each wake reads what is there, until the pipe would block; the clipboard's
+  blocking reader stays as it is. EOF decodes and calls `data()`; a read error or the ceiling,
+  `dataFailed()`.
 - The answer is `accept(serial, "text/uri-list")` or `accept(serial, NULL)`, sent only when it
   changes.
 - motion(time, x, y) is a position. Modifiers are the seat's (`impl->mods`) while one of the world's
-  views has the keyboard focus, 0 otherwise.
+  views has the keyboard focus, 0 otherwise. Every drop event takes its time from the world's clock,
+  since enter and drop carry none of the compositor's.
 - drop: the compositor sends it only after an accept with an action, which here means the files were
   in hand. `PUGL_DROP` goes out; then, at v3, `wl_data_offer.finish` if the application took the files
   and the last `action` was copy, and never otherwise (finish after a NULL accept or without an action
@@ -500,12 +513,13 @@ runs the real protocol code, Wayland-only and both alike.
 Local only, on this box and never on the user's display:
 
 - X11 end to end on a private `Xvfb -displayfd 3 -nolisten tcp`, the pointer driven by `xdotool` on
-  that display only. A manual target program that opts in and prints its events receives (a) DAF's
-  own `X11FileDrag`, started from a second DGL window under a real XTEST press, which also checks the
-  outgoing drag against the new target, and (b) `/var/tmp/dusk-xdnd/tools/xdnd_probe` at versions 3
-  and 5, with and without `PROBE_ACTION=move`, whose `status:` and `RESULT finished` lines must say
-  copy, and once with Alt held (`xdotool keydown alt` on the private display), whose drop must carry
-  Alt in `mod`. Both protocol tests also go through valgrind here.
+  that display only. `tests/FileDropDemo.cpp`, a window that opts in and prints its events, receives
+  (a) DAF's own `X11FileDrag`, started from a second DGL window under a real XTEST press, which also
+  checks the outgoing drag against the new target, and (b) `/var/tmp/dusk-xdnd/tools/xdnd_probe` at
+  versions 3 and 5, with and without `PROBE_ACTION=move`, whose `status:` and `RESULT finished` lines
+  must say copy, and once with Alt held (`xdotool keydown alt` on the private display), whose drop must
+  carry Alt in `mod`. Both protocol tests also run here under AddressSanitizer and
+  UndefinedBehaviorSanitizer.
 - Wayland end to end on a private headless Mutter: `env -i PATH=/usr/bin:/bin HOME=/var/tmp/<dir>
   XDG_RUNTIME_DIR=<private 0700 dir> GSETTINGS_BACKEND=memory LIBGL_ALWAYS_SOFTWARE=1 timeout <s>
   dbus-run-session -- mutter --wayland --headless --virtual-monitor 1280x720 --wayland-display
@@ -546,7 +560,8 @@ Phase 1b, X11, Wayland, the DGL API and the tests, in commits small enough to re
    `dgl/src/pugl-extra/wayland.h`, `tests/WaylandDrop.cpp` (new), `tests/Makefile`,
    `.github/workflows/wayland.yml` (the skip list in runtime-backend-without-wayland).
 4. This note, the drops paragraph and extension list in `dgl/src/runtime-backend.md`, and the manual
-   target program the local runs use (proposed: `tests/FileDropTarget.cpp`, a `MANUAL_TESTS` entry).
+   program the local runs use, `tests/FileDropDemo.cpp`, a `MANUAL_TESTS` entry drawn with Cairo, since a
+   Wayland window shows only once something has drawn into it.
 
 Phase 2:
 
@@ -566,9 +581,9 @@ The owner's answers to the questions this design raised:
    from `gethostname()`, compared without case. Every other host is ignored.
 3. The list is read once, at the first position. There is no second conversion at the drop.
 4. Implemented as designed, then checked against real headless Mutter with an X11 window under
-   Xwayland. Should Mutter not answer a conversion before the drop, the fallback is to accept
-   provisionally while the type list has `text/uri-list` and convert at the drop with Drop l[2]; the
-   application then gets enter and drop together. The section on X11 says which path Mutter needs.
+   Xwayland. Had Mutter not answered a conversion before the drop, the fallback was to accept
+   provisionally while the type list has `text/uri-list` and convert at the drop with Drop l[2]. Mutter
+   50.5 answers it (see the section on X11), so the fallback is not needed and not implemented.
 5. Windows, phase 2: a program world dispatches all of its thread's messages, so that OLE reaches the
    drop target; module (plugin) worlds keep the filtered loop their hosts expect.
 6. Plugin UIs (the DAF `UI` class, CLAP floating windows, embedded views on macOS and Windows) are
