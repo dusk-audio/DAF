@@ -73,6 +73,12 @@ ifeq ($(HAVE_CAIRO),true)
 MANUAL_TESTS += Demo.cairo
 endif
 
+# a window that takes file drops and prints what it hears, for end-to-end runs (see dgl/src/drop-targets.md);
+# Cairo, since a Wayland window shows only once something has drawn into it
+ifeq ($(LINUX)$(HAVE_CAIRO),truetrue)
+MANUAL_TESTS += FileDropDemo
+endif
+
 ifeq ($(HAVE_OPENGL),true)
 MANUAL_TESTS += Demo.opengl
 MANUAL_TESTS += FileBrowserDialog
@@ -261,6 +267,10 @@ clean:
 ../build/tests/Widget.stub$(APP_EXT): ../build/tests/Widget.cpp.stub.o ../build/libdgl-stub.a
 	@echo "Linking Widget (Stub)"
 	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) -o $@
+
+../build/tests/FileDropDemo$(APP_EXT): ../build/tests/FileDropDemo.cpp.cairo.o ../build/libdgl-cairo.a
+	@echo "Linking FileDropDemo (Cairo)"
+	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) $(CAIRO_LIBS) -o $@
 
 # ---------------------------------------------------------------------------------------------------------------------
 
