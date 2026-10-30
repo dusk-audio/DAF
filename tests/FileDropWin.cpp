@@ -606,12 +606,17 @@ static void testLastReference(PuglWorld* const world)
     FakeData* const next = new FakeData(threeFiles());
     check(enter(view->impl->drop, next, screenPoint(view->impl->hwnd, 10, 20)) == DROPEFFECT_COPY
           && rec.take() == "ENTER;", "a drag enters");
+    const unsigned targets = puglWinDropTargetsAlive;
+    bool aliveInside = false;
     rec.during = [&] {
         puglFreeView(view);
         view = nullptr;
+        aliveInside = puglWinDropTargetsAlive == targets;
     };
     puglSetAcceptsFileDrops(view, false);
     check(rec.take() == "LEAVE;" && view == nullptr, "opting out gives the leave, inside which the window goes");
+    check(aliveInside, "the target outlives its window inside that leave");
+    check(puglWinDropTargetsAlive == targets - 1, "and goes once the opt-out is done");
     check(! oleUp(), "and lets OLE go");
     next->Release();
 }

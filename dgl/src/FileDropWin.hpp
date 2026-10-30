@@ -9,6 +9,9 @@
 static PUGL_WIN_THREAD_LOCAL unsigned puglWinDropCalls = 0U;
 static PUGL_WIN_THREAD_LOCAL unsigned puglWinDropOleOwed = 0U;
 
+// Drop targets in existence, which the tests watch to see one outlive its view
+static unsigned puglWinDropTargetsAlive = 0U;
+
 static void puglWinReleaseDropOle()
 {
     if (puglWinDropCalls != 0U)
@@ -76,7 +79,10 @@ struct PuglWinDropTarget : IDropTarget, PuglDropHost
           accepting(false),
           accepted(false),
           taken(false),
-          busy(false) {}
+          busy(false)
+    {
+        ++puglWinDropTargetsAlive;
+    }
 
     // ----------------------------------------------------------------------------------------------------------------
     // the view's side
@@ -275,7 +281,10 @@ struct PuglWinDropTarget : IDropTarget, PuglDropHost
 
 private:
     // only through Release
-    ~PuglWinDropTarget() override {}
+    ~PuglWinDropTarget() override
+    {
+        --puglWinDropTargetsAlive;
+    }
 
     // Handle a call now, or once the call into the session on the stack returns: the view may run a nested
     // event loop from inside its callback, and the session must not be entered twice. A call that has to
