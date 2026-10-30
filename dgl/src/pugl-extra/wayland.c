@@ -1865,17 +1865,27 @@ puglWaylandDataOfferMime(void* const                 data,
 }
 
 static void
-puglWaylandDataOfferSourceActions(void* const                 PUGL_UNUSED(data),
+puglWaylandDataOfferSourceActions(void* const                 data,
                                   struct wl_data_offer* const PUGL_UNUSED(o),
-                                  const uint32_t PUGL_UNUSED(sourceActions))
+                                  const uint32_t              sourceActions)
 {
+  PuglWaylandOffer* const po = (PuglWaylandOffer*)data;
+
+  if (po) {
+    po->sourceActions = sourceActions;
+  }
 }
 
 static void
-puglWaylandDataOfferAction(void* const                 PUGL_UNUSED(data),
+puglWaylandDataOfferAction(void* const                 data,
                            struct wl_data_offer* const PUGL_UNUSED(offer),
-                           const uint32_t              PUGL_UNUSED(dndAction))
+                           const uint32_t              dndAction)
 {
+  PuglWaylandOffer* const po = (PuglWaylandOffer*)data;
+
+  if (po) {
+    po->dndAction = dndAction;
+  }
 }
 
 static const struct wl_data_offer_listener puglWaylandDataOfferListener = {
@@ -1935,25 +1945,31 @@ static void
 puglWaylandDataDeviceEnter(void* const                  data,
                            struct wl_data_device* const PUGL_UNUSED(device),
                            const uint32_t               serial,
-                           struct wl_surface* const     PUGL_UNUSED(surface),
-                           const wl_fixed_t             PUGL_UNUSED(x),
-                           const wl_fixed_t             PUGL_UNUSED(y),
+                           struct wl_surface* const     surface,
+                           const wl_fixed_t             x,
+                           const wl_fixed_t             y,
                            struct wl_data_offer* const  offer)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
 
-  /* Drag and drop is not supported (Pugl has no API for it): decline by accepting no MIME type at
-     all. The offer still has to be kept until leave or drop, then destroyed, or it leaks. */
   puglWaylandFreeOffer(impl->dndOffer);
   impl->dndOffer = NULL;
 
-  if (offer) {
-    impl->dndOffer = puglWaylandClaimOffer(impl, offer);
+  PuglWaylandOffer* const claimed =
+    offer ? puglWaylandClaimOffer(impl, offer) : NULL;
 
-    // only once the proxy is known to be one we are still holding, see puglWaylandClaimOffer
-    if (impl->dndOffer) {
-      wl_data_offer_accept(offer, serial, NULL);
-    }
+  // once a view of the world accepts file drops, that code takes every drag
+  if (puglWaylandDropEnter(impl, serial, surface, x, y, claimed)) {
+    return;
+  }
+
+  /* Otherwise decline by accepting no MIME type at all. The offer still has to be kept until leave or
+     drop, then destroyed, or it leaks. */
+  impl->dndOffer = claimed;
+
+  // only once the proxy is known to be one we are still holding, see puglWaylandClaimOffer
+  if (impl->dndOffer) {
+    wl_data_offer_accept(offer, serial, NULL);
   }
 }
 
@@ -1965,15 +1981,17 @@ puglWaylandDataDeviceLeave(void* const                  data,
 
   puglWaylandFreeOffer(impl->dndOffer);
   impl->dndOffer = NULL;
+  puglWaylandDropLeave(impl);
 }
 
 static void
-puglWaylandDataDeviceMotion(void* const                  PUGL_UNUSED(data),
+puglWaylandDataDeviceMotion(void* const                  data,
                             struct wl_data_device* const PUGL_UNUSED(device),
                             const uint32_t               PUGL_UNUSED(time),
-                            const wl_fixed_t             PUGL_UNUSED(x),
-                            const wl_fixed_t             PUGL_UNUSED(y))
+                            const wl_fixed_t             x,
+                            const wl_fixed_t             y)
 {
+  puglWaylandDropMotion((PuglWorldInternals*)data, x, y);
 }
 
 static void
@@ -1984,6 +2002,7 @@ puglWaylandDataDeviceDrop(void* const                  data,
 
   puglWaylandFreeOffer(impl->dndOffer);
   impl->dndOffer = NULL;
+  puglWaylandDropDrop(impl);
 }
 
 static void
@@ -2842,6 +2861,7 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
     return;
   }
 
+  puglWaylandDropFreeWorld(impl);
   puglWaylandFreeOffer(impl->selectionOffer);
   puglWaylandFreeOffer(impl->unclaimedOffer);
   puglWaylandFreeOffer(impl->dndOffer);
@@ -3347,6 +3367,7 @@ puglUnrealize(PuglView* const view)
     puglWaylandStopRepeat(wimpl);
   }
 
+  puglWaylandDropDetach(view);
   puglWaylandClearClipboard(&impl->clipboard);
 
   if (view->backend) {
@@ -3488,11 +3509,13 @@ puglFreeViewInternals(PuglView* const view)
 // --------------------------------------------------------------------------------------------
 // Event loop
 
-/// Rebuild the poll set: the display socket, the key repeat timer, and any application timers
+/// Rebuild the poll set: the display socket, the key repeat timer, any application timers, and the
+/// file list of a drag being received
 static nfds_t
 puglWaylandBuildPollFds(PuglWorldInternals* const impl)
 {
-  const size_t needed = 2U + impl->numTimers;
+  const int    dropFd = puglWaylandDropFd(impl);
+  const size_t needed = 3U + impl->numTimers;
 
   if (impl->numPollFds < needed) {
     struct pollfd* const grown = (struct pollfd*)realloc(
@@ -3527,6 +3550,13 @@ puglWaylandBuildPollFds(PuglWorldInternals* const impl)
       impl->pollFds[n].revents = 0;
       ++n;
     }
+  }
+
+  if (dropFd >= 0) {
+    impl->pollFds[n].fd      = dropFd;
+    impl->pollFds[n].events  = POLLIN;
+    impl->pollFds[n].revents = 0;
+    ++n;
   }
 
   return n;
@@ -3598,7 +3628,8 @@ puglWaylandDispatchEvents(PuglWorld* const world, const double timeout)
     return PUGL_UNKNOWN_ERROR;
   }
 
-  const nfds_t nfds = puglWaylandBuildPollFds(impl);
+  const nfds_t nfds   = puglWaylandBuildPollFds(impl);
+  const int    dropFd = puglWaylandDropFd(impl);
   if (!nfds) {
     wl_display_cancel_read(display);
     return PUGL_NO_MEMORY;
@@ -3629,7 +3660,14 @@ puglWaylandDispatchEvents(PuglWorld* const world, const double timeout)
   /* One pass over the timer list already services every timer that expired, so several ready timer
      fds in the same cycle must not each trigger a full scan of their own. */
   bool timersReady = false;
+  bool dropReady   = false;
   for (nfds_t i = 1; i < nfds; ++i) {
+    // the end of a drag's file list shows as a hang-up, with no data left to read
+    if (dropFd >= 0 && impl->pollFds[i].fd == dropFd) {
+      dropReady = (impl->pollFds[i].revents & (POLLIN | POLLERR | POLLHUP)) != 0;
+      continue;
+    }
+
     if (!(impl->pollFds[i].revents & POLLIN)) {
       continue;
     }
@@ -3644,6 +3682,12 @@ puglWaylandDispatchEvents(PuglWorld* const world, const double timeout)
   if (timersReady) {
     puglWaylandHandleTimers(impl);
   }
+
+  if (dropReady) {
+    puglWaylandDropReadable(impl);
+  }
+
+  puglWaylandDropTick(impl);
 
   return PUGL_SUCCESS;
 }

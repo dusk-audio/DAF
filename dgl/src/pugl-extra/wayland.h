@@ -48,10 +48,16 @@ typedef struct {
 
 /// A wl_data_offer we are tracking, with the MIME types it advertises
 typedef struct {
-  struct wl_data_offer* offer;        ///< Proxy, owned by this struct
-  char**                mimeTypes;    ///< Advertised MIME type strings
-  uint32_t              numMimeTypes; ///< Number of entries in mimeTypes
+  struct wl_data_offer* offer;         ///< Proxy, owned by this struct
+  char**                mimeTypes;     ///< Advertised MIME type strings
+  uint32_t              numMimeTypes;  ///< Number of entries in mimeTypes
+  uint32_t              sourceActions; ///< Drag actions the source offers (version 3)
+  uint32_t              dndAction;     ///< Drag action the compositor selected (version 3)
 } PuglWaylandOffer;
+
+/// Receiving file drops, a DGL extension in FileDropWayland.hpp, which DGL's unity build includes after
+/// wayland.c
+struct PuglWaylandDropTarget;
 
 /// The clipboard state of a single view, mirroring PuglX11Clipboard
 typedef struct {
@@ -199,6 +205,9 @@ struct PuglWorldInternalsImpl {
 
   /// Fallback scale factor for views that are not on any known output yet
   double scaleFactor;
+
+  /// File drops, from the first view that accepts them on
+  struct PuglWaylandDropTarget* drop;
 };
 
 struct PuglInternalsImpl {
@@ -250,6 +259,7 @@ struct PuglInternalsImpl {
   bool unmapped;           ///< puglHide() unmapped the surface, showing it again needs an initial commit
   char* appId;             ///< app id set through puglWaylandSetAppId(), re-applied after an unmap
   bool frameCallbackWorks; ///< A frame callback has come back at least once
+  bool acceptsDrops;       ///< The view receives files dragged onto it
 };
 
 /// Semi-public entry point used by the graphics backends to size their drawables
@@ -259,5 +269,17 @@ puglWaylandGetBufferSize(const PuglView* view);
 /// Semi-public entry point the graphics backends call right before a commit that attaches a buffer
 PUGL_API void
 puglWaylandApplyGeometry(PuglView* view);
+
+// Receiving file drops, see FileDropWayland.hpp. Each does nothing until a view accepts drops.
+static bool puglWaylandDropEnter(PuglWorldInternals* impl, uint32_t serial, struct wl_surface* surface,
+                                 wl_fixed_t x, wl_fixed_t y, PuglWaylandOffer* offer);
+static void puglWaylandDropMotion(PuglWorldInternals* impl, wl_fixed_t x, wl_fixed_t y);
+static void puglWaylandDropLeave(PuglWorldInternals* impl);
+static void puglWaylandDropDrop(PuglWorldInternals* impl);
+static int  puglWaylandDropFd(const PuglWorldInternals* impl);
+static void puglWaylandDropReadable(PuglWorldInternals* impl);
+static void puglWaylandDropTick(PuglWorldInternals* impl);
+static void puglWaylandDropDetach(PuglView* view);
+static void puglWaylandDropFreeWorld(PuglWorldInternals* impl);
 
 #endif // PUGL_SRC_WAYLAND_H

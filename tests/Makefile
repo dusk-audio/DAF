@@ -105,6 +105,7 @@ endif
 
 ifeq ($(DGL_BACKEND_WAYLAND),true)
 UNIT_TESTS   += Wayland
+UNIT_TESTS   += WaylandDrop
 endif
 
 # open GL windows on whichever backend a DGL_BACKEND=both build picks in the environment they run in,

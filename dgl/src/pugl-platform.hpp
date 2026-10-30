@@ -703,6 +703,8 @@ PuglFileDrag* puglStartFileDrag(PuglView*, const char*) { return nullptr; }
 // Receiving file drops, see drop-targets.md; a backend without them refuses the opt-in
 #if defined(DGL_PUGL_X11)
 # include "FileDropX11.hpp"
+#elif defined(DGL_PUGL_WAYLAND)
+# include "FileDropWayland.hpp"
 #else
 PuglStatus puglSetAcceptsFileDrops(PuglView*, const bool accept) { return accept ? PUGL_UNSUPPORTED : PUGL_SUCCESS; }
 #endif

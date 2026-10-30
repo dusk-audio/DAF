@@ -535,7 +535,8 @@ jobs:
         DAF_TEST_EXPECT_BACKEND: x11
       run: |
         set -o pipefail
-        xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" make -C tests run DGL_BACKEND=both | tee tests.log
+        # WaylandDrop needs the Wayland client library this job has just removed
+        xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" make -C tests run DGL_BACKEND=both SKIP_UNIT_TESTS=WaylandDrop | tee tests.log
         grep -q 'RuntimeBackend: program world on x11' tests.log \
           || { echo "::error::RuntimeBackend did not open its window on X11"; exit 1; }
         grep -q 'RuntimeBackendWindow: window on x11' tests.log \
