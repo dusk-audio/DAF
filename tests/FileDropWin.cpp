@@ -585,6 +585,47 @@ static void testLastReference(PuglWorld* const world)
     data->Release();
 }
 
+// A drop that arrives from a nested event loop inside a callback is refused to its source at once, so the
+// application never gets it: for the view the drag left
+static void testNestedDrop(PuglWorld* const world)
+{
+    PuglView* const view = newView(world);
+    const HWND hwnd = view->impl->hwnd;
+    const POINTL point = screenPoint(hwnd, 10, 20);
+    puglSetAcceptsFileDrops(view, true);
+    PuglWinDropTarget* const target = view->impl->drop;
+    target->AddRef();
+    FakeData* const first = new FakeData(threeFiles());
+    FakeData* const second = new FakeData(std::vector<std::wstring>(1, L"C:\\second.wav"));
+    rec.take();
+
+    // onFileDrop runs a modal loop, a message box say, in which a drag from another process drops
+    check(enter(target, first, point) == DROPEFFECT_COPY && rec.take() == "ENTER;", "a drag enters");
+    DWORD nestedDrop = 1;
+    rec.during = [&] {
+        enter(target, second, screenPoint(hwnd, 30, 40));
+        over(target, screenPoint(hwnd, 31, 41));
+        nestedDrop = drop(target, second, screenPoint(hwnd, 31, 41));
+    };
+    check(drop(target, first, point) == DROPEFFECT_COPY, "the first drop is taken");
+    check(nestedDrop == DROPEFFECT_NONE, "the drop that arrived meanwhile is refused to its source");
+    check(rec.take() == "DROP;ENTER;MOTION;LEAVE;", "and its drag reaches the view afterwards only as one that left");
+
+    // the same, inside the drag's own enter
+    nestedDrop = 1;
+    rec.during = [&] { nestedDrop = drop(target, first, point); };
+    check(enter(target, first, point) == DROPEFFECT_COPY && nestedDrop == DROPEFFECT_NONE,
+          "a drop that arrives inside the enter is refused");
+    check(rec.take() == "ENTER;LEAVE;", "and the view that had the enter gets a leave, not the drop");
+    target->DragLeave();
+    check(rec.take().empty(), "and nothing after it");
+
+    puglFreeView(view);
+    target->Release();
+    first->Release();
+    second->Release();
+}
+
 // Opting out from outside any callback, during a drag
 static void testOptOutDuringDrag(PuglWorld* const world)
 {
@@ -747,6 +788,7 @@ int main()
     testDrag(world);
     testInsideCallbacks(world);
     testLastReference(world);
+    testNestedDrop(world);
     testOptOutDuringDrag(world);
     testMultithreadedApartment();
 

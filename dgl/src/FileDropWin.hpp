@@ -275,11 +275,14 @@ private:
 
     // Handle a call now, or once the call into the session on the stack returns: the view may run a nested
     // event loop from inside its callback, and the session must not be entered twice. A call that has to
-    // wait is answered none, since its answer is due before the view can be asked.
+    // wait is answered none, since its answer is due before the view can be asked. A drop that waits has been
+    // refused to its source by then, so the session gets it as a leave: the view must not take it.
     DWORD deliver(Message& message)
     {
         if (busy)
         {
+            if (message.kind == Message::kDrop)
+                message.kind = Message::kLeave;
             queue.push_back(std::move(message));
             return DROPEFFECT_NONE;
         }

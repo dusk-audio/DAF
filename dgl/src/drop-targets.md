@@ -506,7 +506,10 @@ exports stay as they are.
 - Calls cannot nest. A call that arrives while the target is inside the session, from a nested event
   loop in a callback or in the leave of an opt-out, is answered `DROPEFFECT_NONE` at once, since OLE
   wants its answer before the view could be asked, and is handled in order once the outer call returns,
-  as on X11 and Wayland.
+  as on X11 and Wayland. A `Drop` handled that way has already told its source the drop failed, so the
+  session gets it as a leave: the view that had the enter hears the drag leave, and never gets the files
+  the source thinks it refused (a message box in `onFileDrop` pumps COM, and a second drag can drop
+  meanwhile).
 - `OleUninitialize` is put off while an `IDropTarget` call is on the thread's stack: a window deleted
   inside its `onFileDrop` during a drag from another process would otherwise tear the apartment down
   under the call that is still running. The calls put off are made at the end of the next
