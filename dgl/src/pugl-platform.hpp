@@ -705,6 +705,8 @@ PuglFileDrag* puglStartFileDrag(PuglView*, const char*) { return nullptr; }
 # include "FileDropX11.hpp"
 #elif defined(DGL_PUGL_WAYLAND)
 # include "FileDropWayland.hpp"
+#elif defined(DAF_OS_MAC)
+# include "FileDropMac.hpp"
 #elif defined(DAF_OS_WINDOWS)
 # include "FileDropWin.hpp"
 #else

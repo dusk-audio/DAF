@@ -66,6 +66,23 @@ elseif(APPLE)
         target_link_libraries(file-drag-native PRIVATE "-framework Cocoa" "-framework CoreVideo" "-framework ApplicationServices")
         add_test(NAME native-file-drop COMMAND file-drag-native)
         set_tests_properties(native-file-drop PROPERTIES TIMEOUT 20)
+        # DGL windows receiving DGL's own drag, the production stub implementation with pugl's Cocoa unity file
+        set(sdk_sources Application ApplicationPrivateData Color EventHandlers Geometry ImageBase
+            ImageBaseWidgets Layout SubWidget SubWidgetPrivateData TopLevelWidget TopLevelWidgetPrivateData
+            Widget WidgetPrivateData Window WindowPrivateData Stub)
+        foreach(source IN LISTS sdk_sources)
+            list(APPEND sdk_files "${DAF_ROOT}/dgl/src/${source}.cpp")
+        endforeach()
+        add_executable(file-drop-native "${DAF_ROOT}/tests/FileDropCocoaNative.cpp" "${DAF_ROOT}/dgl/src/pugl.mm" ${sdk_files})
+        set_source_files_properties("${DAF_ROOT}/tests/FileDropCocoaNative.cpp" "${DAF_ROOT}/dgl/src/pugl.mm"
+            PROPERTIES LANGUAGE OBJCXX)
+        set_target_properties(file-drop-native PROPERTIES CXX_STANDARD 11 OBJCXX_STANDARD 11 OBJCXX_STANDARD_REQUIRED YES)
+        target_compile_definitions(file-drop-native PRIVATE DONT_SET_USING_DGL_NAMESPACE)
+        target_include_directories(file-drop-native PRIVATE "${DAF_ROOT}" "${DAF_ROOT}/tests"
+            "${DAF_ROOT}/dgl/src/pugl-upstream/include")
+        target_link_libraries(file-drop-native PRIVATE "-framework Cocoa" "-framework CoreVideo" "-framework ApplicationServices")
+        add_test(NAME native-file-drop-target COMMAND file-drop-native)
+        set_tests_properties(native-file-drop-target PROPERTIES TIMEOUT 30)
     endif()
 else()
     message(FATAL_ERROR "These standalone tests require native Windows or macOS.")

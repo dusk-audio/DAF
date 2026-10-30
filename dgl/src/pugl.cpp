@@ -293,7 +293,7 @@ START_NAMESPACE_DGL
 #endif
 
 // Receiving file drops, the part the backends share; once, ahead of the passes, see drop-targets.md
-#if defined(DGL_USING_X11) || defined(DGL_USING_WAYLAND) || defined(DAF_OS_WINDOWS)
+#if defined(DGL_USING_X11) || defined(DGL_USING_WAYLAND) || defined(DAF_OS_MAC) || defined(DAF_OS_WINDOWS)
 # include "FileDrop.hpp"
 #endif
 
