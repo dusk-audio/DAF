@@ -633,7 +633,8 @@ int main()
     check(pump(app, source, [&] { return source.requests.size() == 1; }), "a drag that will leave asks for its files");
     source.send(target, source.leave, 0, 0, 0, 0);
     settle(app, source, 50);
-    source.answer(source.requests[0]);
+    if (! source.requests.empty())
+        source.answer(source.requests[0]);
     settle(app, source, 100);
     source.serve = true;
     check(win->take().empty(), "a drag that left during the conversion never reaches the window");
@@ -656,10 +657,12 @@ int main()
         const Time otherTime = other.stamp + 1;
         other.sendPosition(target, originX + 20, originY + 20, otherTime, other.copy);
         check(pump(app, other, [&] { return other.requests.size() == 1; }), "the second drag asks for its files");
-        source.answer(source.requests[0]);
+        if (! source.requests.empty())
+            source.answer(source.requests[0]);
         settle(app, source, 100);
         check(win->take().empty(), "the first drag's late answer, with the second's request in flight, is not taken");
-        other.answer(other.requests[0]);
+        if (! other.requests.empty())
+            other.answer(other.requests[0]);
         check(pump(app, other, [&] { return other.count(other.status) == 1; }), "the second drag is answered");
         check(win->take() == "ENTER;", "the window hears the second drag only");
         check(win->files.size() == 1 && win->files[0] == "/tmp/other.wav", "with its files");
@@ -835,7 +838,8 @@ int main()
     source.send(target, source.drop, 0, static_cast<long>(source.stamp + 10), 0, 0);
     settle(app, source, 50);
     win->duringEnter = [&win] { win->close(); win.reset(); };
-    source.answer(source.requests[0]);
+    if (! source.requests.empty())
+        source.answer(source.requests[0]);
     check(pump(app, source, [&] { return source.count(source.finished) == 1; }, 1000),
           "a window deleted inside a held drop's enter still has the drop finished");
     check(win.get() == nullptr, "by a window that deleted itself there");
@@ -875,7 +879,8 @@ int main()
             source.send(target, source.drop, 0, static_cast<long>(source.stamp + 14), 0, 0);
             settle(app, source, 50);
             win->duringEnter = [&win] { win->setAcceptingFileDrops(false); };
-            source.answer(source.requests[0]);
+            if (! source.requests.empty())
+                source.answer(source.requests[0]);
         }
         else
         {
@@ -982,7 +987,8 @@ int main()
             next.sendPosition(target, originX + 20, originY + 20, next.stamp + 1, next.copy);
             check(pump(app, next, [&] { return next.requests.size() == 1; }), "the next drag asks for its files");
             // the next drag's answer, and right behind it a chunk of the abandoned transfer
-            next.answer(next.requests[0]);
+            if (! next.requests.empty())
+                next.answer(next.requests[0]);
             source.nextChunk();
             check(pump(app, next, [&] { return next.count(next.status) == 1; }), "the next drag is answered");
             check(win->take() == "ENTER;" && win->files.size() == 1 && win->files[0] == "/tmp/incr-b.wav",
