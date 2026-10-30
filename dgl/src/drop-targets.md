@@ -80,7 +80,7 @@ protected:
   carries them: X11 asks the server for the modifier state at each position and at the drop, Wayland
   reports the seat's last modifiers only while one of the world's surfaces has the keyboard focus (0
   otherwise), macOS reads the keys held at each update and at the drop (`[NSEvent modifierFlags]`, as
-  the drag carries none), and Windows will take them from the drag itself (`grfKeyState`).
+  the drag carries none), and Windows takes Shift, Ctrl and Alt from the drag itself (`grfKeyState`).
   Under XWayland a drag started in a Wayland client leaves the X server's keyboard state stale, so a
   held key can be missed there. The first consumer, Dusk Studio, places a drop at the pointer when Alt
   is held and at the playhead otherwise, and a missed Alt only changes where the clip lands.
