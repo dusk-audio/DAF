@@ -1211,36 +1211,36 @@ puglDispatchViewEvents(PuglView* view)
   return PUGL_SUCCESS;
 }
 
-/* DGL: a program also dispatches the messages of its thread that are for no
-   view of its world, OLE's hidden window above all: a drag from another
-   process reaches a drop target as messages to that window, and stalls while
-   nothing dispatches them. A module leaves them to its host, which pumps the
-   thread and owns the other windows on it. Bounded as puglDispatchViewEvents
-   is, by a mark posted to the thread, and by the time the pass started when a
-   modal loop inside a dispatched message (a message box, a menu, a drag) has
-   taken the mark. Times are compared as GetTickCount wraps. */
-static PuglStatus
-puglDispatchThreadEvents(void)
+/* DGL: a program also dispatches the messages of its thread's OLE window
+   while a drop target of the thread holds OLE: a drag from another process
+   reaches the target as calls COM delivers to that window, and stalls while
+   nothing dispatches them. The thread's other messages, thread messages and
+   other windows' alike, are left to the application, and a module leaves the
+   OLE window to its host, which pumps the thread. Bounded by the time the
+   pass started, compared as GetTickCount wraps. A peek filtered by window
+   still returns WM_QUIT, so the pass looks before it takes, and leaves a
+   quit queued for the loop it is meant for. */
+static void
+puglDispatchOleEvents(void)
 {
-  DWORD limit = GetTickCount();
-  MSG   msg;
-  while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-    if (!msg.hwnd && msg.message == PUGL_LOCAL_MARK_MSG) {
-      limit = (DWORD)GetMessageTime();
-    } else if (msg.message == WM_QUIT) {
-      // whoever asked to quit runs a loop of its own, which needs to see it
-      PostQuitMessage((int)msg.wParam);
-      break;
-    } else {
-      TranslateMessage(&msg);
-      DispatchMessage(&msg);
-      if ((LONG)((DWORD)GetMessageTime() - limit) > 0) {
-        break;
-      }
-    }
+  const HWND ole = puglWinDropOleWindow();
+  if (!ole) {
+    return;
   }
 
-  return PUGL_SUCCESS;
+  const DWORD limit = GetTickCount();
+  MSG         msg;
+  while (PeekMessage(&msg, ole, 0, 0, PM_NOREMOVE) && msg.message != WM_QUIT) {
+    if (!PeekMessage(&msg, ole, msg.message, msg.message, PM_REMOVE)) {
+      break;
+    }
+
+    TranslateMessage(&msg);
+    DispatchMessage(&msg);
+    if ((LONG)((DWORD)GetMessageTime() - limit) > 0) {
+      break;
+    }
+  }
 }
 
 static PuglStatus
@@ -1250,16 +1250,12 @@ puglDispatchWinEvents(PuglWorld* world)
     PostMessage(world->views[i]->impl->hwnd, PUGL_LOCAL_MARK_MSG, 0, 0);
   }
 
-  if (world->type == PUGL_PROGRAM) {
-    PostThreadMessage(GetCurrentThreadId(), PUGL_LOCAL_MARK_MSG, 0, 0);
-  }
-
   for (size_t i = 0; i < world->numViews; ++i) {
     puglDispatchViewEvents(world->views[i]);
   }
 
   if (world->type == PUGL_PROGRAM) {
-    puglDispatchThreadEvents();
+    puglDispatchOleEvents();
   }
 
   puglWinSettleDropOle();

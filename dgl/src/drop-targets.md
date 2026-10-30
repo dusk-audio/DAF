@@ -174,7 +174,7 @@ The same shape as the outgoing drag:
 | `dgl/src/FileDropMac.hpp` (new) | Cocoa backend, after mac.m, at global scope like FileDragMac.hpp | the `NSDraggingDestination` target of a wrapper view, its hooks and the macOS `puglSetAcceptsFileDrops` |
 | `mac.m`, `mac.h` | Cocoa backend | the wrapper view's dragging methods, a detach in `detachPuglView`, the target freed in `dealloc`, a window close inside a drop call deferred; the per-wrapper pointer |
 | `dgl/src/FileDropWin.hpp` (new) | Win32 backend | the `IDropTarget` of a view, its OLE registration and the Windows `puglSetAcceptsFileDrops` |
-| `win.c`, `win.h` | Win32 backend | hooks: forgetting the target in `puglUnrealize` and `puglFreeViewInternals`, the program world's thread loop and the put-off `OleUninitialize` calls in `puglDispatchWinEvents`, world teardown; the per-view pointer |
+| `win.c`, `win.h` | Win32 backend | hooks: forgetting the target in `puglUnrealize` and `puglFreeViewInternals`, the program world's pass of the OLE window and the put-off `OleUninitialize` calls in `puglDispatchWinEvents`, world teardown; the per-view pointer |
 
 The hooks are declared in `x11.h` and `wayland.h`, inside the pass, and defined by the header that
 follows the backend, so a both build has one set per pass and a single-backend build only its own.
@@ -530,13 +530,17 @@ exports stay as they are.
   loop only peeks the messages of the world's own windows (`PeekMessage(&msg, view->impl->hwnd, ...)`
   in `puglDispatchViewEvents`), so in a standalone program nothing dispatched those calls and the drag
   stalled: the source sat in its first call to `DragEnter` until the test gave up on it. A plugin is
-  fine: its host pumps the whole thread. A program world now dispatches the rest of its thread's
-  messages as well, after its views', bounded the way the views' loops are, by a mark posted to the
-  thread. A modal loop inside a dispatched message (a message box, a menu, an outgoing drag) can take
-  that mark, and a window that always has more to do would then keep the pass from ending, so until the
-  mark is seen the pass also ends at the first message newer than its start. A `WM_QUIT` it meets is posted again and ends the pass, for the loop it was meant for. A
-  module world keeps the filtered loop, since its host pumps the thread and the other windows on it are
-  the host's.
+  fine: its host pumps the whole thread. A program world also dispatches its thread's OLE window, after
+  its views', and leaves the thread's other messages to the application: thread messages, which no
+  window procedure can take (`PostThreadMessage`, a thread-level `WM_HOTKEY`), and other windows'. The
+  window is the message-only one of class `OleMainThreadWndClass` that OLE makes for the apartment; a
+  drag from another process logged its COM calls there and nowhere else. It is looked up with
+  `FindWindowExW(HWND_MESSAGE, ...)` on this thread once a drop target holds OLE on it, and forgotten when
+  the last of them lets OLE go, so a program without drop targets pumps exactly what it did before. The
+  pass ends at the first message newer than its start, compared as `GetTickCount` wraps. A peek filtered
+  by a window still returns a pending `WM_QUIT`, so the pass looks before it takes and leaves a quit
+  queued; the views' own passes, filtered by their windows, take one as they always have. A module world leaves the
+  OLE window to its host, which pumps the thread.
 - `WM_DROPFILES` (`DragAcceptFiles`) would avoid COM and the loop question, but it only reports the
   drop: no enter, no motion, no answer per position.
 - An elevated process does not get drops from a non-elevated Explorer (UIPI). That is the system's
@@ -650,12 +654,14 @@ Local only, on this box and never on the user's display:
   opting out, inside each callback, OLE staying up until the call returns; a target that loses its last
   reference inside a call; an unrealized view answering none; an opt-out from outside whose leave opts
   in again while calls arrive, which wait for the opt-out; the `RPC_E_CHANGED_MODE` refusal; and the
-  loops of a program world and a module world, with a window of the thread standing in for OLE's.
+  loops of a program world and a module world: OLE's window, wrapped to count, dispatched by a program
+  world only and with a bounded pass, and the application's thread messages, a thread-level `WM_HOTKEY`,
+  its other windows and a quit left queued.
   `tests/FileDropWinNative.cpp`, under `DAF_FILE_DRAG_INTERACTIVE` on an unlocked desktop: a standalone
   DGL window receives `WindowsFileDrag` from a DGL window of its own process, then a drag from a second
   process (the program again, with `--source`) calling `DoDragDrop` with `CF_HDROP`, once with copy
-  allowed and once with copy and move and Shift held. Each source must hear a copy. Without the thread
-  loop the second process's drag stalls before the first `DragEnter`. Explorer as the source is left to
+  allowed and once with copy and move and Shift held. Each source must hear a copy. Without the pass of
+  the OLE window the second process's drag stalls before the first `DragEnter`. Explorer as the source is left to
   a person: injected input selected the file in Explorer on the test VM but never started its drag.
   `file-drop-native --target 60` opens the window alone for that.
 
@@ -703,8 +709,9 @@ The owner's answers to the questions this design raised:
    Xwayland. Had Mutter not answered a conversion before the drop, the fallback was to accept
    provisionally while the type list has `text/uri-list` and convert at the drop with Drop l[2]. Mutter
    50.5 answers it (see the section on X11), so the fallback is not needed and not implemented.
-5. Windows, phase 2: a program world dispatches all of its thread's messages, so that OLE reaches the
-   drop target; module (plugin) worlds keep the filtered loop their hosts expect.
+5. Windows, phase 2: a program world also dispatches its thread's OLE window, so that OLE reaches the
+   drop target, and leaves the thread's other messages to the application; module (plugin) worlds keep
+   the filtered loop their hosts expect.
 6. Plugin UIs (the DAF `UI` class, CLAP floating windows, embedded views on macOS and Windows) are
    later work, not part of this.
 7. Modifier keys are in the event, best effort, as described under the application side.

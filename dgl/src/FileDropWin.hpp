@@ -9,15 +9,28 @@
 static PUGL_WIN_THREAD_LOCAL unsigned puglWinDropCalls = 0U;
 static PUGL_WIN_THREAD_LOCAL unsigned puglWinDropOleOwed = 0U;
 
+// The OleInitialize calls the drop targets of this thread hold, and the apartment's OLE window, through
+// which calls from other processes arrive, while they hold any. A program world dispatches that window.
+static PUGL_WIN_THREAD_LOCAL unsigned puglWinDropOleHeld = 0U;
+static PUGL_WIN_THREAD_LOCAL HWND puglWinDropOleHwnd = nullptr;
+
 // Drop targets in existence, which the tests watch to see one outlive its view
 static unsigned puglWinDropTargetsAlive = 0U;
+
+static void puglWinUninitializeDropOle()
+{
+    OleUninitialize();
+
+    if (--puglWinDropOleHeld == 0U)
+        puglWinDropOleHwnd = nullptr;
+}
 
 static void puglWinReleaseDropOle()
 {
     if (puglWinDropCalls != 0U)
         ++puglWinDropOleOwed;
     else
-        OleUninitialize();
+        puglWinUninitializeDropOle();
 }
 
 void puglWinSettleDropOle()
@@ -26,7 +39,30 @@ void puglWinSettleDropOle()
         return;
 
     for (; puglWinDropOleOwed != 0U; --puglWinDropOleOwed)
-        OleUninitialize();
+        puglWinUninitializeDropOle();
+}
+
+HWND puglWinDropOleWindow()
+{
+    if (puglWinDropOleHeld == 0U)
+        return nullptr;
+
+    // the message-only window OLE makes for a single-threaded apartment; one per such thread
+    if (puglWinDropOleHwnd == nullptr)
+    {
+        const DWORD thread = GetCurrentThreadId();
+        HWND window = nullptr;
+        while ((window = FindWindowExW(HWND_MESSAGE, window, L"OleMainThreadWndClass", nullptr)) != nullptr)
+        {
+            if (GetWindowThreadProcessId(window, nullptr) == thread)
+            {
+                puglWinDropOleHwnd = window;
+                break;
+            }
+        }
+    }
+
+    return puglWinDropOleHwnd;
 }
 
 struct PuglWinDropTarget : IDropTarget, PuglDropHost
@@ -101,6 +137,9 @@ struct PuglWinDropTarget : IDropTarget, PuglDropHost
         }
         if (FAILED(ole))
             return PUGL_FAILURE;
+
+        ++puglWinDropOleHeld;
+        puglWinDropOleWindow();
 
         if (RegisterDragDrop(hwnd, this) != S_OK)
         {

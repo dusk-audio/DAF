@@ -757,7 +757,6 @@ static void testMultithreadedApartment()
 // the message loop
 
 static int probeMessages = 0;
-static bool probeEatsMark = false, probeMarkEaten = false, probeReposts = false;
 
 static LRESULT CALLBACK probeProcedure(const HWND hwnd, const UINT message, const WPARAM wParam, const LPARAM lParam)
 {
@@ -766,20 +765,29 @@ static LRESULT CALLBACK probeProcedure(const HWND hwnd, const UINT message, cons
         ++probeMessages;
         return 0;
     }
-    if (message == WM_USER + 8)
-    {
-        // as a modal loop does, taking every message of the thread, the pump's mark among them
-        MSG msg;
-        if (probeEatsMark && PeekMessageW(&msg, reinterpret_cast<HWND>(-1), PUGL_LOCAL_MARK_MSG, PUGL_LOCAL_MARK_MSG, PM_REMOVE))
-            probeMarkEaten = true;
-        probeEatsMark = false;
-
-        // and a window that always has more to do
-        if (probeReposts)
-            PostMessageW(hwnd, WM_USER + 8, 0, 0);
-        return 0;
-    }
     return DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+// OLE's own window procedure, wrapped to count what reaches it and to keep it busy
+static WNDPROC oleProcedure = nullptr;
+static int oleProbes = 0;
+static bool oleReposts = false;
+
+static LRESULT CALLBACK oleProbeProcedure(const HWND hwnd, const UINT message, const WPARAM wParam, const LPARAM lParam)
+{
+    if (message != WM_APP + 9)
+        return CallWindowProcW(oleProcedure, hwnd, message, wParam, lParam);
+
+    ++oleProbes;
+    if (oleReposts)
+        PostMessageW(hwnd, WM_APP + 9, 0, 0);
+    return 0;
+}
+
+static bool pending(const HWND hwnd, const UINT message)
+{
+    MSG msg;
+    return PeekMessageW(&msg, hwnd, message, message, PM_REMOVE) != FALSE;
 }
 
 static void testMessageLoop()
@@ -789,37 +797,67 @@ static void testMessageLoop()
     windowClass.hInstance = GetModuleHandleW(nullptr);
     windowClass.lpszClassName = L"DafFileDropWinProbe";
     RegisterClassW(&windowClass);
-    // the window stands for OLE's hidden one: on the thread, and no view of any world
+    // a window of the application's own on the thread, no view of any world
     const HWND probe = CreateWindowExW(0, windowClass.lpszClassName, L"", 0, 0, 0, 1, 1, HWND_MESSAGE, nullptr,
                                        windowClass.hInstance, nullptr);
     check(probe != nullptr, "a window of the thread's own");
+    const HWND thread = reinterpret_cast<HWND>(-1); // PeekMessage's filter for thread messages
 
     PuglWorld* const module = puglNewWorld(PUGL_MODULE, 0);
     puglSetWorldString(module, PUGL_CLASS_NAME, "DafFileDropWinModule");
     PuglView* const moduleView = newView(module);
-    probeMessages = 0;
-    PostMessageW(probe, WM_USER + 7, 0, 0);
-    puglUpdate(module, 0.0);
-    check(probeMessages == 0, "a module world leaves the rest of its thread's messages to its host");
-
     PuglWorld* const program = puglNewWorld(PUGL_PROGRAM, 0);
     puglSetWorldString(program, PUGL_CLASS_NAME, "DafFileDropWinProgram");
     PuglView* const programView = newView(program);
-    puglUpdate(program, 0.0);
-    check(probeMessages == 1, "a program world dispatches the rest of its thread's messages");
 
-    PostMessageW(probe, WM_USER + 7, 0, 0);
-    PostMessageW(probe, WM_USER + 7, 0, 0);
+    check(puglWinDropOleWindow() == nullptr, "no OLE window is known before a drop target holds OLE");
+    check(puglSetAcceptsFileDrops(programView, true) == PUGL_SUCCESS, "a program's view accepts drops");
+    const HWND ole = puglWinDropOleWindow();
+    wchar_t className[64] = {};
+    if (ole != nullptr)
+        GetClassNameW(ole, className, 64);
+    check(ole != nullptr && std::wstring(className) == L"OleMainThreadWndClass"
+          && GetWindowThreadProcessId(ole, nullptr) == GetCurrentThreadId(),
+          "then the OLE window of the thread's apartment is");
+
+    // the calls of another process arrive as messages to the OLE window, which this probe stands in for
+    oleProcedure = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(ole, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(oleProbeProcedure)));
+    oleProbes = 0;
+    PostMessageW(ole, WM_APP + 9, 0, 0);
+    puglUpdate(module, 0.0);
+    check(oleProbes == 0, "a module world leaves the OLE window to its host");
+    puglUpdate(program, 0.0);
+    check(oleProbes == 1, "a program world dispatches it");
+    PostMessageW(ole, WM_APP + 9, 0, 0);
+    PostMessageW(ole, WM_APP + 9, 0, 0);
     puglUpdate(program, 0.01);
-    check(probeMessages == 3, "also while it waits");
+    check(oleProbes == 3, "also while it waits");
 
-    PostQuitMessage(3);
+    // what the application posts stays queued for it
+    probeMessages = 0;
+    PostMessageW(probe, WM_USER + 7, 0, 0);
+    PostThreadMessageW(GetCurrentThreadId(), WM_APP + 3, 0, 0);
+    PostThreadMessageW(GetCurrentThreadId(), WM_HOTKEY, 7, 0);
     puglUpdate(program, 0.0);
+    puglUpdate(program, 0.01);
+    check(probeMessages == 0 && pending(probe, WM_USER + 7), "a program world leaves the application's other windows alone");
+    check(pending(thread, WM_APP + 3), "and its thread messages");
+    check(pending(thread, WM_HOTKEY), "a thread-level hot key included");
+
+    // A peek filtered by any window returns a pending quit, so the views' own passes take it, as pugl's
+    // always have. A program world without views runs the OLE window's pass alone, which must leave it.
+    PuglWorld* const bare = puglNewWorld(PUGL_PROGRAM, 0);
+    puglSetWorldString(bare, PUGL_CLASS_NAME, "DafFileDropWinBare");
+    PostMessageW(ole, WM_APP + 9, 0, 0);
+    PostQuitMessage(3);
+    puglUpdate(bare, 0.0);
     MSG msg;
+    check(oleProbes == 4, "a program world without views dispatches the OLE window too");
     check(PeekMessageW(&msg, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE) && msg.wParam == 3,
           "and leaves a quit message for the loop it is meant for");
+    puglFreeWorld(bare);
 
-    // a modal loop inside a dispatched message takes the pump's mark, and a window keeps posting to itself
+    // an OLE window that always has more to do: the pass ends all the same
     {
         std::atomic<bool> returned(false);
         std::thread watchdog([&] {
@@ -827,23 +865,25 @@ static void testMessageLoop()
                 Sleep(10);
             if (! returned)
             {
-                std::fprintf(stderr, "FileDropWin: FAILED a program world's pass ends without its mark (still running after 5 s)\n");
+                std::fprintf(stderr, "FileDropWin: FAILED a program world's pass of the OLE window ends (still running after 5 s)\n");
                 std::fflush(stderr);
                 ExitProcess(1);
             }
         });
-        probeEatsMark = probeReposts = true;
-        probeMarkEaten = false;
-        PostMessageW(probe, WM_USER + 8, 0, 0);
+        oleReposts = true;
+        PostMessageW(ole, WM_APP + 9, 0, 0);
         puglUpdate(program, 0.0);
         returned = true;
         watchdog.join();
-        check(probeMarkEaten, "a program world's pass ends without its mark, the queue never empty");
-
-        probeReposts = false;
-        while (PeekMessageW(&msg, probe, 0, 0, PM_REMOVE))
-            DispatchMessageW(&msg);
+        check(oleProbes > 4, "a program world's pass of the OLE window ends, its queue never empty");
+        oleReposts = false;
+        while (PeekMessageW(&msg, ole, WM_APP + 9, WM_APP + 9, PM_REMOVE))
+            ;
     }
+    SetWindowLongPtrW(ole, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(oleProcedure));
+
+    puglSetAcceptsFileDrops(programView, false);
+    check(puglWinDropOleWindow() == nullptr, "the OLE window is forgotten once no drop target holds OLE");
 
     puglFreeView(programView);
     puglFreeWorld(program);

@@ -58,11 +58,15 @@ PUGL_WARN_UNUSED_RESULT PUGL_API PuglStatus
 puglWinLeave(PuglView* view, const PuglExposeEvent* expose);
 
 // DGL: defined in FileDropWin.hpp, which follows this backend. The first revokes and frees the view's drop
-// target before its window goes; the second makes the OleUninitialize calls a drop target put off.
+// target before its window goes; the second makes the OleUninitialize calls a drop target put off; the
+// third is the apartment's OLE window while a drop target of the thread holds OLE, and null otherwise.
 void
 puglWinForgetDropTarget(PuglView* view);
 
 void
 puglWinSettleDropOle(void);
+
+HWND
+puglWinDropOleWindow(void);
 
 #endif // PUGL_SRC_WIN_H
