@@ -357,6 +357,45 @@ public:
     bool startFileDrag(const char* filename);
 
    /**
+      A drag of files from another application over this window, see setAcceptingFileDrops().
+      Valid during the call it is passed to.
+    */
+    struct FileDropEvent {
+        /** Pointer position, in the coordinates the window's top-level widgets get mouse events in. */
+        Point<double> pos;
+        /** The files: numFiles absolute local paths, UTF-8 and NUL-terminated, at least one. */
+        const char* const* files;
+        uint numFiles;
+        /** Keyboard modifiers held, as far as the platform can tell. @see Modifier
+            X11 asks the server, Wayland knows them only while one of the application's windows has the
+            keyboard focus, and a drag that started in a Wayland client hides them from an XWayland window. */
+        uint mod;
+        /** Event timestamp in milliseconds (if any). */
+        uint time;
+
+        /** Constructor for default/null values */
+        FileDropEvent() noexcept : pos(), files(nullptr), numFiles(0), mod(0x0), time(0) {}
+    };
+
+   /**
+      Whether this window receives files dragged onto it from other applications.
+      @see setAcceptingFileDrops(bool)
+    */
+    bool isAcceptingFileDrops() const noexcept;
+
+   /**
+      Let this window receive files dragged onto it from other applications, such as a file manager.
+      The window then gets onFileDragEnter(), onFileDragMove(), and onFileDragLeave() or onFileDrop().
+
+      Only a window of its own can take drops: this fails for an embedded window, and on platforms
+      without support (for now everything but X11 and Wayland). Turning it off always succeeds, and ends
+      a drag in progress with onFileDragLeave() when the window had the enter.
+      A window that never asks behaves exactly as before.
+      @see isAcceptingFileDrops()
+    */
+    bool setAcceptingFileDrops(bool accept);
+
+   /**
       Set the mouse cursor.
 
       This changes the system cursor that is displayed when the pointer is inside the window.
@@ -562,6 +601,40 @@ protected:
       The default implementation accepts the "text/plain" mimetype.
     */
     virtual uint32_t onClipboardDataOffer();
+
+   /**
+      A function called when files dragged from another application first come over this window,
+      once their list is known. Return whether the window would take them if dropped at @a ev.pos.
+      The answer shows as the platform's drag feedback. The source is only ever told of a copy.
+
+      Called on the event thread, like every other window callback, and only for a window that accepts
+      file drops. Keep it short: the window may be closed or deleted from here, but must not block.
+      The default implementation refuses.
+      @see setAcceptingFileDrops(bool)
+    */
+    virtual bool onFileDragEnter(const FileDropEvent& ev);
+
+   /**
+      A function called when the files dragged over this window move.
+      Return whether they would be taken if dropped at @a ev.pos.
+      The default implementation answers what onFileDragEnter() answered.
+    */
+    virtual bool onFileDragMove(const FileDropEvent& ev);
+
+   /**
+      A function called when the drag left this window, or ended without a drop on it.
+      Comes only after onFileDragEnter(), and never after onFileDrop().
+      The default implementation does nothing.
+    */
+    virtual void onFileDragLeave();
+
+   /**
+      A function called when the files are dropped, at a position the last answer accepted.
+      Return whether the files were taken. To act on them at length, remember the paths and do it on
+      the next idle: on some platforms the source waits for this call to return.
+      The default implementation refuses.
+    */
+    virtual bool onFileDrop(const FileDropEvent& ev);
 
    /**
       A function called when the window is attempted to be closed.

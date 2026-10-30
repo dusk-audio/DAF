@@ -69,6 +69,11 @@ struct PuglFileDrag
 };
 PuglFileDrag* puglStartFileDrag(PuglView* view, const char* filename);
 
+// DGL specific, whether a realized top-level view receives files dragged onto it from other applications
+// The view then gets PUGL_DRAG_ENTER, PUGL_DRAG_MOTION, PUGL_DRAG_LEAVE and PUGL_DROP, see drop-targets.md.
+// Accepting fails with PUGL_UNSUPPORTED for an embedded view and wherever drops cannot be received.
+PuglStatus puglSetAcceptsFileDrops(PuglView* view, bool accept);
+
 // DGL specific, expose backend enter
 bool puglBackendEnter(PuglView* view);
 

@@ -699,3 +699,6 @@ void puglX11SetWindowType(const PuglView* const view, const bool isStandalone)
 #else
 PuglFileDrag* puglStartFileDrag(PuglView*, const char*) { return nullptr; }
 #endif
+
+// Receiving file drops, see drop-targets.md; a backend without them refuses the opt-in
+PuglStatus puglSetAcceptsFileDrops(PuglView*, const bool accept) { return accept ? PUGL_UNSUPPORTED : PUGL_SUCCESS; }

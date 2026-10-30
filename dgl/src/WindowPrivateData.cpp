@@ -132,6 +132,9 @@ Window::PrivateData::PrivateData(Application& a, Window* const s)
       waitingForClipboardEvents(false),
       clipboardTypeId(0),
       filenameToRenderInto(nullptr),
+      acceptingFileDrops(false),
+      fileDragInside(false),
+      fileDragAccepted(false),
      #ifdef DGL_USE_FILE_BROWSER
       fileBrowserHandle(nullptr),
      #endif
@@ -170,6 +173,9 @@ Window::PrivateData::PrivateData(Application& a, Window* const s, PrivateData* c
       waitingForClipboardEvents(false),
       clipboardTypeId(0),
       filenameToRenderInto(nullptr),
+      acceptingFileDrops(false),
+      fileDragInside(false),
+      fileDragAccepted(false),
      #ifdef DGL_USE_FILE_BROWSER
       fileBrowserHandle(nullptr),
      #endif
@@ -210,6 +216,9 @@ Window::PrivateData::PrivateData(Application& a, Window* const s,
       waitingForClipboardEvents(false),
       clipboardTypeId(0),
       filenameToRenderInto(nullptr),
+      acceptingFileDrops(false),
+      fileDragInside(false),
+      fileDragAccepted(false),
      #ifdef DGL_USE_FILE_BROWSER
       fileBrowserHandle(nullptr),
      #endif
@@ -253,6 +262,9 @@ Window::PrivateData::PrivateData(Application& a, Window* const s,
       waitingForClipboardEvents(false),
       clipboardTypeId(0),
       filenameToRenderInto(nullptr),
+      acceptingFileDrops(false),
+      fileDragInside(false),
+      fileDragAccepted(false),
      #ifdef DGL_USE_FILE_BROWSER
       fileBrowserHandle(nullptr),
      #endif
@@ -1197,6 +1209,74 @@ void Window::PrivateData::onClipboardData(const uint32_t typeId)
     waitingForClipboardData = false;
 }
 
+// -----------------------------------------------------------------------
+// file drops
+
+PuglStatus Window::PrivateData::onPuglFileDrag(const PuglDropEvent& event, const bool refuse)
+{
+    if (event.type == PUGL_DRAG_LEAVE)
+    {
+        if (fileDragInside)
+        {
+            fileDragInside = false;
+            self->onFileDragLeave();
+        }
+        return PUGL_SUCCESS;
+    }
+
+    // Refused without asking while a modal child has the input, as the mouse is. A drop that still
+    // arrives ends the drag for a window that had the enter.
+    if (refuse || modal.child != nullptr || ! acceptingFileDrops || event.numFiles == 0)
+    {
+        if (event.type == PUGL_DROP && fileDragInside)
+        {
+            fileDragInside = false;
+            self->onFileDragLeave();
+        }
+        return PUGL_FAILURE;
+    }
+
+    Window::FileDropEvent ev;
+    ev.files    = event.files;
+    ev.numFiles = event.numFiles;
+    ev.mod      = event.mods;
+    ev.time     = d_roundToUnsignedInt(event.time * 1000.0);
+
+    // the coordinates top-level widgets get mouse events in, see TopLevelWidget::PrivateData::mouseEvent
+    if (autoScaling)
+        ev.pos = Point<double>(event.x / autoScaleFactor, event.y / autoScaleFactor);
+    else
+        ev.pos = Point<double>(event.x, event.y);
+
+    if (event.type == PUGL_DROP)
+    {
+        if (! fileDragInside)
+            return PUGL_FAILURE;
+
+        fileDragInside = false;
+        return self->onFileDrop(ev) ? PUGL_SUCCESS : PUGL_FAILURE;
+    }
+
+    // the Window may be deleted from inside its callback
+    const std::shared_ptr<bool> alive(idleAlive);
+    bool accepted;
+
+    if (event.type == PUGL_DRAG_ENTER || ! fileDragInside)
+    {
+        fileDragInside = true;
+        accepted = self->onFileDragEnter(ev);
+    }
+    else
+    {
+        accepted = self->onFileDragMove(ev);
+    }
+
+    if (*alive)
+        fileDragAccepted = accepted;
+
+    return accepted ? PUGL_SUCCESS : PUGL_FAILURE;
+}
+
 #if defined(DEBUG) && defined(DGL_DEBUG_EVENTS)
 static int printEvent(const PuglEvent* event, const char* prefix, const bool verbose);
 #endif
@@ -1210,10 +1290,19 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
     }
 #endif
 
+    // getClipboard() pumps events while it waits, with the Window's code still on the stack
+    bool refuseFileDrag = false;
+
     if (pData->waitingForClipboardEvents)
     {
         switch (event->type)
         {
+        case PUGL_DRAG_ENTER:
+        case PUGL_DRAG_MOTION:
+        case PUGL_DRAG_LEAVE:
+        case PUGL_DROP:
+            refuseFileDrag = true;
+            break;
         case PUGL_UPDATE:
         case PUGL_EXPOSE:
         case PUGL_FOCUS_IN:
@@ -1516,6 +1605,13 @@ PuglStatus Window::PrivateData::puglEventCallback(PuglView* const view, const Pu
     case PUGL_DATA:
         pData->onClipboardData(event->data.typeIndex + 1);
         break;
+
+    ///< Files dragged over the view or dropped on it, a #PuglDropEvent
+    case PUGL_DRAG_ENTER:
+    case PUGL_DRAG_MOTION:
+    case PUGL_DRAG_LEAVE:
+    case PUGL_DROP:
+        return pData->onPuglFileDrag(event->drop, refuseFileDrag);
     }
 
     return PUGL_SUCCESS;

@@ -147,6 +147,13 @@ struct Window::PrivateData : IdleCallback {
     /** Render to a picture file when non-null, automatically free+unset after saving. */
     char* filenameToRenderInto;
 
+    /** Whether this Window receives files dragged onto it, see Window::setAcceptingFileDrops. */
+    bool acceptingFileDrops;
+
+    /** Whether the drag over this Window has had onFileDragEnter, and what the Window last answered. */
+    bool fileDragInside;
+    bool fileDragAccepted;
+
     /** Native drags can pump nested UI loops that destroy this Window. */
     std::shared_ptr<PuglFileDrag> fileDrag;
     std::shared_ptr<bool> idleAlive{std::make_shared<bool>(true)};
@@ -290,6 +297,9 @@ struct Window::PrivateData : IdleCallback {
     const void* getClipboard(size_t& dataSize);
     uint32_t onClipboardDataOffer();
     void onClipboardData(uint32_t typeId);
+
+    // file drops; refuse: answer no without asking the Window, as while getClipboard waits
+    PuglStatus onPuglFileDrag(const PuglDropEvent& event, bool refuse);
 
     // Pugl event handling entry point
     static PuglStatus puglEventCallback(PuglView* view, const PuglEvent* event);

@@ -92,6 +92,46 @@ public:
         pData->fileDrag = drag;
     }
 
+    // ----------------------------------------------------------------------------------------------------------------
+    // file drops: what the Window hears of pugl's drop events
+
+    uint dragEnters = 0, dragLeaves = 0, drops = 0;
+    bool answerEnter = true, answerDrop = true;
+    FileDropEvent lastDrop;
+    std::function<void()> duringDrop;
+
+    enum FileDragKind { kDragEnter, kDragMotion, kDragLeave, kDrop };
+
+    // hand the Window a pugl drop event as a backend would, and return whether it accepted
+    bool sendFileDrag(const FileDragKind kind, const double x, const double y, const uint32_t mods = 0)
+    {
+        USE_NAMESPACE_DGL;
+        static const char* const files[] = { "/tmp/a.wav", "/tmp/b.mid" };
+
+        PuglEvent event = {};
+        event.drop.type = kind == kDragEnter  ? PUGL_DRAG_ENTER
+                        : kind == kDragMotion ? PUGL_DRAG_MOTION
+                        : kind == kDragLeave  ? PUGL_DRAG_LEAVE
+                                              : PUGL_DROP;
+        event.drop.time = 1.5;
+        event.drop.x = x;
+        event.drop.y = y;
+        event.drop.mods = mods;
+        if (kind != kDragLeave)
+        {
+            event.drop.numFiles = 2;
+            event.drop.files = files;
+        }
+
+        // the Window may delete itself from its callback, so nothing of it is touched afterwards
+        return Window::PrivateData::puglEventCallback(pData->view, &event) == PUGL_SUCCESS;
+    }
+
+    void forceAcceptingFileDrops(const bool accepting) { pData->acceptingFileDrops = accepting; }
+    void setAutoScale(const double factor) { pData->autoScaling = factor != 1.0; pData->autoScaleFactor = factor; }
+    void setWaitingForClipboard(const bool waiting) { pData->waitingForClipboardEvents = waiting; }
+    void setModalChild(const bool modal) { pData->modal.child = modal ? pData : nullptr; }
+
     bool setScaleFactorFromHost(const double scaleFactor)
     {
         return pData->setScaleFactor(scaleFactor);
@@ -115,6 +155,31 @@ protected:
     {
         ++scaleFactorChanges;
         lastScaleFactor = scaleFactor;
+    }
+
+    // onFileDragMove is left to the default, which keeps the enter's answer
+    bool onFileDragEnter(const FileDropEvent& ev) override
+    {
+        ++dragEnters;
+        lastDrop = ev;
+        return answerEnter;
+    }
+
+    void onFileDragLeave() override
+    {
+        ++dragLeaves;
+    }
+
+    bool onFileDrop(const FileDropEvent& ev) override
+    {
+        ++drops;
+        lastDrop = ev;
+        const bool answer = answerDrop;
+        // a copy: the step may delete this window, and its members with it
+        const std::function<void()> step(duringDrop);
+        if (step)
+            step();
+        return answer;
     }
 };
 
@@ -164,6 +229,97 @@ int main()
         DAF_ASSERT_EQUAL(probe.destroyed, true, "completed native operations are released without closing the Window");
         DAF_ASSERT_EQUAL(probe.cancelled, false, "normal completion is not changed into cancellation");
         window->close(); window.reset();
+    }
+
+    // file drops: what a Window hears of pugl's drop events, whatever the backend (each backend's own
+    // protocol has a test of its own)
+    {
+        typedef DAF_NAMESPACE::PluginWindow W;
+        Application app(true);
+        W win(app, 200, 200, 1.0);
+
+        DAF_ASSERT_EQUAL(win.isAcceptingFileDrops(), false, "a window takes no drops until it asks");
+        DAF_ASSERT_EQUAL(win.setAcceptingFileDrops(false), true, "turning drops off always succeeds");
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDragEnter, 10, 20), false, "a window that did not ask refuses");
+        DAF_ASSERT_EQUAL(win.dragEnters, 0u, "and is not asked");
+
+        win.forceAcceptingFileDrops(true);
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDragEnter, 10, 20, 4 /* alt */), true, "the enter's answer is the window's");
+        DAF_ASSERT_EQUAL(win.dragEnters, 1u, "the window hears the enter");
+        DAF_ASSERT_EQUAL(win.lastDrop.pos.getX(), 10.0, "at the position given");
+        DAF_ASSERT_EQUAL(win.lastDrop.pos.getY(), 20.0, "at the position given");
+        DAF_ASSERT_EQUAL(win.lastDrop.mod, 4u, "with the modifiers");
+        DAF_ASSERT_EQUAL(win.lastDrop.time, 1500u, "with the time in milliseconds");
+        DAF_ASSERT_EQUAL(win.lastDrop.numFiles, 2u, "with the files");
+        DAF_ASSERT_EQUAL(std::strcmp(win.lastDrop.files[1], "/tmp/b.mid"), 0, "with the files");
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDragMotion, 11, 21), true, "a motion keeps the enter's answer by default");
+
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDragLeave, 0, 0), true, "a leave is taken");
+        DAF_ASSERT_EQUAL(win.dragLeaves, 1u, "the window hears the leave");
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDragLeave, 0, 0), true, "a second leave is taken");
+        DAF_ASSERT_EQUAL(win.dragLeaves, 1u, "but only one reaches the window");
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDrop, 0, 0), false, "a drop with no enter before it is refused");
+        DAF_ASSERT_EQUAL(win.drops, 0u, "without reaching the window");
+
+        win.answerEnter = false;
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDragMotion, 12, 22), false, "a motion with no enter is the enter");
+        DAF_ASSERT_EQUAL(win.dragEnters, 2u, "the window hears it as one");
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDragMotion, 13, 23), false, "a refusal is kept by default too");
+
+        win.answerEnter = true;
+        win.sendFileDrag(W::kDragLeave, 0, 0);
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDragEnter, 30, 40), true, "a new drag is accepted");
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDrop, 31, 41, 4), true, "the drop's answer is the window's");
+        DAF_ASSERT_EQUAL(win.drops, 1u, "the window hears the drop");
+        DAF_ASSERT_EQUAL(win.lastDrop.pos.getX(), 31.0, "at the position given");
+        DAF_ASSERT_EQUAL(win.lastDrop.mod, 4u, "with the modifiers at the drop");
+        win.sendFileDrag(W::kDragLeave, 0, 0);
+        DAF_ASSERT_EQUAL(win.dragLeaves, 2u, "no leave after a drop");
+
+        win.answerDrop = false;
+        win.sendFileDrag(W::kDragEnter, 30, 40);
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDrop, 31, 41), false, "a drop the window does not take fails");
+        win.answerDrop = true;
+
+        // auto-scaling: mouse events reach top-level widgets divided by the auto-scale factor, and so do drops
+        win.setAutoScale(2.0);
+        win.sendFileDrag(W::kDragEnter, 100, 50);
+        DAF_ASSERT_EQUAL(win.lastDrop.pos.getX(), 50.0, "auto-scaling applies to the position");
+        DAF_ASSERT_EQUAL(win.lastDrop.pos.getY(), 25.0, "auto-scaling applies to the position");
+        win.sendFileDrag(W::kDragLeave, 0, 0);
+        win.setAutoScale(1.0);
+
+        // a modal child has the input, as it has the mouse
+        const uint enters = win.dragEnters;
+        win.setModalChild(true);
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDragEnter, 1, 1), false, "refused under a modal child");
+        DAF_ASSERT_EQUAL(win.dragEnters, enters, "without asking the window");
+        win.setModalChild(false);
+
+        // getClipboard pumps events while it waits: drags are refused then, a leave still arrives
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDragEnter, 1, 1), true, "accepted again");
+        win.setWaitingForClipboard(true);
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDragMotion, 2, 2), false, "refused while the clipboard is awaited");
+        const uint leaves = win.dragLeaves;
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDrop, 2, 2), false, "a drop is refused then");
+        DAF_ASSERT_EQUAL(win.dragLeaves, leaves + 1, "and ends the drag for the window with a leave");
+        win.setWaitingForClipboard(false);
+
+        win.forceAcceptingFileDrops(false);
+        DAF_ASSERT_EQUAL(win.sendFileDrag(W::kDragEnter, 1, 1), false, "a window that stopped accepting refuses");
+    }
+
+    // a window may delete itself from inside its drop
+    {
+        typedef DAF_NAMESPACE::PluginWindow W;
+        Application app(true);
+        std::unique_ptr<W> win(new W(app, 200, 200, 1.0));
+        win->forceAcceptingFileDrops(true);
+        win->sendFileDrag(W::kDragEnter, 5, 5);
+        W* const raw = win.get();
+        raw->duringDrop = [&win] { win->close(); win.reset(); };
+        DAF_ASSERT_EQUAL(raw->sendFileDrag(W::kDrop, 5, 5), true, "the answer of a window that deleted itself stands");
+        DAF_ASSERT_EQUAL(win.get(), nullptr, "the window really went");
     }
 
     // creating and destroying simple window

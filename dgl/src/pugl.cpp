@@ -291,6 +291,11 @@ extern const ulong* DGL_X11_WINDOW_ICON_NAME;
 START_NAMESPACE_DGL
 #endif
 
+// Receiving file drops, the part the backends share; once, ahead of the passes, see drop-targets.md
+#if defined(DGL_USING_X11) || defined(DGL_USING_WAYLAND)
+# include "FileDrop.hpp"
+#endif
+
 // --------------------------------------------------------------------------------------------------------------------
 // pugl and the DGL extensions that reach into it, once per windowing system compiled in
 

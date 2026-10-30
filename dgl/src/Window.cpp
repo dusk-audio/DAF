@@ -409,6 +409,36 @@ bool Window::startFileDrag(const char* const filename)
     return true;
 }
 
+bool Window::isAcceptingFileDrops() const noexcept
+{
+    return pData->acceptingFileDrops;
+}
+
+bool Window::setAcceptingFileDrops(const bool accept)
+{
+    if (accept == pData->acceptingFileDrops)
+        return true;
+
+    if (! accept)
+    {
+        // a drag in progress ends for this Window with onFileDragLeave, from pugl's detach
+        pData->acceptingFileDrops = false;
+        if (pData->view != nullptr)
+            puglSetAcceptsFileDrops(pData->view, false);
+        return true;
+    }
+
+    // XDND, OLE and AppKit all address drags to a window of its own; Wayland cannot embed at all
+    if (pData->view == nullptr || pData->isEmbed)
+        return false;
+
+    if (puglSetAcceptsFileDrops(pData->view, true) != PUGL_SUCCESS)
+        return false;
+
+    pData->acceptingFileDrops = true;
+    return true;
+}
+
 bool Window::setCursor(const MouseCursor cursor)
 {
     return pData->view != nullptr
@@ -647,6 +677,25 @@ uint32_t Window::onClipboardDataOffer()
     }
 
     return 0;
+}
+
+bool Window::onFileDragEnter(const FileDropEvent&)
+{
+    return false;
+}
+
+bool Window::onFileDragMove(const FileDropEvent&)
+{
+    return pData->fileDragAccepted;
+}
+
+void Window::onFileDragLeave()
+{
+}
+
+bool Window::onFileDrop(const FileDropEvent&)
+{
+    return false;
 }
 
 bool Window::onClose()
