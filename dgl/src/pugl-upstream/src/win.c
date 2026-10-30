@@ -345,6 +345,9 @@ puglUnrealize(PuglView* const view)
     return PUGL_FAILURE;
   }
 
+  // DGL: no drop reaches a view on its way out, and OLE lets go of the window
+  puglWinForgetDropTarget(view);
+
   puglDispatchSimpleEvent(view, PUGL_UNREALIZE);
 
   if (view->backend) {
@@ -400,6 +403,9 @@ void
 puglFreeViewInternals(PuglView* view)
 {
   if (view) {
+    // DGL: see puglUnrealize
+    puglWinForgetDropTarget(view);
+
     if (view->backend) {
       view->backend->destroy(view);
     }
@@ -418,6 +424,7 @@ puglFreeWorldInternals(PuglWorld* world)
 
   UnregisterClass(classNameArg, NULL);
   puglArgStringFree(classNameArg);
+  puglWinSettleDropOle();
   free(world->impl);
 }
 
@@ -1184,21 +1191,56 @@ puglDispatchViewEvents(PuglView* view)
      when it is received, then break the loop on the first message that was
      created afterwards. */
 
-  long markTime = 0;
-  MSG  msg;
+  /* DGL: until the mark is seen, the pass also ends at the first message
+     newer than its own start, since a modal loop inside a dispatched message
+     can take the mark. Times are compared as GetTickCount wraps. */
+  DWORD limit = GetTickCount();
+  MSG   msg;
   while (PeekMessage(&msg, view->impl->hwnd, 0, 0, PM_REMOVE)) {
     if (msg.message == PUGL_LOCAL_MARK_MSG) {
-      markTime = GetMessageTime();
+      limit = (DWORD)GetMessageTime();
     } else {
       TranslateMessage(&msg);
       DispatchMessage(&msg);
-      if (markTime != 0 && GetMessageTime() > markTime) {
+      if ((LONG)((DWORD)GetMessageTime() - limit) > 0) {
         break;
       }
     }
   }
 
   return PUGL_SUCCESS;
+}
+
+/* DGL: a program also dispatches the messages of its thread's OLE window
+   while a drop target of the thread holds OLE: a drag from another process
+   reaches the target as calls COM delivers to that window, and stalls while
+   nothing dispatches them. The thread's other messages, thread messages and
+   other windows' alike, are left to the application, and a module leaves the
+   OLE window to its host, which pumps the thread. Bounded by the time the
+   pass started, compared as GetTickCount wraps. A peek filtered by window
+   still returns WM_QUIT, so the pass looks before it takes, and leaves a
+   quit queued for the loop it is meant for. */
+static void
+puglDispatchOleEvents(void)
+{
+  const HWND ole = puglWinDropOleWindow();
+  if (!ole) {
+    return;
+  }
+
+  const DWORD limit = GetTickCount();
+  MSG         msg;
+  while (PeekMessage(&msg, ole, 0, 0, PM_NOREMOVE) && msg.message != WM_QUIT) {
+    if (!PeekMessage(&msg, ole, msg.message, msg.message, PM_REMOVE)) {
+      break;
+    }
+
+    TranslateMessage(&msg);
+    DispatchMessage(&msg);
+    if ((LONG)((DWORD)GetMessageTime() - limit) > 0) {
+      break;
+    }
+  }
 }
 
 static PuglStatus
@@ -1212,6 +1254,11 @@ puglDispatchWinEvents(PuglWorld* world)
     puglDispatchViewEvents(world->views[i]);
   }
 
+  if (world->type == PUGL_PROGRAM) {
+    puglDispatchOleEvents();
+  }
+
+  puglWinSettleDropOle();
   return PUGL_SUCCESS;
 }
 

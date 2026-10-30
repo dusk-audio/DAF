@@ -287,7 +287,7 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
 
 - (PuglStatus)dispatchCurrentConfiguration
 {
-  if (puglview->stage < PUGL_VIEW_STAGE_REALIZED) {
+  if (!puglview || puglview->stage < PUGL_VIEW_STAGE_REALIZED) {
     return PUGL_SUCCESS;
   }
 
@@ -328,7 +328,8 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
 {
   [super setIsVisible:flag];
 
-  if (flag != (puglview->lastConfigure.style & PUGL_VIEW_STYLE_MAPPED)) {
+  if (puglview &&
+      flag != (puglview->lastConfigure.style & PUGL_VIEW_STYLE_MAPPED)) {
     [self dispatchCurrentConfiguration];
   }
 }
@@ -336,6 +337,10 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
 - (void)setIsZoomed:(BOOL)flag
 {
   [super setIsZoomed:flag];
+
+  if (!puglview) {
+    return;
+  }
 
   const bool wasZoomed = (puglview->lastConfigure.style &
                           (PUGL_VIEW_STYLE_TALL | PUGL_VIEW_STYLE_WIDE));
@@ -353,10 +358,7 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
   NSTrackingArea*            trackingArea;
   NSMutableAttributedString* markedText;
   NSMutableDictionary*       userTimers;
-  id<NSDraggingInfo>         dragSource;
-  NSDragOperation            dragOperation;
-  size_t                     dragTypeIndex;
-  NSString*                  droppedUriList;
+  struct PuglMacDropTarget*  dropTarget;
   bool                       reshaped;
 }
 
@@ -373,11 +375,13 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
     [timer invalidate];
   }
   [userTimers removeAllObjects];
+  puglMacDropDetach(self);
 }
 
 - (void)dealloc
 {
   [self detachPuglView];
+  puglMacDropFree(self);
   [markedText release];
   [userTimers release];
   [super dealloc];
@@ -456,15 +460,19 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
 }
 
 static uint32_t
-getModifiers(const NSEvent* const ev)
+getModifierFlags(const NSEventModifierFlags modifierFlags)
 {
-  const NSEventModifierFlags modifierFlags = [ev modifierFlags];
-
   return (((modifierFlags & NSShiftKeyMask) ? PUGL_MOD_SHIFT : 0) |
           ((modifierFlags & NSControlKeyMask) ? PUGL_MOD_CTRL : 0) |
           ((modifierFlags & NSAlternateKeyMask) ? PUGL_MOD_ALT : 0) |
           ((modifierFlags & NSCommandKeyMask) ? PUGL_MOD_SUPER : 0) |
           ((modifierFlags & (1U << 16U)) ? PUGL_MOD_CAPS_LOCK : 0));
+}
+
+static uint32_t
+getModifiers(const NSEvent* const ev)
+{
+  return getModifierFlags([ev modifierFlags]);
 }
 
 static PuglKey
@@ -1108,6 +1116,59 @@ flagDiffers(const uint32_t lhs, const uint32_t rhs, const uint32_t mask)
   [super viewWillDraw];
 }
 
+// Receiving file drops: the session and its answers live in FileDropMac.hpp, which a retired view never
+// reaches
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender
+{
+  if (!puglview) {
+    return NSDragOperationNone;
+  }
+
+  return puglMacDropEntered(self, sender);
+}
+
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender
+{
+  if (!puglview) {
+    return NSDragOperationNone;
+  }
+
+  return puglMacDropUpdated(self, sender);
+}
+
+- (void)draggingExited:(id<NSDraggingInfo>)sender
+{
+  (void)sender;
+
+  if (puglview) {
+    puglMacDropExited(self);
+  }
+}
+
+- (void)draggingEnded:(id<NSDraggingInfo>)sender
+{
+  (void)sender;
+
+  if (puglview) {
+    puglMacDropExited(self);
+  }
+}
+
+- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender
+{
+  return puglview && puglMacDropPrepare(self, sender);
+}
+
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender
+{
+  return puglview && puglMacDropPerform(self, sender);
+}
+
+- (BOOL)wantsPeriodicDraggingUpdates
+{
+  return NO;
+}
+
 - (void)timerTick:(NSTimer*)userTimer
 {
   if (!puglview) {
@@ -1567,7 +1628,8 @@ puglUnrealize(PuglView* const view)
     [impl->wrapperView removeFromSuperview];
   }
 
-  if (impl->window) {
+  if (impl->window &&
+      !puglMacDropDefersClose(impl->wrapperView, impl->window)) {
     [impl->window close];
   }
 
@@ -1637,7 +1699,9 @@ puglFreeViewInternals(PuglView* view)
         [view->impl->wrapperView removeFromSuperview];
       }
 
-      if (view->impl->window) {
+      if (view->impl->window &&
+          !puglMacDropDefersClose(view->impl->wrapperView,
+                                  view->impl->window)) {
         [view->impl->window close];
       }
 
@@ -2096,8 +2160,7 @@ puglAcceptOffer(PuglView* const                 view,
                 const PuglDataOfferEvent* const PUGL_UNUSED(offer),
                 const uint32_t                  typeIndex)
 {
-  PuglWrapperView* const wrapper    = view->impl->wrapperView;
-  NSPasteboard* const    pasteboard = [NSPasteboard generalPasteboard];
+  NSPasteboard* const pasteboard = [NSPasteboard generalPasteboard];
   if (!pasteboard) {
     return PUGL_UNKNOWN_ERROR;
   }
@@ -2106,9 +2169,6 @@ puglAcceptOffer(PuglView* const                 view,
   if (typeIndex >= [types count]) {
     return PUGL_BAD_PARAMETER;
   }
-
-  wrapper->dragOperation = NSDragOperationCopy;
-  wrapper->dragTypeIndex = typeIndex;
 
   const double        now  = puglGetTime(view->world);
   const PuglDataEvent data = {PUGL_DATA, 0U, now, typeIndex};
@@ -2119,7 +2179,7 @@ puglAcceptOffer(PuglView* const                 view,
 }
 
 const void*
-puglGetClipboard(PuglView* const view,
+puglGetClipboard(PuglView* const PUGL_UNUSED(view),
                  const uint32_t  typeIndex,
                  size_t* const   len)
 {
@@ -2135,13 +2195,7 @@ puglGetClipboard(PuglView* const view,
     return NULL;
   }
 
-  NSString* const uti = [types objectAtIndex:typeIndex];
-  if ([uti isEqualToString:@"public.file-url"] ||
-      [uti isEqualToString:@"com.apple.pasteboard.promised-file-url"]) {
-    *len = [view->impl->wrapperView->droppedUriList length];
-    return [view->impl->wrapperView->droppedUriList UTF8String];
-  }
-
+  NSString* const     uti  = [types objectAtIndex:typeIndex];
   const NSData* const data = [pasteboard dataForType:uti];
 
   *len = [data length];

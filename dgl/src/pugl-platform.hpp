@@ -705,6 +705,10 @@ PuglFileDrag* puglStartFileDrag(PuglView*, const char*) { return nullptr; }
 # include "FileDropX11.hpp"
 #elif defined(DGL_PUGL_WAYLAND)
 # include "FileDropWayland.hpp"
+#elif defined(DAF_OS_MAC)
+# include "FileDropMac.hpp"
+#elif defined(DAF_OS_WINDOWS)
+# include "FileDropWin.hpp"
 #else
 PuglStatus puglSetAcceptsFileDrops(PuglView*, const bool accept) { return accept ? PUGL_UNSUPPORTED : PUGL_SUCCESS; }
 #endif
