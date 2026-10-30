@@ -46,6 +46,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <memory>
 #include <new>
 #include <string>
@@ -289,6 +290,11 @@ extern const ulong* DGL_X11_WINDOW_ICON_NAME;
 
 #ifndef DAF_OS_MAC
 START_NAMESPACE_DGL
+#endif
+
+// Receiving file drops, the part the backends share; once, ahead of the passes, see drop-targets.md
+#if defined(DGL_USING_X11) || defined(DGL_USING_WAYLAND)
+# include "FileDrop.hpp"
 #endif
 
 // --------------------------------------------------------------------------------------------------------------------

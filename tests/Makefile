@@ -29,7 +29,7 @@ endif
 # ---------------------------------------------------------------------------------------------------------------------
 
 MANUAL_TESTS  =
-UNIT_TESTS    = AudioUnitBufferList Color HostKeyFilter IdleCallbacks ImGuiKnobs Point StateParser
+UNIT_TESTS    = AudioUnitBufferList Color FileDrop HostKeyFilter IdleCallbacks ImGuiKnobs Point StateParser
 
 ifeq ($(MACOS),true)
 UNIT_TESTS   += CocoaRetiredView FileDragCocoa
@@ -73,6 +73,12 @@ ifeq ($(HAVE_CAIRO),true)
 MANUAL_TESTS += Demo.cairo
 endif
 
+# a window that takes file drops and prints what it hears, for end-to-end runs (see dgl/src/drop-targets.md);
+# Cairo, since a Wayland window shows only once something has drawn into it
+ifeq ($(LINUX)$(HAVE_CAIRO),truetrue)
+MANUAL_TESTS += FileDropDemo
+endif
+
 ifeq ($(HAVE_OPENGL),true)
 MANUAL_TESTS += Demo.opengl
 MANUAL_TESTS += FileBrowserDialog
@@ -105,6 +111,7 @@ endif
 
 ifeq ($(DGL_BACKEND_WAYLAND),true)
 UNIT_TESTS   += Wayland
+UNIT_TESTS   += WaylandDrop
 endif
 
 # open GL windows on whichever backend a DGL_BACKEND=both build picks in the environment they run in,
@@ -121,11 +128,12 @@ endif
 # drives the X11 backend directly, so it needs one (macOS uses Cocoa even where X11 is installed)
 ifeq ($(LINUX),true)
 ifeq ($(HAVE_X11),true)
+UNIT_TESTS   += X11Drop
 UNIT_TESTS   += X11Focus
 endif
 endif
 
-# leaves out tests the environment cannot run, e.g. SKIP_UNIT_TESTS=X11Focus under a Wayland compositor
+# leaves out tests the environment cannot run, e.g. SKIP_UNIT_TESTS="X11Drop X11Focus" under a Wayland compositor
 # with no X server (see headless-wayland.sh)
 UNIT_TESTS    := $(filter-out $(SKIP_UNIT_TESTS),$(UNIT_TESTS))
 
@@ -259,6 +267,10 @@ clean:
 ../build/tests/Widget.stub$(APP_EXT): ../build/tests/Widget.cpp.stub.o ../build/libdgl-stub.a
 	@echo "Linking Widget (Stub)"
 	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) -o $@
+
+../build/tests/FileDropDemo$(APP_EXT): ../build/tests/FileDropDemo.cpp.cairo.o ../build/libdgl-cairo.a
+	@echo "Linking FileDropDemo (Cairo)"
+	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) $(CAIRO_LIBS) -o $@
 
 # ---------------------------------------------------------------------------------------------------------------------
 

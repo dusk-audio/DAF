@@ -91,6 +91,10 @@ typedef enum {
   PUGL_LOOP_LEAVE,     ///< Recursive loop left, a #PuglLoopLeaveEvent
   PUGL_DATA_OFFER,     ///< Data offered from clipboard, a #PuglDataOfferEvent
   PUGL_DATA,           ///< Data available from clipboard, a #PuglDataEvent
+  PUGL_DRAG_ENTER,     ///< Files dragged into the view, a #PuglDropEvent
+  PUGL_DRAG_MOTION,    ///< Files dragged within the view, a #PuglDropEvent
+  PUGL_DRAG_LEAVE,     ///< File drag left the view without a drop, a #PuglDropEvent
+  PUGL_DROP,           ///< Files dropped on the view, a #PuglDropEvent
 } PuglEventType;
 
 /// Common flags for all event types
@@ -619,6 +623,36 @@ typedef struct {
 
 /**
    @}
+   @defgroup pugl_drop_events Drop Events
+   @{
+*/
+
+/**
+   File drop event.
+
+   Sent to a view that accepts file drops (a DGL extension) while files from
+   another application are dragged over it: #PUGL_DRAG_ENTER once the file
+   list is known, #PUGL_DRAG_MOTION as the pointer moves, then either
+   #PUGL_DRAG_LEAVE or #PUGL_DROP.
+
+   For #PUGL_DRAG_ENTER and #PUGL_DRAG_MOTION, the event function returns
+   #PUGL_SUCCESS to accept a drop at this position, and any other status to
+   refuse it.  For #PUGL_DROP, #PUGL_SUCCESS means the files were taken.  The
+   source is only ever told of a copy.
+*/
+typedef struct {
+  PuglEventType      type;     ///< #PUGL_DRAG_ENTER, #PUGL_DRAG_MOTION, #PUGL_DRAG_LEAVE or #PUGL_DROP
+  PuglEventFlags     flags;    ///< Bitwise OR of #PuglEventFlag values
+  double             time;     ///< Time in seconds
+  double             x;        ///< View-relative X coordinate, as in #PuglMotionEvent
+  double             y;        ///< View-relative Y coordinate, as in #PuglMotionEvent
+  PuglMods           mods;     ///< Keyboard modifiers, best effort, 0 where unknown
+  uint32_t           numFiles; ///< Entries in files, 0 for #PUGL_DRAG_LEAVE
+  const char* const* files;    ///< Absolute local paths in UTF-8, valid during dispatch only
+} PuglDropEvent;
+
+/**
+   @}
 */
 
 /**
@@ -648,6 +682,7 @@ typedef union {
   PuglTimerEvent     timer;     ///< #PUGL_TIMER
   PuglDataOfferEvent offer;     ///< #PUGL_DATA_OFFER
   PuglDataEvent      data;      ///< #PUGL_DATA
+  PuglDropEvent      drop;      ///< #PUGL_DRAG_ENTER, #PUGL_DRAG_MOTION, #PUGL_DRAG_LEAVE, #PUGL_DROP
 } PuglEvent;
 
 /**

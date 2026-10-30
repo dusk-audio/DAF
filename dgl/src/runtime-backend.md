@@ -100,9 +100,10 @@ Why this and not something else:
   a CLAP plugin open the Wayland world its host asked for while another stays on X11, or an
   embedded editor follow the backend of its host's window.
 - Per-backend event handling stays inside its pass, so file drag and drop slots in the way outgoing
-  drags already do: `FileDragX11.hpp` is compiled in the X11 pass, a Wayland counterpart
-  goes in the Wayland pass, and `puglStartFileDrag` forwards to whichever owns the view. Drops
-  arrive as pugl events at DGL's one event function, whatever the backend.
+  drags already do: `FileDragX11.hpp` and `FileDropX11.hpp` are compiled in the X11 pass,
+  `FileDropWayland.hpp` in the Wayland pass, and `puglStartFileDrag` and `puglSetAcceptsFileDrops`
+  forward to whichever owns the view. Drops arrive as pugl events at DGL's one event function,
+  whatever the backend (see drop-targets.md).
 
 A call inside a pass to a public function that the same pass only defines further down finds the
 DGL-scope forwarder through the base class (argument-dependent lookup), and reaches the same function
@@ -122,7 +123,9 @@ from a pass into DGL scope:
 All of them are made on a world or view that is complete and tagged with its backend by then. An
 untagged one reaching a forwarder would be memory corruption, or an object pugl did not make, and
 stops the program with a message rather than guessing a backend. Besides these calls, the passes
-share `PuglFileDrag`, the base class `FileDragX11.hpp` derives from.
+share `PuglFileDrag`, the base class `FileDragX11.hpp` derives from, and what `FileDrop.hpp` holds for
+receiving drops: `PuglDropFiles`, `PuglDropSession` and `PuglDropHost`, the base class of both drop
+targets.
 
 ## Selection rule
 
@@ -253,7 +256,7 @@ wherever Weston runs, and be refused at `create()` under Xvfb alone.
 `XDG_RUNTIME_DIR`. CI uses it for Wayland alone and, under `xvfb-run`, for both servers at once:
 
     env -u DISPLAY LIBGL_ALWAYS_SOFTWARE=1 \
-        tests/headless-wayland.sh make -C tests run DGL_BACKEND=both SKIP_UNIT_TESTS=X11Focus
+        tests/headless-wayland.sh make -C tests run DGL_BACKEND=both SKIP_UNIT_TESTS="X11Drop X11Focus"
     xvfb-run -a tests/headless-wayland.sh build/tests/RuntimeBackend
 
 `build.yml` runs the `both` suite under Xvfb alone. `wayland.yml` runs it under Weston alone, runs

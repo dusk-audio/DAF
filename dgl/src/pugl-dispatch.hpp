@@ -600,6 +600,11 @@ PuglFileDrag* puglStartFileDrag(PuglView* const view, const char* const filename
     return DGL_PUGL_FORWARD(view, puglStartFileDrag, filename);
 }
 
+PuglStatus puglSetAcceptsFileDrops(PuglView* const view, const bool accept)
+{
+    return DGL_PUGL_FORWARD(view, puglSetAcceptsFileDrops, accept);
+}
+
 bool puglBackendEnter(PuglView* const view)
 {
     return DGL_PUGL_FORWARD0(view, puglBackendEnter);

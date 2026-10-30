@@ -811,6 +811,9 @@ puglUnrealize(PuglView* const view)
   PuglX11ErrorTrap trap;
   puglX11BeginErrorTrap(&trap, view->world->impl->display);
 
+  // A drag over the window gets its refusals while the window still exists
+  puglX11DropDetach(view);
+
   if (impl->xic) {
     XDestroyIC(impl->xic);
     impl->xic = None;
@@ -890,6 +893,7 @@ puglFreeWorldInternals(PuglWorld* const world)
   // would otherwise report it to the host's handler
   PuglX11ErrorTrap trap;
   puglX11BeginErrorTrap(&trap, world->impl->display);
+  puglX11DropFreeWorld(world);
   if (world->impl->xim) {
     XCloseIM(world->impl->xim);
   }
@@ -1888,6 +1892,9 @@ dispatchX11Events(PuglWorld* const world)
 {
   PuglStatus st = PUGL_SUCCESS;
 
+  // Let the deadlines of file drops fall due, whether or not events came
+  puglX11DropTick(world);
+
   // Flush output to the server once at the start
   Display* display = world->impl->display;
   XFlush(display);
@@ -1898,6 +1905,11 @@ dispatchX11Events(PuglWorld* const world)
     XNextEvent(display, &xevent);
 
     if (handleTimerEvent(world, xevent)) {
+      continue;
+    }
+
+    // Before findView: a drag's source window is not one of ours
+    if (puglX11DropFilter(world, &xevent)) {
       continue;
     }
 
