@@ -16,6 +16,7 @@ struct PuglMacDropTarget : PuglDropHost
         std::vector<std::string> paths; // kEnter: the files
         double x, y;                    // kEnter, kMotion: view coordinates
         PuglMods mods;
+        bool copies;                    // kEnter, kMotion: the source's mask has copy
     };
 
     PuglWrapperView* const wrapper; // owns the target
@@ -25,6 +26,8 @@ struct PuglMacDropTarget : PuglDropHost
     bool wanted;                    // the session asked for the list
     bool accepted;                  // what the session last answered
     bool taken;                     // how the latest drop ended
+    bool holding;                   // a drag waits for its mask to have copy before the view hears of it
+    std::vector<std::string> held;  // its files
     std::deque<Message> queue;
     bool busy;
 
@@ -36,6 +39,8 @@ struct PuglMacDropTarget : PuglDropHost
           wanted(false),
           accepted(false),
           taken(false),
+          holding(false),
+          held(),
           queue(),
           busy(false) {}
 
@@ -56,6 +61,7 @@ struct PuglMacDropTarget : PuglDropHost
         // The session stays active, refusing, until the drag ends.
         [wrapper unregisterDraggedTypes];
         accepted = false;
+        release();
         exclusively([this] { session.detach(true); });
     }
 
@@ -69,6 +75,7 @@ struct PuglMacDropTarget : PuglDropHost
             [wrapper unregisterDraggedTypes];
 
         accepting = false;
+        release();
         session.abandon();
         view = nullptr;
     }
@@ -105,6 +112,7 @@ struct PuglMacDropTarget : PuglDropHost
         message.kind = Message::kLeave;
         message.x = message.y = 0.0;
         message.mods = 0;
+        message.copies = false;
         post(message);
     }
 
@@ -210,30 +218,61 @@ private:
         switch (message.kind)
         {
         case Message::kEnter:
-        {
-            std::vector<std::string> paths(message.paths);
-            wanted = false;
-            accepted = false;
-            session.begin(! paths.empty(), view != nullptr && accepting);
-            session.position(message.x, message.y, now(), message.mods, now());
-
-            // the list was read with the enter, so the session gets it at its first position
-            if (wanted)
+            // A source without copy, Cmd held over Finder, would be refused at every update: the view hears of
+            // the drag only once copy is offered, as on the other platforms, if the keys change before the end
+            release();
+            session.leave();
+            if (message.copies)
             {
-                wanted = false;
-                session.dataPaths(paths);
+                enter(message.paths, message);
+                break;
             }
+            holding = true;
+            held = message.paths;
             break;
-        }
 
         case Message::kMotion:
+            if (holding)
+            {
+                if (message.copies)
+                {
+                    std::vector<std::string> paths;
+                    paths.swap(held);
+                    holding = false;
+                    enter(paths, message);
+                }
+                break;
+            }
             session.position(message.x, message.y, now(), message.mods, now());
             break;
 
         case Message::kLeave:
+            release();
             session.leave();
             break;
         }
+    }
+
+    void enter(std::vector<std::string> paths, const Message& message)
+    {
+        wanted = false;
+        accepted = false;
+        session.begin(! paths.empty(), view != nullptr && accepting);
+        session.position(message.x, message.y, now(), message.mods, now());
+
+        // the list was read with the enter, so the session gets it at its first position
+        if (wanted)
+        {
+            wanted = false;
+            session.dataPaths(paths);
+        }
+    }
+
+    // A drag held for copy is forgotten
+    void release()
+    {
+        holding = false;
+        held.clear();
     }
 
     // Copy only, and only while the source allows it: a move-only mask is refused, never made a move
@@ -252,6 +291,7 @@ private:
         message.x = point.x;
         message.y = point.y;
         message.mods = mods();
+        message.copies = ([info draggingSourceOperationMask] & NSDragOperationCopy) != 0;
     }
 
     // The keys held now, as the drag carries none of its own

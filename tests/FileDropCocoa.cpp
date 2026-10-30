@@ -336,15 +336,45 @@ static void testCopyOnly()
     Fixture f;
     PuglWrapperView* const w = f.wrapper;
 
-    // Cmd held over Finder leaves move alone in the mask
+    // Cmd held over Finder leaves move alone in the mask: refused before the view hears of the drag
     DuskFileDropTestDrag* const move = fileDrag(NSDragOperationMove);
     check([w draggingEntered:(id<NSDraggingInfo>)move] == NSDragOperationNone, "a move-only source is refused");
     check([w draggingUpdated:(id<NSDraggingInfo>)move] == NSDragOperationNone, "and stays refused");
     check([w prepareForDragOperation:(id<NSDraggingInfo>)move] == NO, "a move-only drag is not prepared for");
     check([w performDragOperation:(id<NSDraggingInfo>)move] == NO, "a move-only drop fails");
-    check(std::find(f.recorder.events.begin(), f.recorder.events.end(), PUGL_DROP) == f.recorder.events.end(),
-          "a move-only drop never reaches the view");
-    check(! f.recorder.events.empty() && f.recorder.events.back() == PUGL_DRAG_LEAVE, "the view that had the enter leaves");
+    [w draggingExited:(id<NSDraggingInfo>)move];
+    check(f.recorder.events.empty(), "the view never hears of a move-only drag");
+
+    // a drag that offers copy once Cmd is let go enters then, where the pointer is
+    DuskFileDropTestDrag* const later = fileDrag(NSDragOperationMove);
+    f.moveTo(later, 20, 30);
+    check([w draggingEntered:(id<NSDraggingInfo>)later] == NSDragOperationNone, "a move-only enter is refused");
+    f.moveTo(later, 40, 50);
+    check([w draggingUpdated:(id<NSDraggingInfo>)later] == NSDragOperationNone, "while the mask stays move only");
+    check(f.recorder.events.empty(), "and the view has not heard of it");
+    later->mask = NSDragOperationCopy | NSDragOperationMove;
+    f.moveTo(later, 60, 70);
+    check([w draggingUpdated:(id<NSDraggingInfo>)later] == NSDragOperationCopy, "copy offered later is accepted");
+    check(f.recorder.events == eventsOf({ PUGL_DRAG_ENTER }), "and the view hears the enter then");
+    check(f.recorder.x == 60 && f.recorder.y == 70 && f.recorder.files.size() == 1
+          && f.recorder.files[0] == [kPath fileSystemRepresentation], "at that position, with the files");
+    check([w performDragOperation:(id<NSDraggingInfo>)later] == YES, "and its drop is taken");
+    check(f.recorder.events == eventsOf({ PUGL_DRAG_ENTER, PUGL_DROP }), "the view hears the drop");
+    f.recorder.events.clear();
+
+    // a move-only drag held for copy is forgotten when it leaves, and when the next drag enters
+    DuskFileDropTestDrag* const gone = fileDrag(NSDragOperationMove);
+    check([w draggingEntered:(id<NSDraggingInfo>)gone] == NSDragOperationNone, "a held drag");
+    [w draggingExited:(id<NSDraggingInfo>)gone];
+    gone->mask = NSDragOperationCopy;
+    check([w draggingUpdated:(id<NSDraggingInfo>)gone] == NSDragOperationNone, "after it left, copy changes nothing");
+    check([w draggingEntered:(id<NSDraggingInfo>)fileDrag(NSDragOperationMove)] == NSDragOperationNone, "another held drag");
+    DuskFileDropTestDrag* const next = fileDrag();
+    check([w draggingEntered:(id<NSDraggingInfo>)next] == NSDragOperationCopy, "replaced by one offering copy");
+    check([w draggingUpdated:(id<NSDraggingInfo>)next] == NSDragOperationCopy, "which moves on");
+    check(f.recorder.events == eventsOf({ PUGL_DRAG_ENTER, PUGL_DRAG_MOTION }), "and alone the view hears");
+    [w draggingExited:(id<NSDraggingInfo>)next];
+    f.recorder.events.clear();
 
     // the mask follows the keys held during the drag
     DuskFileDropTestDrag* const drag = fileDrag(NSDragOperationCopy | NSDragOperationMove | NSDragOperationGeneric);
