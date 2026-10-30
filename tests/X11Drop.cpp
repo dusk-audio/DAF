@@ -137,6 +137,21 @@ static size_t dropTargets(DGL_NAMESPACE::PuglWorld* const world)
     return x11->impl->drop != nullptr ? x11->impl->drop->targets.size() : 0;
 }
 
+// whether a drop target of the world has a drag going, at the protocol level
+static bool dragActive(DGL_NAMESPACE::PuglWorld* const world)
+{
+   #ifdef DGL_RUNTIME_BACKEND
+    const DGL_NAMESPACE::pugl_x11::PuglWorld* const x11 = static_cast<DGL_NAMESPACE::pugl_x11::PuglWorld*>(world);
+   #else
+    const DGL_NAMESPACE::PuglWorld* const x11 = world;
+   #endif
+    if (x11->impl->drop != nullptr)
+        for (size_t i = 0; i < x11->impl->drop->targets.size(); ++i)
+            if (x11->impl->drop->targets[i]->session.isActive())
+                return true;
+    return false;
+}
+
 // --------------------------------------------------------------------------------------------------------------------
 // the source
 
@@ -210,6 +225,20 @@ struct Source
     {
         XDestroyWindow(dpy, win);
         open();
+    }
+
+    // the DestroyNotify a window selecting StructureNotifyMask on this one gets when it goes, sent while it
+    // stays, so that whatever follows the announcement still reaches it
+    void announceDestroy()
+    {
+        XEvent event;
+        std::memset(&event, 0, sizeof(event));
+        event.xdestroywindow.type = DestroyNotify;
+        event.xdestroywindow.display = dpy;
+        event.xdestroywindow.event = win;
+        event.xdestroywindow.window = win;
+        XSendEvent(dpy, win, False, StructureNotifyMask, &event);
+        XFlush(dpy);
     }
 
     void send(const ::Window to, const Atom type, const long l1, const long l2, const long l3, const long l4)
@@ -626,17 +655,47 @@ int main()
     // the other source took the selection and died with it
     source.reopen();
 
-    // the source window dies before it answers the conversion
+    // the source window dies with its drag over the window: the window hears the drag leave at once
+    source.messages.clear();
+    source.requests.clear();
+    source.sendEnter(target, 5, uriOnly);
+    source.sendPosition(target, originX + 10, originY + 10, source.stamp + 1, source.copy);
+    check(pump(app, source, [&] { return source.count(source.status) == 1; }), "a drag whose source will die is answered");
+    check(win->take() == "ENTER;", "and reaches the window");
+    source.reopen();
+    check(pump(app, source, [&] { return win->log == "LEAVE;"; }, 500), "the source's death ends the drag at once");
+    win->take();
+
+    // and with a drop waiting for its files, the drop ends at once rather than at its deadline
     source.messages.clear();
     source.requests.clear();
     source.serve = false;
     source.sendEnter(target, 5, uriOnly);
-    source.sendPosition(target, originX + 10, originY + 10, positionTime + 70, source.copy);
-    check(pump(app, source, [&] { return source.requests.size() == 1; }), "a source that will die is asked for its files");
+    source.sendPosition(target, originX + 10, originY + 10, source.stamp + 2, source.copy);
+    check(pump(app, source, [&] { return source.requests.size() == 1; }), "a held drop whose source will die asks for its files");
+    source.send(target, source.drop, 0, static_cast<long>(source.stamp + 3), 0, 0);
+    settle(app, source, 50);
+    check(dragActive(world), "the drop waits for its files");
     source.reopen();
+    check(pump(app, source, [&] { return ! dragActive(world); }, 500), "and ends at once when its source dies");
+    check(win->take().empty(), "unheard by the window, which never had the enter");
+
+    // and nothing goes to the dead source, not even the XdndFinished refusing its drop, which a source
+    // announced dead while its window stays would receive
+    source.messages.clear();
+    source.requests.clear();
+    source.sendEnter(target, 5, uriOnly);
+    source.sendPosition(target, originX + 10, originY + 10, source.stamp + 4, source.copy);
+    check(pump(app, source, [&] { return source.requests.size() == 1; }), "a held drop whose source is announced dead asks");
+    source.send(target, source.drop, 0, static_cast<long>(source.stamp + 5), 0, 0);
+    settle(app, source, 50);
+    check(dragActive(world) && source.messages.empty(), "and waits for its files with nothing answered yet");
+    source.announceDestroy();
+    check(pump(app, source, [&] { return ! dragActive(world); }, 500), "the announcement ends the drop at once");
     settle(app, source, 100);
-    check(win->take().empty(), "a dead source's drag never reaches the window");
+    check(source.messages.empty(), "and nothing is sent to the source it names");
     source.serve = true;
+    source.reopen();
 
     // INCR, for a list well past what one request carries
     {

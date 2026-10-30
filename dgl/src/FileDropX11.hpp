@@ -258,9 +258,11 @@ private:
             onPropertyNotify(event.xproperty);
             break;
         case DestroyNotify:
+            // nothing more goes to a source that is gone, not even the finish of a drop it held
             if (watching && event.xdestroywindow.window == source)
             {
                 watching = false;
+                source = None;
                 endDrag();
             }
             break;

@@ -285,7 +285,8 @@ Messages, all format 32, XIDs read as `::Window(uint32_t(l[0]))` like FileDragX1
 Messages count only from the session's source. A Position before any Enter, from another window, or
 from a source below version 3, is ignored and gets no answer, as XDND has it. A new Enter, from any
 source, ends the current session as if it had left: the application gets its leave if it had its enter,
-and a held drop gets `XdndFinished` refusing.
+and a held drop gets `XdndFinished` refusing. A source window that is destroyed ends its drag the same
+way, without anything being sent to it.
 
 The conversion: `XConvertSelection(XdndSelection, text/uri-list, property, window, time)` with the first
 Position's l[3], and back to the event loop. Nothing waits. A drop that arrives while it is in flight
@@ -319,10 +320,12 @@ give up first: `X11FileDrag` waits 5 s after the release.
 
 A source that dies: its window is selected for `StructureNotifyMask` on pugl's connection for as long
 as the session lasts (under the error trap, deselected at the end), and its `DestroyNotify`, which
-the filter takes before `findView` since the window is not ours, ends the session as a leave. A
-conversion the dying owner never answers runs into the deadline. Everything sent to a source goes
-through `XSendEvent` inside pugl's error trap (`puglUpdate` and the clipboard loop already open one),
-so a source gone between the test and the message costs a trapped `BadWindow` and nothing else.
+the filter takes before `findView` since the window is not ours, ends the session at once as a leave,
+a held drop included. The source is forgotten first, so nothing goes to the dead window, not even the
+`XdndFinished` refusing a drop it held. Its conversion in flight goes stale like a left drag's.
+Everything sent to a source goes through `XSendEvent` inside pugl's error trap (`puglUpdate` and the
+clipboard loop already open one), so a source gone between the test and the message costs a trapped
+`BadWindow` and nothing else.
 
 A window destroyed mid-drag: `puglUnrealize`, which `puglFreeView` reaches, detaches the session
 before `XDestroyWindow`. An owed status goes out refusing, a held drop gets `XdndFinished` refusing,
@@ -466,7 +469,7 @@ exports stay as they are.
 |---|---|---|---|
 | Drag leaves during the read | conversion stale, late `SelectionNotify` ignored, property deleted, INCR drained | descriptor closed, offer destroyed | data read synchronously at enter |
 | New drag before the last finished | new Enter ends the old session: leave, or `XdndFinished` refusing a held drop | the protocol ends a drag with leave or drop before the next enter | native sessions are sequential |
-| Source dies | `DestroyNotify` ends it as a leave; an unanswered conversion meets the deadline; sends trapped | compositor sends leave | AppKit and OLE end the session (exited, `DragLeave`) |
+| Source dies | `DestroyNotify` ends it at once as a leave, a held drop included, with nothing sent to the dead window; its conversion goes stale; sends trapped | compositor sends leave | AppKit and OLE end the session (exited, `DragLeave`) |
 | Window destroyed mid-drag | detach in `puglUnrealize`: owed status refusing, `XdndFinished` refusing, deselect, delete property | descriptor closed, `accept(NULL)`, offer kept until leave | unregister or revoke; late calls answer none |
 | Window deleted inside a callback | the session checks the alive flag after each dispatch | same | same |
 | Application refuses | status accept 0, action None | `accept(serial, NULL)` | `NSDragOperationNone`, `DROPEFFECT_NONE` |
