@@ -353,10 +353,6 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
   NSTrackingArea*            trackingArea;
   NSMutableAttributedString* markedText;
   NSMutableDictionary*       userTimers;
-  id<NSDraggingInfo>         dragSource;
-  NSDragOperation            dragOperation;
-  size_t                     dragTypeIndex;
-  NSString*                  droppedUriList;
   bool                       reshaped;
 }
 
@@ -2096,8 +2092,7 @@ puglAcceptOffer(PuglView* const                 view,
                 const PuglDataOfferEvent* const PUGL_UNUSED(offer),
                 const uint32_t                  typeIndex)
 {
-  PuglWrapperView* const wrapper    = view->impl->wrapperView;
-  NSPasteboard* const    pasteboard = [NSPasteboard generalPasteboard];
+  NSPasteboard* const pasteboard = [NSPasteboard generalPasteboard];
   if (!pasteboard) {
     return PUGL_UNKNOWN_ERROR;
   }
@@ -2106,9 +2101,6 @@ puglAcceptOffer(PuglView* const                 view,
   if (typeIndex >= [types count]) {
     return PUGL_BAD_PARAMETER;
   }
-
-  wrapper->dragOperation = NSDragOperationCopy;
-  wrapper->dragTypeIndex = typeIndex;
 
   const double        now  = puglGetTime(view->world);
   const PuglDataEvent data = {PUGL_DATA, 0U, now, typeIndex};
@@ -2119,7 +2111,7 @@ puglAcceptOffer(PuglView* const                 view,
 }
 
 const void*
-puglGetClipboard(PuglView* const view,
+puglGetClipboard(PuglView* const PUGL_UNUSED(view),
                  const uint32_t  typeIndex,
                  size_t* const   len)
 {
@@ -2135,13 +2127,7 @@ puglGetClipboard(PuglView* const view,
     return NULL;
   }
 
-  NSString* const uti = [types objectAtIndex:typeIndex];
-  if ([uti isEqualToString:@"public.file-url"] ||
-      [uti isEqualToString:@"com.apple.pasteboard.promised-file-url"]) {
-    *len = [view->impl->wrapperView->droppedUriList length];
-    return [view->impl->wrapperView->droppedUriList UTF8String];
-  }
-
+  NSString* const     uti  = [types objectAtIndex:typeIndex];
   const NSData* const data = [pasteboard dataForType:uti];
 
   *len = [data length];
