@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: ISC
 
 // The Windows drop target (dgl/src/FileDropWin.hpp, see dgl/src/drop-targets.md): its IDropTarget methods
-// called the way OLE calls them, with a fake IDataObject holding CF_HDROP, over a real pugl window. Needs a
-// desktop session, not a person at it.
+// called the way OLE calls them, with a fake IDataObject holding CF_HDROP, over a real pugl window. And the
+// program world's message loop, which a drag from another process needs. Needs a desktop, not a person.
 
 #define DAF_TEST_NO_DGL
 #include "tests.hpp"
@@ -677,6 +677,66 @@ static void testMultithreadedApartment()
 }
 
 // --------------------------------------------------------------------------------------------------------------------
+// the message loop
+
+static int probeMessages = 0;
+
+static LRESULT CALLBACK probeProcedure(const HWND hwnd, const UINT message, const WPARAM wParam, const LPARAM lParam)
+{
+    if (message == WM_USER + 7)
+    {
+        ++probeMessages;
+        return 0;
+    }
+    return DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+static void testMessageLoop()
+{
+    WNDCLASSW windowClass = {};
+    windowClass.lpfnWndProc = probeProcedure;
+    windowClass.hInstance = GetModuleHandleW(nullptr);
+    windowClass.lpszClassName = L"DafFileDropWinProbe";
+    RegisterClassW(&windowClass);
+    // the window stands for OLE's hidden one: on the thread, and no view of any world
+    const HWND probe = CreateWindowExW(0, windowClass.lpszClassName, L"", 0, 0, 0, 1, 1, HWND_MESSAGE, nullptr,
+                                       windowClass.hInstance, nullptr);
+    check(probe != nullptr, "a window of the thread's own");
+
+    PuglWorld* const module = puglNewWorld(PUGL_MODULE, 0);
+    puglSetWorldString(module, PUGL_CLASS_NAME, "DafFileDropWinModule");
+    PuglView* const moduleView = newView(module);
+    probeMessages = 0;
+    PostMessageW(probe, WM_USER + 7, 0, 0);
+    puglUpdate(module, 0.0);
+    check(probeMessages == 0, "a module world leaves the rest of its thread's messages to its host");
+
+    PuglWorld* const program = puglNewWorld(PUGL_PROGRAM, 0);
+    puglSetWorldString(program, PUGL_CLASS_NAME, "DafFileDropWinProgram");
+    PuglView* const programView = newView(program);
+    puglUpdate(program, 0.0);
+    check(probeMessages == 1, "a program world dispatches the rest of its thread's messages");
+
+    PostMessageW(probe, WM_USER + 7, 0, 0);
+    PostMessageW(probe, WM_USER + 7, 0, 0);
+    puglUpdate(program, 0.01);
+    check(probeMessages == 3, "also while it waits");
+
+    PostQuitMessage(3);
+    puglUpdate(program, 0.0);
+    MSG msg;
+    check(PeekMessageW(&msg, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE) && msg.wParam == 3,
+          "and leaves a quit message for the loop it is meant for");
+
+    puglFreeView(programView);
+    puglFreeWorld(program);
+    puglFreeView(moduleView);
+    puglFreeWorld(module);
+    DestroyWindow(probe);
+    UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
+}
+
+// --------------------------------------------------------------------------------------------------------------------
 
 int main()
 {
@@ -692,6 +752,8 @@ int main()
 
     puglFreeWorld(world);
     check(! oleUp(), "nothing is left initialised");
+
+    testMessageLoop();
 
     std::printf("FileDropWin: %d checks, %d failures\n", checks, failures);
     return failures != 0 ? 1 : 0;
