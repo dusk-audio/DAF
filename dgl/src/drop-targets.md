@@ -484,7 +484,9 @@ exports stay as they are.
   thread's apartment alone. Opting in twice registers once.
 - The target is the view's from its first opt-in until the view goes. Opting out revokes it before the
   application's leave, and opting in again registers the same object, so a leave that opts in again
-  works and the drag it lets in waits for the opt-out to finish (below).
+  works and the drag it lets in waits for the opt-out to finish (below). The opt-out holds a reference to
+  the target across that leave: once revoked, OLE holds none, and a leave that deletes the window takes
+  the view's with it.
 - `DragEnter` asks the `IDataObject` for `CF_HDROP` in `TYMED_HGLOBAL`, reads it with `DragQueryFileW`
   (length first, paths can pass `MAX_PATH`) and converts with `WideCharToMultiByte(CP_UTF8,
   WC_ERR_INVALID_CHARS)`, skipping a path with an unpaired surrogate. A path that is neither a drive

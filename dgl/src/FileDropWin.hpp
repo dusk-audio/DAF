@@ -111,6 +111,9 @@ struct PuglWinDropTarget : IDropTarget, PuglDropHost
         if (! accepting)
             return;
 
+        // once revoked, OLE holds the target no more, and the view's reference may go with the view in its leave
+        AddRef();
+
         // revoked first, so that the view's leave may opt in again
         accepting = false;
         RevokeDragDrop(hwnd);
@@ -119,6 +122,7 @@ struct PuglWinDropTarget : IDropTarget, PuglDropHost
         exclusively([this] { session.detach(true); });
 
         puglWinReleaseDropOle();
+        Release();
     }
 
     // The view is going away. A drop being dispatched still gets its answer to the source.

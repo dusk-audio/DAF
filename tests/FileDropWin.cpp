@@ -583,6 +583,22 @@ static void testLastReference(PuglWorld* const world)
           "a window deleted inside its enter, with the last reference to its target, answers none");
     puglUpdate(world, 0.0);
     data->Release();
+
+    // opting out from outside any callback, the window deleted inside its leave: once revoked, OLE holds the
+    // target no more, and the view's reference was the last
+    view = newView(world);
+    puglSetAcceptsFileDrops(view, true);
+    FakeData* const next = new FakeData(threeFiles());
+    check(enter(view->impl->drop, next, screenPoint(view->impl->hwnd, 10, 20)) == DROPEFFECT_COPY
+          && rec.take() == "ENTER;", "a drag enters");
+    rec.during = [&] {
+        puglFreeView(view);
+        view = nullptr;
+    };
+    puglSetAcceptsFileDrops(view, false);
+    check(rec.take() == "LEAVE;" && view == nullptr, "opting out gives the leave, inside which the window goes");
+    check(! oleUp(), "and lets OLE go");
+    next->Release();
 }
 
 // A drop that arrives from a nested event loop inside a callback is refused to its source at once, so the
