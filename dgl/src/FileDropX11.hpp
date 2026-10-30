@@ -442,13 +442,16 @@ private:
             return;
 
         // A refusal names no property, so it is matched by its request's time. One that matches no request in
-        // flight is left alone: the deadline settles a conversion that never answers.
+        // flight is left alone: the deadline settles a conversion that never answers. Where several match, as
+        // positions that carry time 0 make them, one nobody waits for any more goes first, so that the current
+        // drag is refused only when its request is the one match.
         Transfer* transfer = nullptr;
         if (event.property != None)
             transfer = transferOf(event.property);
         else
-            for (size_t i = 0; i < PUGL_X11_DROP_TRANSFERS && transfer == nullptr; ++i)
-                if (transfers[i].requested && transfers[i].time == event.time)
+            for (size_t i = 0; i < PUGL_X11_DROP_TRANSFERS; ++i)
+                if (transfers[i].requested && transfers[i].time == event.time
+                    && (transfer == nullptr || (transfer->current && ! transfers[i].current)))
                     transfer = &transfers[i];
 
         if (transfer == nullptr)

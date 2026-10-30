@@ -1023,6 +1023,48 @@ int main()
         source.reopen();
     }
 
+    // Positions that carry time 0 make every request's time 0, so a refusal (property None) of a drag that left
+    // matches the current request as well: it must not refuse the current drag. Three drags leave, a fourth
+    // asks and leaves too, the first one's answer frees its property, and a fifth asks; then the fourth one's
+    // late refusal comes.
+    check(freshWindow(), "a window for refusals at time 0 opts in");
+    source.messages.clear();
+    source.requests.clear();
+    source.serve = false;
+    for (size_t drag = 0; drag < 4; ++drag)
+    {
+        source.sendEnter(target, 5, uriOnly);
+        source.sendPosition(target, originX + 10, originY + 10, CurrentTime, source.copy);
+        check(pump(app, source, [&] { return source.requests.size() == drag + 1; }), "a drag at time 0 asks for its files");
+        source.send(target, source.leave, 0, 0, 0, 0);
+    }
+    if (source.requests.size() == 4)
+        source.answer(source.requests[0]);
+    settle(app, source, 50);
+    source.sendEnter(target, 5, uriOnly);
+    source.sendPosition(target, originX + 10, originY + 10, CurrentTime, source.copy);
+    check(pump(app, source, [&] { return source.requests.size() == 5; }), "the current drag asks for its files");
+    if (source.requests.size() == 5)
+    {
+        check(source.requests[4].time == CurrentTime && source.requests[3].time == CurrentTime,
+              "every request at time 0");
+        source.reply(source.requests[3], false);
+        settle(app, source, 100);
+        check(source.count(source.status) == 0, "the late refusal of a drag that left does not refuse the current one");
+        source.payload = "file:///tmp/current.wav\r\n";
+        source.answer(source.requests[4]);
+        check(pump(app, source, [&] { return source.count(source.status) == 1; }), "the current drag's answer is taken");
+        if (const XClientMessageEvent* const status = source.last(source.status))
+            check((status->data.l[1] & 1) == 1, "and accepted");
+        check(win->take() == "ENTER;" && win->files.size() == 1 && win->files[0] == "/tmp/current.wav",
+              "with its own files");
+    }
+    source.serve = true;
+    source.payload = "file:///tmp/a.wav\r\n";
+    source.send(target, source.leave, 0, 0, 0, 0);
+    settle(app, source, 50);
+    win->take();
+
     // A conversion nobody answered is given up at its deadline, which frees its property, and its owner may
     // answer after all: the next drag's conversion must not be on that property, or the late list passes for
     // its own.
