@@ -7,8 +7,8 @@ whether it would take them. DGL has had the other direction since `Window::start
 designs the receiving side for X11, Wayland, macOS and Windows.
 
 This is a design. Phase 1b implements X11, Wayland, the DGL API and the tests on Linux. Phase 2
-implements macOS and Windows, each on its own machine. Until then those backends compile the API and
-refuse the opt-in.
+implements macOS and Windows, each on its own machine. Until a backend has had its phase, it compiles
+the API and refuses the opt-in.
 
 It is an explicit opt-in per window. A window that does not ask behaves exactly as before: no
 `XdndAware` property, Wayland drag offers declined as they are today, nothing registered with AppKit
@@ -48,7 +48,7 @@ protected:
 
 - `setAcceptingFileDrops(true)` returns false and changes nothing for an embedded window, a window
   without a view, a Wayland compositor without `wl_data_device_manager`, and on platforms without
-  drop support (macOS and Windows until phase 2, Haiku, WebAssembly). `setAcceptingFileDrops(false)`
+  drop support (Windows until phase 2, Haiku, WebAssembly). `setAcceptingFileDrops(false)`
   always succeeds. It can be called at any time, a drag in progress included: turning it off ends
   the drag for the application with `onFileDragLeave` if it had seen the enter, and refuses the rest.
 - Each drag gives `onFileDragEnter` once, then any number of `onFileDragMove`, then either
@@ -78,7 +78,8 @@ protected:
 - `mod` carries the keyboard modifiers, best effort, because neither XDND nor the Wayland data device
   carries them: X11 asks the server for the modifier state at each position and at the drop, Wayland
   reports the seat's last modifiers only while one of the world's surfaces has the keyboard focus (0
-  otherwise), macOS and Windows will take them from the drag itself (`modifierFlags`, `grfKeyState`).
+  otherwise), macOS reads the keys held at each update and at the drop (`[NSEvent modifierFlags]`, as
+  the drag carries none), and Windows will take them from the drag itself (`grfKeyState`).
   Under XWayland a drag started in a Wayland client leaves the X server's keyboard state stale, so a
   held key can be missed there. The first consumer, Dusk Studio, places a drop at the pointer when Alt
   is held and at the playhead otherwise, and a missed Alt only changes where the clip lands.
@@ -169,7 +170,9 @@ The same shape as the outgoing drag:
 | `x11.c`, `x11.h` | X11 pass | hooks: an event filter ahead of `findView`, a deadline tick at the top of `dispatchX11Events`, a detach in `puglUnrealize`, world teardown; the per-view and per-world pointers |
 | `dgl/src/FileDropWayland.hpp` (new) | Wayland pass, after wayland.c | the data-device drag session, the receive pipe, the Wayland `puglSetAcceptsFileDrops` |
 | `wayland.c`, `wayland.h` | Wayland pass | hooks in the data device and data offer listeners, the poll set and its dispatch, `puglUnrealize`, world teardown; the per-world pointer and the per-view flag |
-| `FileDropMac.hpp`, `FileDropWin.hpp` (phase 2) | Cocoa and Win32 backends | `NSDraggingDestination`, `IDropTarget` |
+| `dgl/src/FileDropMac.hpp` (new) | Cocoa backend, after mac.m, at global scope like FileDragMac.hpp | the `NSDraggingDestination` target of a wrapper view, its hooks and the macOS `puglSetAcceptsFileDrops` |
+| `mac.m`, `mac.h` | Cocoa backend | the wrapper view's dragging methods, a detach in `detachPuglView`, the target freed in `dealloc`, a window close inside a drop call deferred; the per-wrapper pointer |
+| `FileDropWin.hpp` (phase 2) | Win32 backend | `IDropTarget` |
 
 The hooks are declared in `x11.h` and `wayland.h`, inside the pass, and defined by the header that
 follows the backend, so a both build has one set per pass and a single-backend build only its own.
@@ -415,31 +418,58 @@ No new libwayland function: each request above is an inline protocol wrapper ove
 `wayland-loader-names.h`. A both build loads nothing new, and the CI checks of what a build links and
 exports stay as they are.
 
-## macOS (phase 2)
+## macOS
 
-- `NSDraggingDestination` on `PuglWrapperView`, registered with
-  `registerForDraggedTypes:@[NSPasteboardTypeFileURL]` by `puglSetAcceptsFileDrops` and unregistered on
-  opt-out, in `detachPuglView` and before the view is freed. Embedded views are refused for
+- `NSDraggingDestination` on `PuglWrapperView`. mac.m implements the methods, each of which tests
+  `puglview` first (AppKit can still call a retired view, `detachPuglView`, which then answers none)
+  and hands over to a hook that `FileDropMac.hpp` defines, as x11.h declares the X11 hooks. The target,
+  a `PuglDropHost`, belongs to the wrapper view and is freed with it, in `dealloc`. Every hook retains
+  the wrapper until it returns, so a view freed inside a callback leaves the session, and the files it
+  was handed, in place until the callback returns. AppKit has so far kept the wrapper alive past such a
+  call by itself, which is why no test can show the retain at work; it is there so as not to depend on
+  that.
+- `puglSetAcceptsFileDrops` registers the wrapper with `registerForDraggedTypes:@[NSPasteboardTypeFileURL]`
+  and unregisters it on opt-out and in `detachPuglView`, which `puglUnrealize`, `puglFreeViewInternals`
+  and `dealloc` reach. The view must be realized (`PUGL_FAILURE` otherwise), and the opt-in goes with
+  the wrapper at `puglUnrealize`, as it goes with the window on X11. Embedded views are refused for
   consistency, though AppKit could deliver to a view inside a host's window.
 - `draggingEntered:` reads `[[sender draggingPasteboard] readObjectsForClasses:@[NSURL.class]
   options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}]`, synchronously as a destination does, and
-  converts each URL with `fileSystemRepresentation`: UTF-8, in the form the file system keeps (Finder
-  can hand decomposed Unicode, which `FileDragCocoaNative.cpp` already allows for). File promises
-  (`NSFilePromiseReceiver`, from Mail or Photos) are not files yet and are refused.
-- The answer is `NSDragOperationCopy` when accepted and `[sender draggingSourceOperationMask]` has
-  copy, `NSDragOperationNone` otherwise. Cmd held over Finder leaves move alone in the mask: refused,
-  never turned into a move.
-- `draggingUpdated:` is motion and `draggingExited:` leave; `prepareForDragOperation:` says YES when
-  the last answer accepted; `performDragOperation:` dispatches `PUGL_DROP` and returns whether the
+  takes each URL's `fileSystemRepresentation`: UTF-8, in the form the file system keeps (Finder can hand
+  decomposed Unicode, which `FileDragCocoaNative.cpp` already allows for, and a precomposed name comes
+  back decomposed), and for a file reference URL, which Finder writes, the path it resolves to. The
+  paths go to the session with `dataPaths` at its first position, which is the enter's, so no
+  `text/uri-list` is made or decoded. File promises (`NSFilePromiseProvider`, from Mail or Photos) are
+  no file URLs yet and read as nothing: the drag is refused without the application hearing of it.
+- The answer is `NSDragOperationCopy` when the application accepts and `[sender
+  draggingSourceOperationMask]` has copy, `NSDragOperationNone` otherwise. The mask follows the keys
+  held, so it is checked at every update: Cmd held over Finder leaves move alone in the mask, which is
+  refused, never turned into a move. The application hears such a drag and answers it, only the source
+  is refused, and a drop that comes after the mask lost copy is a leave.
+- `draggingUpdated:` is motion. `draggingExited:` is leave, and so is `draggingEnded:`, which finds no
+  drag after a drop or an exit and ends one AppKit left without either. `prepareForDragOperation:` says
+  YES when the answer stands; `performDragOperation:` dispatches `PUGL_DROP` and returns whether the
   files were taken; `wantsPeriodicDraggingUpdates` is NO.
 - Position: `[self convertPoint:[sender draggingLocation] fromView:nil]`, then `nsPointFromPoints`,
   which is what `eventLocation:` does to mouse events. The view is flipped, so the origin is top left.
-- Every method tests `puglview` first: AppKit can still call a retired view (`detachPuglView`), which
-  then answers none.
-- The wrapper view still declares `dragSource`, `dragOperation`, `dragTypeIndex` and `droppedUriList`
-  from an older drag-and-drop attempt, and `puglGetClipboard` has a `public.file-url` branch that
-  reads `droppedUriList`. Nothing ever sets them. Phase 2 removes them rather than builds on them.
-- Everything runs on the main thread, as AppKit does.
+  Modifiers: `[NSEvent modifierFlags]`, mapped to `PuglMods` by the function key events use. Time: the
+  system uptime, the clock of NSEvent timestamps.
+- Callbacks cannot nest, as on X11 and Wayland. A dragging message that arrives while the target is
+  inside the session (an application running a nested event loop, or turning drops off from outside a
+  callback, whose leave may run one) is queued and handled once the outer call returns. AppKit needs its
+  answer at once, so it gets the one the target has meanwhile: none for an enter, the last for a
+  motion, NO for a prepare or a drop.
+- A window closed while AppKit performs a drop makes AppKit tell the source Generic, whatever the
+  destination answered, and a source may take Generic for a move. So a window that `puglUnrealize` or
+  `puglFreeView` would close inside one of the target's calls is ordered out at once and closed on the
+  next turn of the run loop, cut off from its view first: the `PuglWindow`'s view pointer cleared, its
+  delegate removed, and the `PuglWindow` methods that read the pointer test it. Checked on macOS 27.0.1
+  with DAF's own source: Copy with this, Generic without.
+- The wrapper view no longer declares `dragSource`, `dragOperation`, `dragTypeIndex` and
+  `droppedUriList`, left from an older drag-and-drop attempt and never set, and `puglGetClipboard` lost
+  its `public.file-url` branch, which read the last.
+- Everything runs on the main thread, as AppKit does. `FileDrop.hpp` is compiled at global scope there,
+  as pugl.mm builds pugl outside the DGL namespace.
 
 ## Windows (phase 2)
 
@@ -480,7 +510,7 @@ exports stay as they are.
 | New drag before the last finished | new Enter ends the old session: leave, or `XdndFinished` refusing a held drop | the protocol ends a drag with leave or drop before the next enter | native sessions are sequential |
 | Source dies | `DestroyNotify` ends it at once as a leave, a held drop included, with nothing sent to the dead window; its conversion goes stale; sends trapped | compositor sends leave | AppKit and OLE end the session (exited, `DragLeave`) |
 | Window destroyed mid-drag | detach in `puglUnrealize`: owed status refusing, `XdndFinished` refusing, the source's mask given back, the properties gone with the window | descriptor closed, `accept(NULL)`, offer kept until leave | unregister or revoke; late calls answer none |
-| Window deleted inside a callback | the session checks the alive flag after each dispatch | same | same |
+| Window deleted inside a callback | the session checks the alive flag after each dispatch | same | same; macOS keeps the wrapper through the call and closes the window after it |
 | Application refuses | status accept 0, action None | `accept(serial, NULL)` | `NSDragOperationNone`, `DROPEFFECT_NONE` |
 | No usable file | refused, application never called | same | same |
 | Source asks for a move | status and finished say copy | the destination supports copy only | copy only; a move-only source is refused |
@@ -528,6 +558,7 @@ In CI:
 | `tests/Window.cpp` (extended) | DGL with synthesised pugl events: refusal by default, move keeping enter's answer, the auto-scale division, refusal under a modal child and during the clipboard wait, `setAcceptingFileDrops` false for an embedded window | every `Window.*` variant |
 | `tests/X11Drop.cpp` (new) | A DGL window on the X server, and an XDND source inside the test on a second connection, as X11Focus has its host: it sends Mutter-style client messages straight to the top level, serves the selection and can play INCR. Sources at v3, v4, v5 and v6; copy and move requested, status and finished saying copy; types inline and through `XdndTypeList`; no `text/uri-list`; Enter alone sending nothing; the `SelectionRequest` time equal to the Position's l[3], and the Drop's l[2] on the held-drop path, never the packed coordinates; root to window coordinates at a known window position, with and without auto-scaling; answers per position; leave during the conversion; a new drag before the last ended, its late answer arriving while the next conversion is in flight; three drags, two of which left, answering out of order; an owner answering with CurrentTime; a conversion given up at its deadline whose owner answers once the next drag has asked; positions at time 0, with the late refusal of a drag that left matching the current request too; a conversion the owner refuses, refused at once; the source window destroyed during a drag and during a held drop, both ending at once, with nothing sent to it; a source window of the target's own connection keeping its mask and its events; a view of the world as the source, its window going mid-drag and pugl hearing of it; INCR above 256 KiB, above the ceiling (refused well before the data deadline), and left mid-transfer while the next drag's list arrives; the window destroyed after the drop; the window deleted inside `onFileDrop`, inside the late enter of a held drop and inside the leave of a refused one, every drop still finished; opting out inside those callbacks; a window turning drops off whose leave turns them back on and runs a nested event loop while a second drag enters, that drag reaching the window once the opt-out is done; no DGL property left on the window; a window that has not opted in having no `XdndAware` and sending nothing. | build.yml X11 suite and runtime-backend, and wayland.yml runtime-backend-without-wayland, all under Xvfb; added to `SKIP_UNIT_TESTS` where Weston runs alone (wayland.yml runtime-backend), as X11Focus is |
 | `tests/WaylandDrop.cpp` (new) | A stand-in compositor on a socket pair handed over through `WAYLAND_SOCKET`, extending `CompositorWithoutShell` in RuntimeBackend.cpp: hand-written wire protocol, `recvmsg` with `SCM_RIGHTS` for the receive descriptor. It offers `wl_compositor`, `xdg_wm_base`, `wl_seat`, `wl_output` (scale 2, for the coordinates) and `wl_data_device_manager`, once at v3 and once at v1, and checks the requests: `accept(serial, NULL)` then `accept(serial, "text/uri-list")` once the data is in, `set_actions(1, 1)` once, receive, finish before destroy after a taken drop, no finish after a refusal and none at all at v1; a move-only source refused with no `set_actions`; leave during the read (descriptor closed, no enter); enter right after a leave; a partial write and then leave; the view freed mid-drag, inside the late enter of a held drop and inside the leave of a refused one; a view turning drops off while its leave runs a nested event loop in which the drag moves on to another view, that drag surviving; an opted-out view getting today's `accept(serial, NULL)` and nothing else; every offer destroyed and no descriptor left open (`/proc/self/fd`). | wayland.yml wayland-only and runtime-backend (under Weston alone), build.yml runtime-backend (under Xvfb): no compositor needed, the socket is handed over. Listed in `SKIP_UNIT_TESTS` in runtime-backend-without-wayland, where the libraries are gone. |
+| `tests/FileDropCocoa.cpp` (new) | The wrapper view's destination methods called as AppKit calls them, with a stand-in `NSDraggingInfo` over a pasteboard from `pasteboardWithUniqueName`, on a window made to report a backing scale of 2: accept and refuse, an answer that changes within a drag, copy and never more for a mask with copy among others, a move-only mask and a mask that loses copy mid-drag refused, a drop where the view refused or after the mask lost copy a leave; a file promise, a web URL and text naming a file refused without the view hearing of them, web URLs among files skipped; a decomposed name with `#`, `%`, `?` and an emoji byte for byte, a precomposed URL arriving decomposed, a file reference URL arriving as its path; the view freed, with and without anything else holding the wrapper, and drops turned off, inside the enter, motion, leave and drop, the files readable after the free and the window hidden in the call and closed after it, cut off from the view; turning drops off from outside a callback, whose leave turns them back on while a drag arrives, that drag reaching the view once the opt-out is done; registration on opt-in and none after opt-out, unrealize or free; unrealized and freed views answering none; a view never opted in, an unrealized one and an embedded one. | build.yml, the macOS leg, beside CocoaRetiredView |
 
 Why a stand-in and not libwayland-server: the both jobs fail any test binary that needs a `libwayland`
 library, which a server would be. Neither CI compositor takes input either: Weston's test plugin is
@@ -559,10 +590,16 @@ Local only, on this box and never on the user's display:
   (`DAF_WINDOW_BACKEND=x11`) receiving the Wayland source's drag, which Mutter relays as XDND v5 to
   the top level. That is the Dusk Studio bug itself, on real Mutter, and the only check that Mutter
   answers a conversion before the drop (decision 4).
-- macOS, phase 2 on the Air: a unit test, CI-able, calling the wrapper view's destination methods with
-  a fake `NSDraggingInfo` over `[NSPasteboard pasteboardWithUniqueName]`, and an interactive drop of
-  the existing `CocoaFileDrag` onto an opted-in DGL window (the `tests/native-file-drag` pattern,
-  `DAF_FILE_DRAG_INTERACTIVE`), then Finder by hand.
+- macOS, phase 2 on the Air: `FileDropCocoa` above, and `file-drop-native` in `tests/native-file-drag`
+  (`DAF_FILE_DRAG_INTERACTIVE`): a DGL window starts `Window::startFileDrag` (`CocoaFileDrag`) from a real
+  press, onto a DGL window that takes the drop with Option held and deletes itself inside `onFileDrop`, then
+  onto one that refuses. It checks the exact path read after the window went, Option in `mod`, the
+  position against the pointer's, enter and leave on the refusing window, and what the source is told
+  (copy, then none). It injects its own gestures where it may post events and owns the foreground;
+  `--external N` waits for the same two drags from a remote desktop's input instead, which is how it ran
+  on the Air, whose Terminal may not post events. `--wait N [--delete]` is a window for Finder by hand:
+  a Finder drag arrived with its decomposed path, with Option in `mod` when held, and Finder kept its file
+  when the window deleted itself inside the drop.
 - Windows, phase 2 on the VM: a unit test, CI-able, calling the `IDropTarget` methods with a fake
   `IDataObject` holding `CF_HDROP`; the interactive same-process drop (`WindowsFileDrag` onto an
   opted-in DGL window); and a drag from another process, a helper or Explorer, for the message loop.
@@ -590,8 +627,10 @@ Phase 1b, X11, Wayland, the DGL API and the tests, in commits small enough to re
 Phase 2:
 
 - macOS: `dgl/src/FileDropMac.hpp` (new), `dgl/src/pugl-upstream/src/mac.m` and `mac.h`,
-  `dgl/src/pugl-platform.hpp`, `dgl/src/pugl.mm`, `tests/FileDropCocoa.cpp` (new),
-  `tests/native-file-drag/`, `tests/Makefile`.
+  `dgl/src/pugl-platform.hpp`, `dgl/src/pugl.cpp` (which `dgl/src/pugl.mm` links to), `dgl/Window.hpp`,
+  `tests/FileDropCocoa.cpp` (new), `tests/FileDropCocoaNative.cpp` (new), `tests/native-file-drag/`,
+  `tests/Makefile`, `.github/workflows/build.yml`. The shared core gained `dataPaths` in the Windows
+  branch, and macOS hands its paths over through it.
 - Windows: `dgl/src/FileDropWin.hpp` (new), `dgl/src/pugl-upstream/src/win.c` and `win.h`,
   `dgl/src/pugl-platform.hpp`, `dgl/src/pugl.cpp`, `tests/FileDropWin.cpp` (new),
   `tests/native-file-drag/`, `tests/Makefile`.
@@ -617,5 +656,5 @@ The owner's answers to the questions this design raised:
 9. A window that has not opted in stays silent towards Mutter's XDND, as it is today.
 10. Directories pass through unchecked.
 
-Still open: nothing for phase 1b. Phase 2 owes the checks the macOS and Windows sections list,
-above all a drag from another process on Windows.
+Still open: nothing for phase 1b or macOS. Phase 2 owes the checks the Windows section lists, above
+all a drag from another process.
