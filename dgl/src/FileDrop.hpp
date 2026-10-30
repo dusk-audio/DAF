@@ -517,7 +517,11 @@ private:
         deadline = 0.0;
         posX = posY = posTime = 0.0;
         posMods = 0;
-        files.clear();
+
+        // a view that goes inside a call may still read the files it was handed until the call returns; the
+        // next reset or list replaces them
+        if (! dispatching)
+            files.clear();
     }
 
     void settle(const bool accept)

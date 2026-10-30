@@ -164,6 +164,8 @@ struct FakeHost : PuglDropHost
     std::function<void()> during;
     PuglDropEvent last = {};
     std::vector<std::string> lastFiles;
+    std::vector<std::string> filesAfter; // the event's files, read again once the step has run
+    std::vector<std::string> ballast;
 
     void requestData() override { log += "request;"; }
     void answer(const bool accept) override { log += accept ? "yes;" : "no;"; }
@@ -191,6 +193,10 @@ struct FakeHost : PuglDropHost
             during = nullptr;
             step();
         }
+
+        filesAfter.clear();
+        for (uint32_t i = 0; i < event.numFiles; ++i)
+            filesAfter.push_back(event.files[i]);
 
         return reply;
     }
@@ -425,6 +431,29 @@ static void testSession()
         check(host.take() == "LEAVE;", "a new drag leaves the one before");
         session.position(1, 1, 0, 0, 0);
         check(host.take() == "request;", "and asks for its own files");
+    }
+
+    // A view destroyed inside its enter may still read the files it was handed: they stay until the call
+    // returns. Paths past the short-string size live on the heap, and strings of their size allocated right
+    // after the view went take over whatever the drag freed.
+    {
+        static const char kLong[] = "file:///tmp/a-path-long-enough-for-the-heap.wav\r\n"
+                                    "file:///tmp/another-path-long-enough-for-heap.mid\r\n";
+        FakeHost host;
+        PuglDropSession session(host);
+        host.ballast.reserve(64);
+
+        session.begin(true, true);
+        session.position(1, 1, 0, 0, 0);
+        host.during = [&] {
+            session.abandon();
+            for (int i = 0; i < 16; ++i)
+                host.ballast.push_back(std::string(40, 'x'));
+        };
+        session.data(kLong, sizeof(kLong) - 1, nullptr);
+        check(host.filesAfter.size() == 2 && host.filesAfter[0] == "/tmp/a-path-long-enough-for-the-heap.wav"
+              && host.filesAfter[1] == "/tmp/another-path-long-enough-for-heap.mid",
+              "the files outlive a view destroyed inside the callback they were handed to");
     }
 
     // The view goes away, or stops accepting drops, inside the last callback of a drop it does not take: the

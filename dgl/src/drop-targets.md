@@ -208,8 +208,9 @@ guarantees:
 - A drop that arrives before the data, from a source that did not wait for the status, is held until
   the data or the deadline, then becomes enter and, if accepted, drop; otherwise `finish(false)`.
 - Deadlines: 2 s for the data once requested (the drag is refused from then on), 5 s for a held drop.
-- Nothing is freed during a dispatch, so an application may delete its window inside any callback. A
-  view that goes away, or stops accepting, only detaches the session, which then refuses the rest of
+- Nothing is freed during a dispatch, so an application may delete its window inside any callback, and
+  the event's files stay readable until that callback returns. A view that goes away, or stops
+  accepting, only detaches the session, which then refuses the rest of
   the drag at the protocol level. The X11 target belongs to its view, so `puglUnrealize` hands it to the
   world, which frees it at the next tick, after any dispatch on the stack has returned. Once a drop is
   being taken or refused, the drag stays with the session until its end has told the source: a drop
