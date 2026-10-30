@@ -36,8 +36,9 @@ UNIT_TESTS   += CocoaRetiredView FileDragCocoa
 endif
 
 ifeq ($(WINDOWS),true)
-UNIT_TESTS   += FileDragWin
+UNIT_TESTS   += FileDragWin FileDropWin
 ../build/tests/FileDragWin$(APP_EXT): LINK_FLAGS += -lole32 -luuid -lshell32
+../build/tests/FileDropWin$(APP_EXT): LINK_FLAGS += -lole32 -luuid -lshell32 -ldwmapi -lgdi32
 endif
 
 # ImGuiKnobs builds Dear ImGui itself, headless, and includes the knobs the way DearImGui.cpp does.

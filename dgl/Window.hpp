@@ -388,8 +388,10 @@ public:
       The window then gets onFileDragEnter(), onFileDragMove(), and onFileDragLeave() or onFileDrop().
 
       Only a window of its own can take drops: this fails for an embedded window, and on platforms
-      without support (for now everything but X11 and Wayland). Turning it off always succeeds, and ends
-      a drag in progress with onFileDragLeave() when the window had the enter.
+      without support (for now everything but X11, Wayland and Windows). On Windows it also fails on a
+      thread in COM's multi-threaded apartment, where OLE cannot deliver drops.
+      Turning it off always succeeds, and ends a drag in progress with onFileDragLeave() when the window
+      had the enter.
       A window that never asks behaves exactly as before.
       @see isAcceptingFileDrops()
     */

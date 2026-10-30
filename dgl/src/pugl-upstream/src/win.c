@@ -345,6 +345,9 @@ puglUnrealize(PuglView* const view)
     return PUGL_FAILURE;
   }
 
+  // DGL: no drop reaches a view on its way out, and OLE lets go of the window
+  puglWinForgetDropTarget(view);
+
   puglDispatchSimpleEvent(view, PUGL_UNREALIZE);
 
   if (view->backend) {
@@ -400,6 +403,9 @@ void
 puglFreeViewInternals(PuglView* view)
 {
   if (view) {
+    // DGL: see puglUnrealize
+    puglWinForgetDropTarget(view);
+
     if (view->backend) {
       view->backend->destroy(view);
     }
@@ -418,6 +424,7 @@ puglFreeWorldInternals(PuglWorld* world)
 
   UnregisterClass(classNameArg, NULL);
   puglArgStringFree(classNameArg);
+  puglWinSettleDropOle();
   free(world->impl);
 }
 
@@ -1212,6 +1219,7 @@ puglDispatchWinEvents(PuglWorld* world)
     puglDispatchViewEvents(world->views[i]);
   }
 
+  puglWinSettleDropOle();
   return PUGL_SUCCESS;
 }
 

@@ -14,6 +14,9 @@
 
 typedef PIXELFORMATDESCRIPTOR PuglWinPFD;
 
+// DGL: the OLE target of a view that accepts file drops, see FileDropWin.hpp
+struct PuglWinDropTarget;
+
 struct PuglWorldInternalsImpl {
   double timerFrequency;
 };
@@ -29,6 +32,7 @@ struct PuglInternalsImpl {
   PAINTSTRUCT     paint;
   PuglBlob        clipboard;
   PuglSurface*    surface;
+  PuglWinDropTarget* drop; // DGL: null until the view first accepts file drops
   double          scaleFactor;
   bool            mapped;
   bool            flashing;
@@ -52,5 +56,13 @@ puglWinEnter(PuglView* view, const PuglExposeEvent* expose);
 
 PUGL_WARN_UNUSED_RESULT PUGL_API PuglStatus
 puglWinLeave(PuglView* view, const PuglExposeEvent* expose);
+
+// DGL: defined in FileDropWin.hpp, which follows this backend. The first revokes and frees the view's drop
+// target before its window goes; the second makes the OleUninitialize calls a drop target put off.
+void
+puglWinForgetDropTarget(PuglView* view);
+
+void
+puglWinSettleDropOle(void);
 
 #endif // PUGL_SRC_WIN_H
