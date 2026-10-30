@@ -166,9 +166,9 @@ The same shape as the outgoing drag:
 |---|---|---|
 | `dgl/src/FileDrop.hpp` (new) | once, at DGL scope, before the passes (pugl.cpp; phase 2 also pugl.mm and the Windows arm) | `text/uri-list` decoding, the file list (`PuglDropFiles`), the drag session (`PuglDropSession`) and the interface a backend implements for it (`PuglDropHost`) |
 | `dgl/src/FileDropX11.hpp` (new) | X11 pass, after x11.c, like FileDragX11.hpp | the XDND target and the X11 `puglSetAcceptsFileDrops` |
-| `x11.c`, `x11.h` | X11 pass | hooks: an event filter ahead of `findView`, a deadline tick at the top of `dispatchX11Events`, a detach in `puglUnrealize`; the per-view pointer and the world's drop atoms |
+| `x11.c`, `x11.h` | X11 pass | hooks: an event filter ahead of `findView`, a deadline tick at the top of `dispatchX11Events`, a detach in `puglUnrealize`, world teardown; the per-view and per-world pointers |
 | `dgl/src/FileDropWayland.hpp` (new) | Wayland pass, after wayland.c | the data-device drag session, the receive pipe, the Wayland `puglSetAcceptsFileDrops` |
-| `wayland.c`, `wayland.h` | Wayland pass | hooks in the data device and data offer listeners, the poll set and its dispatch, `puglUnrealize`, world teardown; the per-world pointer |
+| `wayland.c`, `wayland.h` | Wayland pass | hooks in the data device and data offer listeners, the poll set and its dispatch, `puglUnrealize`, world teardown; the per-world pointer and the per-view flag |
 | `FileDropMac.hpp`, `FileDropWin.hpp` (phase 2) | Cocoa and Win32 backends | `NSDraggingDestination`, `IDropTarget` |
 
 The hooks are declared in `x11.h` and `wayland.h`, inside the pass, and defined by the header that
@@ -186,16 +186,17 @@ supplies four primitives through a DGL-scope base class, as the passes already s
 ```cpp
 struct PuglDropHost {
     virtual ~PuglDropHost() {}
-    virtual void requestData(double time) = 0;  // X11: XConvertSelection; Wayland: wl_data_offer.receive
+    virtual void requestData() = 0;             // X11: XConvertSelection; Wayland: wl_data_offer.receive
     virtual void answer(bool accept) = 0;       // X11: XdndStatus when one is owed; Wayland: accept()
     virtual void finish(bool taken) = 0;        // X11: XdndFinished; Wayland: finish (v3) and destroy
     virtual PuglStatus dispatch(const PuglDropEvent& event) = 0; // pugl's puglDispatchEvent, per pass
 };
 ```
 
-The session takes the protocol's events (`begin(offersFiles)`, `position(x, y, time, mods)`,
-`data(bytes, size)`, `dataFailed()`, `leave()`, `drop(time, mods)`, `tick(now)`, `detach(notify)`) and
-guarantees:
+The session takes the protocol's events (`begin(offersFiles, attached)`, `position(x, y, time, mods,
+now)`, `data(bytes, size, hostName)`, `dataFailed()`, `leave()`, `drop(time, mods, now)`, `tick(now)`)
+and the view's (`detach(notify)` when it stops accepting, `abandon()` when it goes), tells the backend
+where it stands (`isActive()`, `wantsData()`, `isDispatching()`, `getDeadline()`), and guarantees:
 
 - The data is requested once, at the first position, never at enter: XDND Enter has neither a
   position nor a timestamp. Wayland's enter carries a position, so its adapter reports one with it.
@@ -336,9 +337,9 @@ through `XSendEvent` inside pugl's error trap (`puglUpdate` and the clipboard lo
 a source gone between the test and the message costs a trapped `BadWindow` and nothing else.
 
 A window destroyed mid-drag: `puglUnrealize`, which `puglFreeView` reaches, detaches the session before
-`XDestroyWindow`. An owed status goes out refusing, a held drop gets `XdndFinished` refusing, the source
-window gets its mask back and the property deleted. The application gets no leave from its own window
-going away.
+`XDestroyWindow`. An owed status goes out refusing, a held drop gets `XdndFinished` refusing, and the
+source window gets its mask back; the properties go with the window. The application gets no leave from
+its own window going away.
 
 The round trips that remain (`XGetWindowAttributes` on the source at the enter, `XQueryPointer` per
 position and at the drop, the `XdndTypeList` read, the data property read) go to the X server, which
@@ -478,7 +479,7 @@ exports stay as they are.
 | Drag leaves during the read | conversion stale, late `SelectionNotify` ignored, property deleted, INCR drained | descriptor closed, offer destroyed | data read synchronously at enter |
 | New drag before the last finished | new Enter ends the old session: leave, or `XdndFinished` refusing a held drop | the protocol ends a drag with leave or drop before the next enter | native sessions are sequential |
 | Source dies | `DestroyNotify` ends it at once as a leave, a held drop included, with nothing sent to the dead window; its conversion goes stale; sends trapped | compositor sends leave | AppKit and OLE end the session (exited, `DragLeave`) |
-| Window destroyed mid-drag | detach in `puglUnrealize`: owed status refusing, `XdndFinished` refusing, the source's mask given back, delete property | descriptor closed, `accept(NULL)`, offer kept until leave | unregister or revoke; late calls answer none |
+| Window destroyed mid-drag | detach in `puglUnrealize`: owed status refusing, `XdndFinished` refusing, the source's mask given back, the properties gone with the window | descriptor closed, `accept(NULL)`, offer kept until leave | unregister or revoke; late calls answer none |
 | Window deleted inside a callback | the session checks the alive flag after each dispatch | same | same |
 | Application refuses | status accept 0, action None | `accept(serial, NULL)` | `NSDragOperationNone`, `DROPEFFECT_NONE` |
 | No usable file | refused, application never called | same | same |
