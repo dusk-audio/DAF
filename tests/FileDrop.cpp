@@ -502,11 +502,58 @@ static void testSession()
 }
 
 // --------------------------------------------------------------------------------------------------------------------
+// a list that a native drag hands over as paths, as CF_HDROP does
+
+static void testPaths()
+{
+    PuglDropFiles files;
+    std::vector<std::string> paths;
+    paths.push_back("C:\\a.wav");
+    paths.push_back("\\\\server\\share\\b.mid");
+    check(files.setFromPaths(paths) && files.count() == 2
+          && std::strcmp(files.paths()[0], "C:\\a.wav") == 0
+          && std::strcmp(files.paths()[1], "\\\\server\\share\\b.mid") == 0,
+          "a path list is taken as it is, in order");
+    check(paths.empty(), "and taken over");
+
+    std::vector<std::string> none;
+    check(! files.setFromPaths(none) && files.count() == 0 && files.paths() == nullptr, "an empty list has no file");
+
+    FakeHost host;
+    PuglDropSession session(host);
+
+    session.begin(true, true);
+    std::vector<std::string> early(1, "C:\\early.wav");
+    session.dataPaths(early);
+    check(host.take().empty() && early.size() == 1, "a list before the first position is not wanted, and left alone");
+
+    session.position(5, 6, 1.0, 0, 0);
+    check(host.take() == "request;", "the first position asks for the list");
+    std::vector<std::string> list(1, "C:\\x.wav");
+    session.dataPaths(list);
+    check(host.take() == "ENTER;yes;", "the paths in, the view hears the enter and the source its answer");
+    check(host.lastFiles.size() == 1 && host.lastFiles[0] == "C:\\x.wav" && host.last.x == 5 && host.last.y == 6,
+          "the enter carries the paths, at the position");
+    session.drop(1.1, 0, 0);
+    check(host.take() == "DROP;finished;" && host.lastFiles.size() == 1, "and the drop takes them");
+
+    session.begin(true, true);
+    session.position(1, 1, 0, 0, 0);
+    host.take();
+    std::vector<std::string> empty;
+    session.dataPaths(empty);
+    check(host.take() == "no;", "a list without a path refuses the drag, and the view never hears of it");
+    session.leave();
+    check(host.take().empty(), "nor of its leave");
+}
+
+// --------------------------------------------------------------------------------------------------------------------
 
 int main()
 {
     testDecoding();
     testSession();
+    testPaths();
 
     if (failures != 0)
     {

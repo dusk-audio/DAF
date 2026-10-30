@@ -89,6 +89,22 @@ public:
     }
 
     /**
+       Replace the list with @a paths, which a native drag hands over already decoded, and return whether
+       there is one. The paths are taken over, and @a paths is left empty.
+     */
+    bool setFromPaths(std::vector<std::string>& paths)
+    {
+        clear();
+        storage.swap(paths);
+
+        pointers.reserve(storage.size());
+        for (size_t i = 0; i < storage.size(); ++i)
+            pointers.push_back(storage[i].c_str());
+
+        return ! pointers.empty();
+    }
+
+    /**
        Decode one URI into the local path it names, following RFC 8089.
        False for anything but a file URI on this machine whose path is absolute, cleanly escaped and UTF-8.
      */
@@ -376,14 +392,19 @@ public:
         if (! files.setFromUriList(bytes, size, hostName))
             return dataFailed();
 
-        ready = true;
-        deadline = 0.0;
+        received();
+    }
 
-        if (held)
-            return performDrop();
+    /** The file list arrived as paths, already decoded, which are taken over. */
+    void dataPaths(std::vector<std::string>& paths)
+    {
+        if (! wantsData())
+            return;
 
-        if (owed)
-            consult();
+        if (! files.setFromPaths(paths))
+            return dataFailed();
+
+        received();
     }
 
     /** The file list could not be had, or would be too large. */
@@ -552,6 +573,19 @@ private:
         const PuglStatus status = host.dispatch(event);
         dispatching = false;
         return status;
+    }
+
+    // the file list is in, with a usable file
+    void received()
+    {
+        ready = true;
+        deadline = 0.0;
+
+        if (held)
+            return performDrop();
+
+        if (owed)
+            consult();
     }
 
     // ask the view about the latest position, and tell the source
