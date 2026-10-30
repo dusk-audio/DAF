@@ -1120,6 +1120,46 @@ int main()
     source.send(target, source.leave, 0, 0, 0, 0);
     settle(app, source, 50);
 
+    // A window turns drops off from outside any callback, and its leave turns them back on and runs a nested
+    // event loop, as getClipboard does, while a second drag enters: that drag must reach the window once the
+    // opt-out is done, and not inside the leave.
+    check(freshWindow(), "a window whose leave will run a nested loop opts in");
+    source.messages.clear();
+    source.sendEnter(target, 5, uriOnly);
+    source.sendPosition(target, originX + 10, originY + 10, source.stamp + 60, source.copy);
+    check(pump(app, source, [&] { return source.count(source.status) == 1; }), "a drag reaches the window");
+    win->take();
+    {
+        Display* const secondDisplay = XOpenDisplay(nullptr);
+        {
+            Source second(secondDisplay);
+            second.payload = "file:///tmp/second.wav\r\n";
+            std::string heardInside;
+            win->duringLeave = [&] {
+                win->duringLeave = nullptr;
+                check(win->setAcceptingFileDrops(true), "the window opts in again inside its leave");
+                second.sendEnter(target, 5, uriOnly);
+                second.sendPosition(target, originX + 20, originY + 20, second.stamp + 1, second.copy);
+                pump(app, second, [&] { return second.count(second.status) == 1; }, 300);
+                heardInside = win->log;
+            };
+            check(win->setAcceptingFileDrops(false), "the window opts out");
+            check(heardInside == "LEAVE;", "and hears nothing of the second drag inside its leave");
+            check(pump(app, second, [&] { return second.count(second.status) == 1; }),
+                  "the second drag is answered once the opt-out is done");
+            if (const XClientMessageEvent* const status = second.last(second.status))
+                check((status->data.l[1] & 1) == 1, "and accepted");
+            check(win->take() == "LEAVE;ENTER;" && win->files.size() == 1 && win->files[0] == "/tmp/second.wav",
+                  "and reaches the window with its files");
+            second.send(target, second.leave, 0, 0, 0, 0);
+            settle(app, second, 50);
+            win->take();
+        }
+        XCloseDisplay(secondDisplay);
+    }
+    // the second source took the selection
+    source.reopen();
+
     // an embedded window cannot take drops: XDND addresses top-level windows
     {
         const ::Window host = XCreateSimpleWindow(dpy, DefaultRootWindow(dpy), 0, 0, 200, 200, 0, 0, 0);
