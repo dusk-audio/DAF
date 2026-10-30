@@ -67,32 +67,21 @@ struct PuglWaylandDropTarget : PuglDropHost
     {
         queue.push_back(message);
 
-        if (busy)
-            return;
-
-        busy = true;
-
-        while (! queue.empty())
-        {
-            const Message next = queue.front();
-            queue.pop_front();
-            handle(next);
-
-            if (fd >= 0 && ! session.wantsData())
-                closeReceive();
-        }
-
-        busy = false;
+        if (! busy)
+            exclusively([] {});
     }
 
-    // The view stopped accepting drops: a drag over it ends for it, and the rest is refused
+    // The view stopped accepting drops: a drag over it ends for it, and the rest is refused. Its leave may
+    // run a nested event loop, so what arrives meanwhile waits, as it does for any other call to the view.
     void optOut(PuglView* const gone)
     {
         if (view != gone)
             return;
 
-        session.detach(true);
-        refuse();
+        exclusively([this] {
+            session.detach(true);
+            refuse();
+        });
     }
 
     // The view is going away: nothing more reaches it. Its offer stays until the compositor's leave.
@@ -177,6 +166,33 @@ struct PuglWaylandDropTarget : PuglDropHost
     // ----------------------------------------------------------------------------------------------------------------
 
 private:
+    // Do some work that may call the view, then handle what arrived meanwhile, in order. Inside a call already
+    // under way the work runs as it is, and the queue is left to that call.
+    template <class Work>
+    void exclusively(const Work& work)
+    {
+        if (busy)
+            return work();
+
+        busy = true;
+        work();
+
+        while (! queue.empty())
+        {
+            if (fd >= 0 && ! session.wantsData())
+                closeReceive();
+
+            const Message next = queue.front();
+            queue.pop_front();
+            handle(next);
+        }
+
+        if (fd >= 0 && ! session.wantsData())
+            closeReceive();
+
+        busy = false;
+    }
+
     // Modifiers are the seat's only while one of the world's views has the keyboard focus
     PuglMods mods() const noexcept
     {

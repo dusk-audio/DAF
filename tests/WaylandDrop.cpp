@@ -781,6 +781,35 @@ static void testVersion3()
     compositor.leave();
     check(pump(world, [&] { return compositor.requestsOf(offer).size() == 6; }), "the offer is destroyed at the leave");
 
+    // A view turns drops off from outside any callback, and its leave runs a nested event loop, as
+    // getClipboard does, during which the drag moves on to another view: that drag must survive the opt-out.
+    check(puglSetAcceptsFileDrops(view, true) == PUGL_SUCCESS, "opting in again");
+    PuglView* const other = makeView(world, true);
+    check(other != nullptr && pump(world, [&] { return compositor.surface(6) != 0; }), "a view for the drag to move on to");
+    offer = compositor.offer({ "text/uri-list" }, kCopy);
+    compositor.enter(25, surface, 1.0, 1.0, offer);
+    check(pump(world, [&] { return compositor.requestsOf(offer).size() == 3; }), "a drag that will move on asks for its files");
+    supply(compositor, offer, kList);
+    check(pump(world, [&] { return take() == "ENTER;"; }), "and reaches the first view");
+    uint32_t moved = 0;
+    heard.during = [&] {
+        compositor.leave();
+        moved = compositor.offer({ "text/uri-list" }, kCopy);
+        compositor.enter(26, compositor.surface(6), 2.0, 2.0, moved);
+        settle(world, 150);
+    };
+    puglSetAcceptsFileDrops(view, false);
+    check(take() == "LEAVE;", "opting out ends the drag for the first view with a leave");
+    check(pump(world, [&] { return compositor.requestsOf(moved).size() >= 3; }), "the drag that moved on asks for its files");
+    supply(compositor, moved, kList);
+    check(pump(world, [&] { return heard.log.find("ENTER;") != std::string::npos; }),
+          "and reaches the other view, the opt-out notwithstanding");
+    take();
+    compositor.leave();
+    pump(world, [&] { return ! heard.log.empty(); });
+    take();
+    puglFreeView(other);
+
     // a drag left in flight when the world goes is cleaned up with it
     offer = compositor.offer({ "text/uri-list" }, kCopy);
     check(puglSetAcceptsFileDrops(view, true) == PUGL_SUCCESS, "opting in again");

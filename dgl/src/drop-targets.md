@@ -219,7 +219,9 @@ guarantees:
   its source until then, and is freed at the tick after.
 - Callbacks cannot nest. While the backend is inside the session, a protocol event that arrives (an
   application running a nested event loop, `getClipboard()` say) is queued and handled in order once
-  the outer call returns, the deadline tick included.
+  the outer call returns, the deadline tick included. Turning drops off from outside a callback runs the
+  same way, since the leave it sends may run such a loop: a drag that moves on to another view meanwhile
+  is handled once the opt-out is done, rather than torn down by it.
 
 The unit tests drive exactly this with a fake host and no display. macOS and Windows can use it in
 phase 2, with data that arrives synchronously at enter.

@@ -86,11 +86,22 @@ struct PuglX11DropTarget : PuglDropHost
     {
         queue.push_back(event);
 
+        if (! busy)
+            exclusively([] {});
+    }
+
+    // Do some work that may call the view, then handle what arrived meanwhile, in order. Inside a call already
+    // under way the work runs as it is, and the queue is left to that call.
+    template <class Work>
+    void exclusively(const Work& work)
+    {
         if (busy)
-            return;
+            return work();
 
         busy = true;
         ++shared.depth;
+        work();
+        settleTransfer();
 
         while (! queue.empty())
         {
@@ -130,10 +141,9 @@ struct PuglX11DropTarget : PuglDropHost
         }
         else
         {
+            // the view's leave may run a nested event loop: what arrives meanwhile waits, as for any call to it
             XDeleteProperty(display(), window, shared.aware);
-            session.detach(true);
-            if (! busy)
-                settleTransfer();
+            exclusively([this] { session.detach(true); });
         }
 
         XFlush(display());
