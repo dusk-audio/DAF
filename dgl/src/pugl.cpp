@@ -46,6 +46,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <memory>
 #include <new>
 #include <string>

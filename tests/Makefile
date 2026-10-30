@@ -121,11 +121,12 @@ endif
 # drives the X11 backend directly, so it needs one (macOS uses Cocoa even where X11 is installed)
 ifeq ($(LINUX),true)
 ifeq ($(HAVE_X11),true)
+UNIT_TESTS   += X11Drop
 UNIT_TESTS   += X11Focus
 endif
 endif
 
-# leaves out tests the environment cannot run, e.g. SKIP_UNIT_TESTS=X11Focus under a Wayland compositor
+# leaves out tests the environment cannot run, e.g. SKIP_UNIT_TESTS="X11Drop X11Focus" under a Wayland compositor
 # with no X server (see headless-wayland.sh)
 UNIT_TESTS    := $(filter-out $(SKIP_UNIT_TESTS),$(UNIT_TESTS))
 

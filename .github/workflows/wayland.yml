@@ -347,7 +347,7 @@ jobs:
         DAF_TEST_EXPECT_BACKEND: wayland
       run: |
         set -o pipefail
-        env -u DISPLAY tests/headless-wayland.sh make -C tests run -j"$(nproc)" SKIP_UNIT_TESTS=X11Focus | tee tests.log
+        env -u DISPLAY tests/headless-wayland.sh make -C tests run -j"$(nproc)" SKIP_UNIT_TESTS="X11Drop X11Focus" | tee tests.log
         grep -q 'RuntimeBackend: program world on wayland' tests.log \
           || { echo "::error::RuntimeBackend did not open its window on Wayland"; exit 1; }
         grep -q 'RuntimeBackendWindow: window on wayland' tests.log \

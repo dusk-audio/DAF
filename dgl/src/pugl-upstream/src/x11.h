@@ -47,6 +47,10 @@ typedef struct {
   Atom text_uri_list;
 } PuglX11Atoms;
 
+// Receiving file drops, a DGL extension in FileDropX11.hpp, which DGL's unity build includes after this
+struct PuglX11DropWorld;
+struct PuglX11DropTarget;
+
 typedef struct {
   XID       alarm;
   PuglView* view;
@@ -75,6 +79,7 @@ struct PuglWorldInternalsImpl {
   XID          serverTimeCounter;
   int          syncEventBase;
   bool         syncSupported;
+  struct PuglX11DropWorld* drop;
 };
 
 struct PuglInternalsImpl {
@@ -89,9 +94,16 @@ struct PuglInternalsImpl {
   int              screen;
   const char*      cursorName;
   bool             mapped;
+  struct PuglX11DropTarget* drop;
 };
 
 PUGL_WARN_UNUSED_RESULT PUGL_API PuglStatus
 puglX11Configure(PuglView* view);
+
+// Receiving file drops, see FileDropX11.hpp
+static bool puglX11DropFilter(PuglWorld* world, const XEvent* event);
+static void puglX11DropTick(PuglWorld* world);
+static void puglX11DropDetach(PuglView* view);
+static void puglX11DropFreeWorld(PuglWorld* world);
 
 #endif // PUGL_SRC_X11_H

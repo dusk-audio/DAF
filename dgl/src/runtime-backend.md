@@ -253,7 +253,7 @@ wherever Weston runs, and be refused at `create()` under Xvfb alone.
 `XDG_RUNTIME_DIR`. CI uses it for Wayland alone and, under `xvfb-run`, for both servers at once:
 
     env -u DISPLAY LIBGL_ALWAYS_SOFTWARE=1 \
-        tests/headless-wayland.sh make -C tests run DGL_BACKEND=both SKIP_UNIT_TESTS=X11Focus
+        tests/headless-wayland.sh make -C tests run DGL_BACKEND=both SKIP_UNIT_TESTS="X11Drop X11Focus"
     xvfb-run -a tests/headless-wayland.sh build/tests/RuntimeBackend
 
 `build.yml` runs the `both` suite under Xvfb alone. `wayland.yml` runs it under Weston alone, runs
