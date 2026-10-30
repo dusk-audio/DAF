@@ -32,7 +32,7 @@ MANUAL_TESTS  =
 UNIT_TESTS    = AudioUnitBufferList Color FileDrop HostKeyFilter IdleCallbacks ImGuiKnobs Point StateParser
 
 ifeq ($(MACOS),true)
-UNIT_TESTS   += CocoaRetiredView FileDragCocoa
+UNIT_TESTS   += CocoaRetiredView FileDragCocoa FileDropCocoa
 endif
 
 ifeq ($(WINDOWS),true)

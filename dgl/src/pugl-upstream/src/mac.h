@@ -23,6 +23,16 @@
 @interface PuglWindow : NSWindow
 @end
 
+// Receiving file drops, a DGL extension in FileDropMac.hpp, which DGL's unity build includes after this
+struct PuglMacDropTarget;
+static NSDragOperation puglMacDropEntered(PuglWrapperView* wrapper, id<NSDraggingInfo> info);
+static NSDragOperation puglMacDropUpdated(PuglWrapperView* wrapper, id<NSDraggingInfo> info);
+static void puglMacDropExited(PuglWrapperView* wrapper);
+static BOOL puglMacDropPrepare(PuglWrapperView* wrapper, id<NSDraggingInfo> info);
+static BOOL puglMacDropPerform(PuglWrapperView* wrapper, id<NSDraggingInfo> info);
+static void puglMacDropDetach(PuglWrapperView* wrapper);
+static void puglMacDropFree(PuglWrapperView* wrapper);
+
 struct PuglWorldInternalsImpl {
   NSApplication*            app;
   NSAutoreleasePool*        autoreleasePool;

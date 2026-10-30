@@ -353,6 +353,7 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
   NSTrackingArea*            trackingArea;
   NSMutableAttributedString* markedText;
   NSMutableDictionary*       userTimers;
+  struct PuglMacDropTarget*  dropTarget;
   bool                       reshaped;
 }
 
@@ -369,11 +370,13 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
     [timer invalidate];
   }
   [userTimers removeAllObjects];
+  puglMacDropDetach(self);
 }
 
 - (void)dealloc
 {
   [self detachPuglView];
+  puglMacDropFree(self);
   [markedText release];
   [userTimers release];
   [super dealloc];
@@ -452,15 +455,19 @@ dispatchCurrentChildViewConfiguration(PuglView* const view)
 }
 
 static uint32_t
-getModifiers(const NSEvent* const ev)
+getModifierFlags(const NSEventModifierFlags modifierFlags)
 {
-  const NSEventModifierFlags modifierFlags = [ev modifierFlags];
-
   return (((modifierFlags & NSShiftKeyMask) ? PUGL_MOD_SHIFT : 0) |
           ((modifierFlags & NSControlKeyMask) ? PUGL_MOD_CTRL : 0) |
           ((modifierFlags & NSAlternateKeyMask) ? PUGL_MOD_ALT : 0) |
           ((modifierFlags & NSCommandKeyMask) ? PUGL_MOD_SUPER : 0) |
           ((modifierFlags & (1U << 16U)) ? PUGL_MOD_CAPS_LOCK : 0));
+}
+
+static uint32_t
+getModifiers(const NSEvent* const ev)
+{
+  return getModifierFlags([ev modifierFlags]);
 }
 
 static PuglKey
@@ -1102,6 +1109,59 @@ flagDiffers(const uint32_t lhs, const uint32_t rhs, const uint32_t mask)
 
   puglDispatchSimpleEvent(puglview, PUGL_UPDATE);
   [super viewWillDraw];
+}
+
+// Receiving file drops: the session and its answers live in FileDropMac.hpp, which a retired view never
+// reaches
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender
+{
+  if (!puglview) {
+    return NSDragOperationNone;
+  }
+
+  return puglMacDropEntered(self, sender);
+}
+
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender
+{
+  if (!puglview) {
+    return NSDragOperationNone;
+  }
+
+  return puglMacDropUpdated(self, sender);
+}
+
+- (void)draggingExited:(id<NSDraggingInfo>)sender
+{
+  (void)sender;
+
+  if (puglview) {
+    puglMacDropExited(self);
+  }
+}
+
+- (void)draggingEnded:(id<NSDraggingInfo>)sender
+{
+  (void)sender;
+
+  if (puglview) {
+    puglMacDropExited(self);
+  }
+}
+
+- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender
+{
+  return puglview && puglMacDropPrepare(self, sender);
+}
+
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender
+{
+  return puglview && puglMacDropPerform(self, sender);
+}
+
+- (BOOL)wantsPeriodicDraggingUpdates
+{
+  return NO;
 }
 
 - (void)timerTick:(NSTimer*)userTimer
