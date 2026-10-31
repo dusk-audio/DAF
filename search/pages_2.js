@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['handling_0',['Handling',['../classNanoVG.html#State',1,'']]]
+  ['styles_0',['styles',['../classNanoVG.html#Render',1,'']]]
 ];

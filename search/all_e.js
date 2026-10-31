@@ -29,5 +29,6 @@ var searchData=
   ['operator_2a_26',['operator*',['../classScopedPointer.html#a531f2da0f7dc7d4732253f69f6fa6d5d',1,'ScopedPointer']]],
   ['operator_2d_3e_27',['operator-&gt;',['../classScopedPointer.html#a67d9ad6cef0924366f6d3cd5f585da7b',1,'ScopedPointer']]],
   ['operator_3d_28',['operator=',['../classScopedPointer.html#a4fca5b50db919831000c4b005c92be38',1,'ScopedPointer::operator=(ScopedPointer &amp;objectToTransferFrom)'],['../classScopedPointer.html#aaef0b39b630bad7b27b74834ec8505c5',1,'ScopedPointer::operator=(ObjectType *const newObjectToTakePossessionOf)'],['../classCairoImage.html#ab2d99837c77f74d473a8810d5426ecfe',1,'CairoImage::operator=()'],['../classImageBase.html#a2986de91e7ac5f52fc94818ba2a332d7',1,'ImageBase::operator=()'],['../classNanoImage.html#aaea99850411bc31b2322031a52bdff79',1,'NanoImage::operator=()'],['../classOpenGLImage.html#a8d5b1e9ce60ea75266b3301260ee6c47',1,'OpenGLImage::operator=()'],['../classVulkanImage.html#a972850dc825a364458d9d9f92ca28048',1,'VulkanImage::operator=()']]],
-  ['outputs_29',['outputs',['../structAudioMidiSyncHelper.html#a7b54cae0fdaae3d23aaccf2dbb9344ef',1,'AudioMidiSyncHelper']]]
+  ['outputs_29',['outputs',['../structAudioMidiSyncHelper.html#a7b54cae0fdaae3d23aaccf2dbb9344ef',1,'AudioMidiSyncHelper']]],
+  ['overview_30',['Overview',['../index.html',1,'']]]
 ];

@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['framework_0',['DAF Plugin Framework',['../index.html',1,'']]]
+  ['overview_0',['Overview',['../index.html',1,'']]]
 ];

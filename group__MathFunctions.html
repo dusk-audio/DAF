@@ -108,6 +108,8 @@ Functions</h2></td></tr>
 <tr class="memitem:gaf5526b06989c47f21bdff3cd99af8353 template"><td class="memItemLeft">static constexpr bool&#160;</td><td class="memItemRight"><a class="el" href="#gaf5526b06989c47f21bdff3cd99af8353">d_isZero</a> (const T &amp;value)</td></tr>
 <tr class="memitem:gad891a20280e4f41017e7247d6e5a1f13" id="r_gad891a20280e4f41017e7247d6e5a1f13"><td class="memTemplParams" colspan="2">template&lt;typename T&gt; </td></tr>
 <tr class="memitem:gad891a20280e4f41017e7247d6e5a1f13 template"><td class="memItemLeft">static constexpr bool&#160;</td><td class="memItemRight"><a class="el" href="#gad891a20280e4f41017e7247d6e5a1f13">d_isNotZero</a> (const T &amp;value)</td></tr>
+<tr class="memitem:ga8fadac6c1fce7f0cf43b15dacad916ba" id="r_ga8fadac6c1fce7f0cf43b15dacad916ba"><td class="memItemLeft">static bool&#160;</td><td class="memItemRight"><a class="el" href="#ga8fadac6c1fce7f0cf43b15dacad916ba">d_isFinite</a> (const double value) noexcept</td></tr>
+<tr class="memitem:ga9137d83f13ea6a1ef930fa24a5981ac6" id="r_ga9137d83f13ea6a1ef930fa24a5981ac6"><td class="memItemLeft">static bool&#160;</td><td class="memItemRight"><a class="el" href="#ga9137d83f13ea6a1ef930fa24a5981ac6">d_isFinite</a> (const float value) noexcept</td></tr>
 <tr class="memitem:gaded8dbdc7ff99c70e7361b3f1a32b584" id="r_gaded8dbdc7ff99c70e7361b3f1a32b584"><td class="memItemLeft">static uint32_t&#160;</td><td class="memItemRight"><a class="el" href="#gaded8dbdc7ff99c70e7361b3f1a32b584">d_nextPowerOf2</a> (uint32_t size) noexcept</td></tr>
 <tr class="memitem:ga3de0a572416cb38ca424094b595954ae" id="r_ga3de0a572416cb38ca424094b595954ae"><td class="memTemplParams" colspan="2">template&lt;typename T&gt; </td></tr>
 <tr class="memitem:ga3de0a572416cb38ca424094b595954ae template"><td class="memItemLeft">static constexpr int32_t&#160;</td><td class="memItemRight"><a class="el" href="#ga3de0a572416cb38ca424094b595954ae">d_roundToIntPositive</a> (const T &amp;value)</td></tr>
@@ -237,6 +239,59 @@ template&lt;typename T&gt; </div>
 </table>
 </div><div class="memdoc">
 <p>Safely check if a floating point number is not zero. </p>
+
+</div>
+</div>
+<a id="ga8fadac6c1fce7f0cf43b15dacad916ba" name="ga8fadac6c1fce7f0cf43b15dacad916ba"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga8fadac6c1fce7f0cf43b15dacad916ba">&#9670;&#160;</a></span>d_isFinite() <span class="overload">[1/2]</span></h2>
+
+<div class="memitem">
+<div class="memproto">
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
+      <table class="memname">
+        <tr>
+          <td class="memname">bool d_isFinite </td>
+          <td>(</td>
+          <td class="paramtype">const double</td>          <td class="paramname"><span class="paramname"><em>value</em></span></td><td>)</td>
+          <td></td>
+        </tr>
+      </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel inline">inline</span><span class="mlabel static">static</span><span class="mlabel noexcept">noexcept</span></span>  </td>
+  </tr>
+</table>
+</div><div class="memdoc">
+<p>Check if a floating point number is finite, that is neither infinite nor NaN.</p>
+<p>Use this instead of std::isfinite, std::isnan or std::isinf on values from outside your own code, such as parameter values from the host. DAF's Makefile builds compile with -ffast-math, which lets the compiler assume that no value is ever infinite or NaN, and GCC and Clang then fold those checks to a constant: the check is silently compiled out. This reads the bit pattern instead, through a volatile, so neither compiler can apply that assumption to it. </p>
+
+</div>
+</div>
+<a id="ga9137d83f13ea6a1ef930fa24a5981ac6" name="ga9137d83f13ea6a1ef930fa24a5981ac6"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#ga9137d83f13ea6a1ef930fa24a5981ac6">&#9670;&#160;</a></span>d_isFinite() <span class="overload">[2/2]</span></h2>
+
+<div class="memitem">
+<div class="memproto">
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
+      <table class="memname">
+        <tr>
+          <td class="memname">bool d_isFinite </td>
+          <td>(</td>
+          <td class="paramtype">const float</td>          <td class="paramname"><span class="paramname"><em>value</em></span></td><td>)</td>
+          <td></td>
+        </tr>
+      </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel inline">inline</span><span class="mlabel static">static</span><span class="mlabel noexcept">noexcept</span></span>  </td>
+  </tr>
+</table>
+</div><div class="memdoc">
+<p>Check if a floating point number is finite, that is neither infinite nor NaN. </p><dl class="section see"><dt>See also</dt><dd><a class="el" href="#ga8fadac6c1fce7f0cf43b15dacad916ba">d_isFinite(double)</a> </dd></dl>
 
 </div>
 </div>

@@ -19,9 +19,8 @@ var searchData=
   ['fontfaceid_16',['fontFaceId',['../classNanoVG.html#a2d32dbd0fb0dd0ae36fdc6ef2be65f6c',1,'NanoVG']]],
   ['fontsize_17',['fontSize',['../classNanoVG.html#a23353792b4267d74f8f7a665d358c1a4',1,'NanoVG']]],
   ['frame_18',['frame',['../structMidiEvent.html#aca2f6590b33bd2175ab71f985747d88e',1,'MidiEvent::frame'],['../structTimePosition.html#aa3606d1c518c7ebe6335bc19f72b015b',1,'TimePosition::frame']]],
-  ['framework_19',['DAF Plugin Framework',['../index.html',1,'']]],
-  ['fromhsl_20',['fromHSL',['../structColor.html#a41820f7349e997489d53f98036e76a0c',1,'Color']]],
-  ['fromhtml_21',['fromHTML',['../structColor.html#abdc66d9b8c6422a721f8d576e871f646',1,'Color']]],
-  ['fromrgb_22',['fromRGB',['../structColor.html#ac50fb367d0a9e9190d0cfc11d0ff134c',1,'Color']]],
-  ['functions_23',['functions',['../group__MathFunctions.html',1,'Math related functions'],['../group__MiscellaneousFunctions.html',1,'Miscellaneous functions'],['../group__StringPrintFunctions.html',1,'String print functions']]]
+  ['fromhsl_19',['fromHSL',['../structColor.html#a41820f7349e997489d53f98036e76a0c',1,'Color']]],
+  ['fromhtml_20',['fromHTML',['../structColor.html#abdc66d9b8c6422a721f8d576e871f646',1,'Color']]],
+  ['fromrgb_21',['fromRGB',['../structColor.html#ac50fb367d0a9e9190d0cfc11d0ff134c',1,'Color']]],
+  ['functions_22',['functions',['../group__MathFunctions.html',1,'Math related functions'],['../group__MiscellaneousFunctions.html',1,'Miscellaneous functions'],['../group__StringPrintFunctions.html',1,'String print functions']]]
 ];
