@@ -41,6 +41,10 @@ START_NAMESPACE_DAF
    The section markers are single tokens, not pairs. A '\xfe' byte at the start of a token terminates the
    stream; anywhere else it is ordinary data.
 
+   Builds made before the framework was renamed from DPF on 2026-08-22 wrote "__dpf_" where these say "__daf_".
+   Sessions saved by them must still load, so either spelling is read, and a program entry is always recorded
+   under "__daf_program__".
+
    Hosts hand the stream over in chunks of whatever size they like, so a token can span any number of chunks.
    Each token is accumulated in a buffer with geometric growth and is moved into `entries` once complete,
    which keeps loading linear in the size of the state no matter how large a single value is.
@@ -155,18 +159,26 @@ private:
         return true;
     }
 
+    // whether token is the special key "__daf_<name>", or "__dpf_<name>" as written before the rename
+    static bool isSpecialKey(const std::string& token, const char* const name)
+    {
+        return token.size() > 6
+            && (token.compare(0, 6, "__daf_") == 0 || token.compare(0, 6, "__dpf_") == 0)
+            && token.compare(6, std::string::npos, name) == 0;
+    }
+
     bool tokenCompleted()
     {
         if (fFillingKey)
         {
             // special keys
-            if (fToken == "__daf_state_begin__")
+            if (isSpecialKey(fToken, "state_begin__"))
                 return enterSection('i', 'n', 's');
-            if (fToken == "__daf_state_end__")
+            if (isSpecialKey(fToken, "state_end__"))
                 return enterSection('s', 's', 'n');
-            if (fToken == "__daf_parameters_begin__")
+            if (isSpecialKey(fToken, "parameters_begin__"))
                 return enterSection('i', 'n', 'p');
-            if (fToken == "__daf_parameters_end__")
+            if (isSpecialKey(fToken, "parameters_end__"))
                 return enterSection('p', 'p', 'x');
 
             // no special key, now read its value
@@ -178,7 +190,7 @@ private:
 
         fFillingKey = true;
 
-        const bool isProgram = fKey == "__daf_program__";
+        const bool isProgram = isSpecialKey(fKey, "program__");
         DAF_SAFE_ASSERT_INT_RETURN(!isProgram || fSection == 'i', fSection, false);
 
         entries.push_back(Entry());
@@ -191,7 +203,10 @@ private:
         fToken.clear();
 
         if (isProgram)
+        {
+            entry.key = "__daf_program__";
             fSection = 'n';
+        }
 
         return true;
     }

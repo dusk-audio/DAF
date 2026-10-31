@@ -21,11 +21,11 @@
 
 // we will include all header files used in pugl.h in their C++ friendly form, then pugl stuff in custom namespace
 #include <cstddef>
+// stdbool.h rather than <cstdbool>, which C++17 deprecates and C++20 removes (libstdc++ warns about it)
+#include <stdbool.h>
 #ifdef DAF_PROPER_CPP11_SUPPORT
-# include <cstdbool>
 # include <cstdint>
 #else
-# include <stdbool.h>
 # include <stdint.h>
 #endif
 

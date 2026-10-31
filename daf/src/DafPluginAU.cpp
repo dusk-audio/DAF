@@ -1791,7 +1791,7 @@ public:
             DAF_SAFE_ASSERT_UINT_RETURN(inDataSize == sizeof(float), inDataSize, kAudioUnitErr_InvalidPropertyValue);
             {
                 const float value = *static_cast<const float*>(inData);
-                DAF_SAFE_ASSERT_RETURN(std::isfinite(value), kAudioUnitErr_InvalidParameterValue);
+                DAF_SAFE_ASSERT_RETURN(d_isFinite(value), kAudioUnitErr_InvalidParameterValue);
 
                 if (d_isEqual(fLastParameterValues[inElement], value))
                     return noErr;
@@ -1997,7 +1997,7 @@ public:
         DAF_SAFE_ASSERT_UINT_RETURN(scope == kAudioUnitScope_Global, scope, kAudioUnitErr_InvalidScope);
         DAF_SAFE_ASSERT_UINT_RETURN(param < fParameterCount, param, kAudioUnitErr_InvalidElement);
         DAF_SAFE_ASSERT_UINT_RETURN(elem == 0, elem, kAudioUnitErr_InvalidElement);
-        DAF_SAFE_ASSERT_RETURN(std::isfinite(value), kAudioUnitErr_InvalidParameterValue);
+        DAF_SAFE_ASSERT_RETURN(d_isFinite(value), kAudioUnitErr_InvalidParameterValue);
 
         if (d_isNotEqual(fLastParameterValues[param], value))
         {
@@ -3204,6 +3204,10 @@ private:
                 float value = 0.f;
                 DAF_SAFE_ASSERT_BREAK(CFNumberGetValue(valueRef, kCFNumberFloat32Type, &value));
 
+                // a saved value that is not finite never reaches the plugin
+                if (! d_isFinite(value))
+                    continue;
+
                 const CFIndex keyRefLen = CFStringGetLength(keyRef);
                 if (symbolLen < keyRefLen)
                 {
@@ -3216,7 +3220,7 @@ private:
                 {
                     if (fPlugin.isParameterOutputOrTrigger(j))
                         continue;
-                    if (fPlugin.getParameterSymbol(j) != symbol)
+                    if (! fPlugin.isSavedParameterSymbol(j, symbol))
                         continue;
 
                     fLastParameterValues[j] = value;

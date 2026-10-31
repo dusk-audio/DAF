@@ -117,6 +117,20 @@ int main()
     for (const Automation& a : gAutomations)
         DAF_ASSERT_NOT_EQUAL(a.index, static_cast<int32_t>(kParamTrigger), "an idle trigger must not be reported");
 
+    // A value that is not finite never reaches the plugin. The tests build with -ffast-math, as plugins do;
+    // strtod keeps the compiler from seeing the values, and d_isFinite checks the result.
+    effect->set_parameter(effect, kParamLinearLow, 0.5f);
+    {
+        const float notFinite[] = { std::strtof("nan", nullptr), std::strtof("inf", nullptr), std::strtof("-inf", nullptr) };
+        for (const float value : notFinite)
+        {
+            effect->set_parameter(effect, kParamLinearLow, value);
+            const float after = effect->get_parameter(effect, kParamLinearLow);
+            DAF_ASSERT_EQUAL(d_isFinite(after) && std::abs(after - 0.5f) < 1e-6f, true,
+                             "a non-finite parameter value from the host must be ignored");
+        }
+    }
+
     // the plugin updated its state in activate(); with no editor idle yet, a chunk must still have it
     DAF_ASSERT_EQUAL(gUpdateStateFromConstructor, false, "updateStateValue must fail from the plugin constructor");
     DAF_ASSERT_EQUAL(gUpdateStateFromInitState, false, "updateStateValue must fail from initState");
@@ -130,6 +144,13 @@ int main()
     static const char loadedChunk[] = "status\0loaded\0";
     effect->control(effect, VST_EFFECT_OPCODE_18, 0, sizeof(loadedChunk), const_cast<char*>(loadedChunk), 0.0f);
     DAF_ASSERT_EQUAL(chunkHasStatus(effect, "loaded"), true, "an update before a load must not overwrite it");
+
+    // a saved value that is not finite never reaches the plugin: no states, then the parameters
+    static const char nonFiniteChunk[] = "\0" "linearlow\0" "nan\0";
+    effect->control(effect, VST_EFFECT_OPCODE_18, 0, sizeof(nonFiniteChunk), const_cast<char*>(nonFiniteChunk), 0.0f);
+    DAF_ASSERT_EQUAL(gNonFiniteParameterWrites, 0u, "a saved value that is not finite must not reach the plugin");
+    DAF_ASSERT_EQUAL(std::abs(effect->get_parameter(effect, kParamLinearLow) - 0.5f) < 1e-6f, true,
+                     "a skipped value must leave its parameter as it was");
 
     effect->control(effect, VST_EFFECT_OPCODE_SUSPEND, 0, 0, nullptr, 0.0f);
     effect->control(effect, VST_EFFECT_OPCODE_DESTROY, 0, 0, nullptr, 0.0f);

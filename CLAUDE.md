@@ -107,7 +107,9 @@ job with `container:` whose steps need bash sets `defaults.run.shell: bash`.
 
 ## Vendored framework components
 
-`dgl/src/pugl-upstream` and `widgets/` are history-preserving git subtrees, never
-submodules. `.gitmodules` no longer exists. Their former repositories,
-`dusk-audio/pugl` and `dusk-audio/DAF-Widgets`, are archived with README redirects
-to DAF. Their histories remain available; ongoing development belongs here.
+`dgl/src/pugl-upstream` and `widgets/` are ordinary tracked directories, never submodules;
+`.gitmodules` no longer exists. They were brought in as git subtrees, but PR #34 was
+squash-merged, so their earlier commits are not reachable from any ref here and there is
+no subtree history to pull against. Their former repositories, `dusk-audio/pugl` and
+`dusk-audio/DAF-Widgets`, are archived with README redirects to DAF and keep that history.
+Ongoing development belongs here.

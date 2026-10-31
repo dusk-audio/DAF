@@ -25,6 +25,7 @@
  * nothing, whether they come through process() or clap_plugin_params::flush(). */
 
 #define DAF_PLUGIN_TARGET_CLAP
+#define DAF_WRAPPER_TEST_BYPASS
 #define DAF_WRAPPER_TEST_PARAM_TEXT
 #define DAF_TEST_NO_DGL
 
@@ -59,14 +60,15 @@ static int64_t CLAP_ABI ostream_write(const clap_ostream_t* const stream, const 
     return static_cast<int64_t>(size);
 }
 
-struct IStream {
+// not IStream, which the Windows SDK already declares as a COM interface
+struct InputStream {
     const std::string* data;
     std::size_t pos;
 };
 
 static int64_t CLAP_ABI istream_read(const clap_istream_t* const stream, void* const buffer, const uint64_t size)
 {
-    IStream* const in = static_cast<IStream*>(stream->ctx);
+    InputStream* const in = static_cast<InputStream*>(stream->ctx);
     const std::size_t count = std::min<std::size_t>(size, in->data->size() - in->pos);
     std::memcpy(buffer, in->data->data() + in->pos, count);
     in->pos += count;
@@ -85,7 +87,7 @@ static std::string saveState(const clap_plugin_t* const plugin, const clap_plugi
 
 static bool loadState(const clap_plugin_t* const plugin, const clap_plugin_state_t* const state, const std::string& data)
 {
-    IStream in = { &data, 0 };
+    InputStream in = { &data, 0 };
     const clap_istream_t stream = { &in, istream_read };
     return state->load(plugin, &stream);
 }
@@ -250,6 +252,43 @@ int main()
         required.plugin->destroy(required.plugin);
     }
 
+    // State saved before the framework was renamed from DPF on 2026-08-22, with "__dpf_" markers and the bypass
+    // parameter under its old symbol, loads as the current form does. The state is required, so the load only
+    // succeeds if its section was really read.
+    {
+        gRequireWrapperTestState = true;
+        Host legacy;
+        legacy.plugin = factory->create_plugin(factory, &host, DAF_PLUGIN_CLAP_ID);
+        gRequireWrapperTestState = false;
+        DAF_ASSERT_NOT_EQUAL(legacy.plugin, nullptr, "legacy-state create_plugin must succeed");
+        DAF_ASSERT_EQUAL(legacy.plugin->init(legacy.plugin), true, "legacy-state init must succeed");
+        legacy.params = static_cast<const clap_plugin_params_t*>(legacy.plugin->get_extension(legacy.plugin, CLAP_EXT_PARAMS));
+        const clap_plugin_state_t* const states = static_cast<const clap_plugin_state_t*>(legacy.plugin->get_extension(legacy.plugin, CLAP_EXT_STATE));
+        std::string data;
+        const auto token = [&](const char* value) { data += value; data += '\0'; };
+        token("__dpf_state_begin__"); token("file"); token("");
+        token("__dpf_state_end__");
+        token("__dpf_parameters_begin__"); token("linearlow"); token("7"); token("dpf_bypass"); token("1");
+        token("__dpf_parameters_end__"); data += '\xfe'; data += '\0';
+        DAF_ASSERT_EQUAL(loadState(legacy.plugin, states, data), true, "state saved before the rename must load");
+        DAF_ASSERT_EQUAL(legacy.getValue(kParamLinearLow), 7.0, "its parameters must apply");
+        DAF_ASSERT_EQUAL(legacy.getValue(kParamBypass), 1.0, "the bypass parameter must be found under its old symbol");
+
+        // a saved value that is not finite is skipped, and the rest of the state still loads
+        data.clear();
+        token("__daf_state_begin__"); token("file"); token("");
+        token("__daf_state_end__");
+        token("__daf_parameters_begin__"); token("linearlow"); token("nan"); token("loghigh"); token("100");
+        token("logmiddle"); token("1e300"); // finite, but too large for a float
+        token("__daf_parameters_end__"); data += '\xfe'; data += '\0';
+        DAF_ASSERT_EQUAL(loadState(legacy.plugin, states, data), true, "a state with a value that is not finite must load");
+        DAF_ASSERT_EQUAL(gNonFiniteParameterWrites, 0u, "a saved value that is not finite must not reach the plugin");
+        DAF_ASSERT_EQUAL(legacy.getValue(kParamLinearLow), 7.0, "a skipped value must leave its parameter as it was");
+        DAF_ASSERT_EQUAL(legacy.getValue(kParamLogMiddle), 632.0, "a value too large for a float must be skipped");
+        DAF_ASSERT_EQUAL(legacy.getValue(kParamLogHigh), 100.0, "the other parameters must still apply");
+        legacy.plugin->destroy(legacy.plugin);
+    }
+
     Host h;
     h.plugin = factory->create_plugin(factory, &host, DAF_PLUGIN_CLAP_ID);
     DAF_ASSERT_NOT_EQUAL(h.plugin, nullptr, "create_plugin must succeed");
@@ -406,12 +445,32 @@ int main()
         DAF_ASSERT_EQUAL(gOutputParameterWrites, writesBefore, "process must ignore events for output parameters");
     }
 
+    // A value that is not finite never reaches the plugin, nor a finite double too large for a float, which would
+    // become one when the wrapper converts it. The tests build with -ffast-math, as plugins do; strtod keeps the
+    // compiler from seeing the values, and d_isFinite checks the result.
+    const double notFinite[] = { std::strtod("nan", nullptr), std::strtod("inf", nullptr), std::strtod("-inf", nullptr),
+                                 std::strtod("1e300", nullptr), std::strtod("-1e300", nullptr) };
+    for (const double value : notFinite)
+    {
+        clap_event_param_value_t event = makeParamEvent(CLAP_CORE_EVENT_SPACE_ID, kParamLinearLow, value);
+        const clap_input_events_t in = { &event, param_event_size, param_event_get };
+        h.process(transport, &in);
+        const double after = h.getValue(kParamLinearLow);
+        DAF_ASSERT_EQUAL(d_isFinite(after) && after == 7.0, true, "process must ignore a non-finite value");
+    }
+
     h.plugin->stop_processing(h.plugin);
     h.plugin->deactivate(h.plugin);
 
     // the same through clap_plugin_params::flush(), here on the main thread
     h.flush(makeParamEvent(kForeignSpaceId, kParamLinearLow, 3.0));
     DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamLinearLow), 7.0, "flush must ignore events outside the core space");
+    for (const double value : notFinite)
+    {
+        h.flush(makeParamEvent(CLAP_CORE_EVENT_SPACE_ID, kParamLinearLow, value));
+        const double after = h.getValue(kParamLinearLow);
+        DAF_ASSERT_EQUAL(d_isFinite(after) && after == 7.0, true, "flush must ignore a non-finite value");
+    }
     h.flush(makeParamEvent(CLAP_CORE_EVENT_SPACE_ID, kParamLinearLow, 3.0));
     DAF_ASSERT_SAFE_EQUAL(h.getValue(kParamLinearLow), 3.0, "flush must apply core parameter events");
 

@@ -29,7 +29,7 @@ endif
 # ---------------------------------------------------------------------------------------------------------------------
 
 MANUAL_TESTS  =
-UNIT_TESTS    = AudioUnitBufferList Color FileDrop HostKeyFilter IdleCallbacks ImGuiKnobs Point StateParser
+UNIT_TESTS    = AudioUnitBufferList Color FileDrop HostKeyFilter IdleCallbacks ImGuiKnobs Point StateParser Utils
 
 ifeq ($(MACOS),true)
 UNIT_TESTS   += CocoaRetiredView FileDragCocoa FileDropCocoa
@@ -142,8 +142,10 @@ MANUAL_TARGETS = $(MANUAL_TESTS:%=../build/tests/%$(APP_EXT))
 UNIT_TARGET    = $(UNIT_TESTS:%=../build/tests/%$(APP_EXT))
 CHECK_TARGETS  = $(BUILD_CHECKS:%=../build/tests/%.cpp.o)
 
-ALL_OBJS  = $(MANUAL_TESTS:%=../build/tests/%.cpp.o)
-ALL_OBJS += $(UNIT_TESTS:%=../build/tests/%.cpp.o)
+# A test called Name.variant (Window.opengl, KnobEventHandler.stub) is built from Name.cpp into
+# ../build/tests/Name.cpp.variant.o. Its object has to be listed under that name, or the -include at the end misses
+# its dependency file and a header change never rebuilds it.
+ALL_OBJS  = $(foreach test,$(MANUAL_TESTS) $(UNIT_TESTS),../build/tests/$(basename $(test)).cpp$(suffix $(test)).o)
 ALL_OBJS += $(CHECK_TARGETS)
 
 # ---------------------------------------------------------------------------------------------------------------------

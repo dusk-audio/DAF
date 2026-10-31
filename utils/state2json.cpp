@@ -1,6 +1,13 @@
 #include "extra/Base64.hpp"
 #include "extra/String.hpp"
 
+// whether key is the special key "__daf_<name>", or "__dpf_<name>" as written before the framework was renamed from
+// DPF on 2026-08-22, which the plugins still load
+static bool isSpecialKey(const String& key, const char* const name)
+{
+    return (key.startsWith("__daf_") || key.startsWith("__dpf_")) && std::strcmp(key.buffer() + 6, name) == 0;
+}
+
 int main(int argc, char* argv[])
 {
     if (argc != 2)
@@ -53,7 +60,7 @@ int main(int argc, char* argv[])
         if (buffer[i] == '\0')
         {
             // special keys
-            if (key == "__daf_state_begin__")
+            if (isSpecialKey(key, "state_begin__"))
             {
                 DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i' || queryingType == 'n', queryingType, 1);
                 if (queryingType == 'n')
@@ -66,7 +73,7 @@ int main(int argc, char* argv[])
                 hasValue = false;
                 continue;
             }
-            if (key == "__daf_state_end__")
+            if (isSpecialKey(key, "state_end__"))
             {
                 DAF_SAFE_ASSERT_INT_RETURN(queryingType == 's', queryingType, 1);
                 printf("\n  }");
@@ -76,7 +83,7 @@ int main(int argc, char* argv[])
                 hasValue = false;
                 continue;
             }
-            if (key == "__daf_parameters_begin__")
+            if (isSpecialKey(key, "parameters_begin__"))
             {
                 DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i' || queryingType == 'n', queryingType, 1);
                 if (queryingType == 'n')
@@ -89,7 +96,7 @@ int main(int argc, char* argv[])
                 hasValue = false;
                 continue;
             }
-            if (key == "__daf_parameters_end__")
+            if (isSpecialKey(key, "parameters_end__"))
             {
                 DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'p', queryingType, 1);
                 printf("\n  }");
@@ -107,7 +114,7 @@ int main(int argc, char* argv[])
             if (! hasValue)
                 continue;
 
-            if (key == "__daf_program__")
+            if (isSpecialKey(key, "program__"))
             {
                 DAF_SAFE_ASSERT_INT_RETURN(queryingType == 'i', queryingType, 1);
                 queryingType = 'n';

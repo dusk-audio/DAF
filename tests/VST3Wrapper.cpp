@@ -26,6 +26,7 @@
  * not the queues after it. */
 
 #define DAF_PLUGIN_TARGET_VST3
+#define DAF_WRAPPER_TEST_BYPASS
 #define DAF_WRAPPER_TEST_PARAM_TEXT
 #define DAF_TEST_NO_DGL
 
@@ -185,6 +186,7 @@ struct TestParamQueue {
     v3_param_value_queue_cpp* vtable;
     v3_param_id id;
     double value;
+    bool failGetPoint; // get_point fails, as a broken host queue would
 };
 
 struct TestParamChanges {
@@ -206,7 +208,7 @@ static int32_t V3_API queue_get_point_count(void*) { return 1; }
 
 static v3_result V3_API queue_get_point(void* const self, const int32_t idx, int32_t* const offset, double* const value)
 {
-    if (idx != 0)
+    if (idx != 0 || static_cast<TestParamQueue*>(self)->failGetPoint)
         return V3_INVALID_ARG;
     *offset = 0;
     *value = static_cast<TestParamQueue*>(self)->value;
@@ -346,6 +348,54 @@ int main()
         v3_cpp_obj_terminate(required); v3_cpp_obj_unref(required);
     }
 
+    // State saved before the framework was renamed from DPF on 2026-08-22, with "__dpf_" markers and the bypass
+    // parameter under its old symbol, loads as the current form does. The state is required, so the load only
+    // succeeds if its section was really read.
+    {
+        gRequireWrapperTestState = true;
+        v3_component_cpp** legacy = nullptr;
+        DAF_ASSERT_EQUAL((*factory)->v1.create_instance(factory, info.class_id, v3_component_iid, (void**)&legacy), V3_OK,
+                         "legacy-state component must instantiate");
+        DAF_ASSERT_EQUAL(v3_cpp_obj_initialize(legacy, nullptr), V3_OK, "legacy-state component must initialize");
+        gRequireWrapperTestState = false;
+        initTestObjects();
+        gStreamReadData.clear(); gStreamReadOffset = 0;
+        const auto token = [&](const char* value) { gStreamReadData += value; gStreamReadData += '\0'; };
+        token("__dpf_state_begin__"); token("file"); token("");
+        token("__dpf_state_end__");
+        token("__dpf_parameters_begin__"); token("linearlow"); token("7"); token("dpf_bypass"); token("1");
+        token("__dpf_parameters_end__"); gStreamReadData += '\xfe'; gStreamReadData += '\0';
+        DAF_ASSERT_EQUAL((*legacy)->comp.set_state(legacy, (v3_bstream**)&gStreamPtr), V3_OK,
+                         "state saved before the rename must load");
+        gStreamData.clear();
+        DAF_ASSERT_EQUAL((*legacy)->comp.get_state(legacy, (v3_bstream**)&gStreamPtr), V3_OK, "get_state must succeed");
+        DAF_ASSERT_EQUAL(gStreamData.find(std::string("linearlow") + '\0' + "7" + '\0') != std::string::npos, true,
+                         "its parameters must apply");
+        DAF_ASSERT_EQUAL(gStreamData.find(std::string(ParameterDesignationSymbols::bypass) + '\0' + "1" + '\0')
+                         != std::string::npos, true, "the bypass parameter must be found under its old symbol");
+
+        // a saved value that is not finite is skipped, and the rest of the state still loads
+        gStreamReadData.clear(); gStreamReadOffset = 0;
+        token("__daf_state_begin__"); token("file"); token("");
+        token("__daf_state_end__");
+        token("__daf_parameters_begin__"); token("linearlow"); token("nan"); token("loghigh"); token("100");
+        token("logmiddle"); token("1e300"); // finite, but too large for a float
+        token("__daf_parameters_end__"); gStreamReadData += '\xfe'; gStreamReadData += '\0';
+        DAF_ASSERT_EQUAL((*legacy)->comp.set_state(legacy, (v3_bstream**)&gStreamPtr), V3_OK,
+                         "a state with a value that is not finite must load");
+        DAF_ASSERT_EQUAL(gNonFiniteParameterWrites, 0u, "a saved value that is not finite must not reach the plugin");
+        gStreamData.clear();
+        DAF_ASSERT_EQUAL((*legacy)->comp.get_state(legacy, (v3_bstream**)&gStreamPtr), V3_OK, "get_state must succeed");
+        DAF_ASSERT_EQUAL(gStreamData.find(std::string("linearlow") + '\0' + "7" + '\0') != std::string::npos, true,
+                         "a skipped value must leave its parameter as it was");
+        DAF_ASSERT_EQUAL(gStreamData.find(std::string("loghigh") + '\0' + "100" + '\0') != std::string::npos, true,
+                         "the other parameters must still apply");
+        DAF_ASSERT_EQUAL(gStreamData.find(std::string("logmiddle") + '\0' + "632" + '\0') != std::string::npos, true,
+                         "a value too large for a float must be skipped");
+        gStreamReadData.clear(); gStreamReadOffset = 0;
+        v3_cpp_obj_terminate(legacy); v3_cpp_obj_unref(legacy);
+    }
+
     // the ID the factory lists is the one it must create from
     v3_component_cpp** component = nullptr;
     DAF_ASSERT_EQUAL((*factory)->v1.create_instance(factory, info.class_id, v3_component_iid, (void**)&component),
@@ -478,6 +528,37 @@ int main()
         DAF_ASSERT_EQUAL(processBlock(processor, &mixed, &output), V3_OK, "process must succeed");
         DAF_ASSERT_EQUAL(std::abs((*controller)->ctrl.get_parameter_normalised(controller, linearId) - 0.8) < 1e-6, true,
                          "a queue after one with an unknown parameter ID must still be applied");
+
+        // A value that is not a number, or not finite, never reaches the plugin. The tests build with -ffast-math,
+        // as plugins do, which is exactly where a std::isfinite guard is compiled away; strtod keeps the
+        // compiler from seeing the values, and d_isFinite checks the result the same way the wrapper must.
+        {
+            const double notFinite[] = { std::strtod("nan", nullptr), std::strtod("inf", nullptr), std::strtod("-inf", nullptr) };
+            for (const double value : notFinite)
+            {
+                TestParamQueue badQueue[1] = { { &gQueueVTable, linearId, value } };
+                TestParamChanges bad = { &gChangesVTable, badQueue, 1 };
+                DAF_ASSERT_EQUAL(processBlock(processor, &bad, &output), V3_OK, "process must succeed");
+                const double normalised = (*controller)->ctrl.get_parameter_normalised(controller, linearId);
+                DAF_ASSERT_EQUAL(d_isFinite(normalised) && std::abs(normalised - 0.8) < 1e-6, true,
+                                 "a non-finite parameter value from the host must be ignored");
+
+                // and the edit controller refuses one outright
+                DAF_ASSERT_EQUAL((*controller)->ctrl.set_parameter_normalised(controller, linearId, value), V3_INVALID_ARG,
+                                 "the controller must refuse a parameter value that is not finite");
+            }
+            DAF_ASSERT_EQUAL(gNonFiniteParameterWrites, 0u, "a parameter value that is not finite must not reach the plugin");
+        }
+
+        // a queue whose point cannot be read only skips itself, as an unknown ID does
+        {
+            const v3_param_id logHighId = kVst3InternalParameterCount + kParamLogHigh;
+            TestParamQueue queues[2] = { { &gQueueVTable, logHighId, 0.5, true }, { &gQueueVTable, linearId, 0.3, false } };
+            TestParamChanges changes = { &gChangesVTable, queues, 2 };
+            DAF_ASSERT_EQUAL(processBlock(processor, &changes, &output), V3_OK, "process must succeed");
+            DAF_ASSERT_EQUAL(std::abs((*controller)->ctrl.get_parameter_normalised(controller, linearId) - 0.3) < 1e-6, true,
+                             "a queue after one whose point cannot be read must still be applied");
+        }
 
         DAF_ASSERT_EQUAL((*processor)->proc.set_processing(processor, false), V3_OK, "set_processing must succeed");
         DAF_ASSERT_EQUAL((*component)->comp.set_active(component, false), V3_OK, "set_active must succeed");

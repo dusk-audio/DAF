@@ -376,6 +376,37 @@ bool d_isNotZero(const T& value)
 }
 
 /**
+   Check if a floating point number is finite, that is neither infinite nor NaN.
+
+   Use this instead of std::isfinite, std::isnan or std::isinf on values from outside your own code, such as
+   parameter values from the host. DAF's Makefile builds compile with -ffast-math, which lets the compiler
+   assume that no value is ever infinite or NaN, and GCC and Clang then fold those checks to a constant:
+   the check is silently compiled out. This reads the bit pattern instead, through a volatile, so neither
+   compiler can apply that assumption to it.
+ */
+static inline
+bool d_isFinite(const double value) noexcept
+{
+    uint64_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    const volatile uint64_t opaque = bits;
+    return (opaque & 0x7ff0000000000000ULL) != 0x7ff0000000000000ULL;
+}
+
+/**
+   Check if a floating point number is finite, that is neither infinite nor NaN.
+   @see d_isFinite(double)
+ */
+static inline
+bool d_isFinite(const float value) noexcept
+{
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    const volatile uint32_t opaque = bits;
+    return (opaque & 0x7f800000U) != 0x7f800000U;
+}
+
+/**
    Get next power of 2.
  */
 static inline

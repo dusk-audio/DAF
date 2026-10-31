@@ -66,6 +66,10 @@ public:
 
     void setParameter(unsigned int index, float value)
     {
+        // a value that is not finite never reaches the plugin
+        if (! d_isFinite(value))
+            return;
+
         fPlugin.setParameterValue(index, fPlugin.getParameterRanges(index).getFixedValue(value));
     }
 

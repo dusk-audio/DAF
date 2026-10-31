@@ -48,6 +48,8 @@
 
 #ifndef DAF_PLUGIN_LV2_STATE_PREFIX
 # define DAF_PLUGIN_LV2_STATE_PREFIX "urn:daf:"
+// the default prefix before the framework was renamed from DPF on 2026-08-22, still read back by lv2_restore
+# define DAF_PLUGIN_LV2_LEGACY_STATE_PREFIX "urn:distrho:"
 #endif
 
 #define DAF_LV2_USE_EVENTS_IN  (DAF_PLUGIN_WANT_MIDI_INPUT || DAF_PLUGIN_WANT_TIMEPOS || DAF_PLUGIN_WANT_STATE)
@@ -624,6 +626,10 @@ public:
             if (!getPortControlValue(i, curValue))
                 continue;
 
+            // a value that is not finite never reaches the plugin
+            if (! d_isFinite(curValue))
+                continue;
+
             if (fPlugin.isParameterInput(i) && d_isNotEqual(fLastControlValues[i], curValue))
             {
                 fLastControlValues[i] = curValue;
@@ -1083,6 +1089,22 @@ public:
             const void* data = retrieve(handle,
                                         fUridMap->map(fUridMap->handle, lv2key.buffer()),
                                         &size, &type, &flags);
+
+           #ifdef DAF_PLUGIN_LV2_LEGACY_STATE_PREFIX
+            // a session saved before the rename has this state under the old prefix
+            if (data == nullptr && (hints & kStateIsHostReadable) == 0)
+            {
+                lv2key  = DAF_PLUGIN_LV2_LEGACY_STATE_PREFIX;
+                lv2key += key;
+
+                size  = 0;
+                type  = 0;
+                flags = LV2_STATE_IS_POD|LV2_STATE_IS_PORTABLE;
+                data  = retrieve(handle,
+                                 fUridMap->map(fUridMap->handle, lv2key.buffer()),
+                                 &size, &type, &flags);
+            }
+           #endif
 
             if (data == nullptr || size == 0)
                 continue;

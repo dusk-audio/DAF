@@ -235,23 +235,37 @@ jobs:
 
   # No macos-13 or macos-14 job: GitHub is deprecating the 13 image, and
   # macos-15 covers the newer-SDK risk that 14 merely duplicated.
+  # Universal binaries cover the arm64 slice we ship (and the x86_64 one for
+  # free). macos-intel and macos-10.15 dropped: both target Intel Macs, which
+  # nothing here is shipped for.
+  #
+  # Inline steps rather than dpf-cmake-action, which configures for macOS 10.12
+  # and has no input to change that: this builds for DAF's own default
+  # deployment target (11.0, see Makefile.base.mk), as the plugins ship. The
+  # steps are otherwise the action's: Homebrew's cairo removed so that nothing
+  # links it, a universal Release build, and the bundles packaged.
   macos-15:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    strategy:
-      matrix:
-        # macos-universal covers the arm64 slice we ship (and the x86_64 one for
-        # free). macos-intel and macos-10.15 dropped: both target Intel Macs,
-        # which nothing here is shipped for.
-        target: [macos-universal]
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - uses: distrho/dpf-cmake-action@c5786bfc026771e312cf0b3ce02d13a5a1cc0a0c # v1
         with:
-          dpf_path: .
-          suffix: _15
-          target: ${{ matrix.target }}
+          persist-credentials: false
+      - name: Remove Homebrew cairo
+        run: brew uninstall --ignore-dependencies -f cairo
+      - name: Configure CMake
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64'
+      - name: Build all
+        run: cmake --build build -j "$(sysctl -n hw.logicalcpu)"
+      - name: Package bundles
+        run: ./utils/package-osx-bundles.sh
+      # the script writes the per-format packages and the product installer to build/, next to bin/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: build/*.pkg
+          if-no-files-found: error
 
   # The only Windows leg: products ship MSVC x64. 32-bit and Windows-on-ARM
   # were dropped with the targets nothing is shipped for.

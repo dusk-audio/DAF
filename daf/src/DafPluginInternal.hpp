@@ -142,12 +142,12 @@ void snprintf_param_value(char* const dst, const double value, const double rang
                           const size_t size)
 {
     DAF_SAFE_ASSERT_RETURN(size > 0,);
-    if (! std::isfinite(value))
+    if (! d_isFinite(value))
         return snprintf_t<double>(dst, value, "%g", size);
     const double magnitude = std::fabs(value);
     int decimals = magnitude >= 100.0 ? 1 : magnitude >= 10.0 ? 2 : 3;
     const double span = std::fabs(rangeMax - rangeMin);
-    if (span > 0.0 && std::isfinite(span))
+    if (span > 0.0 && d_isFinite(span))
         decimals = std::max(decimals, std::min(9, static_cast<int>(std::ceil(-std::log10(span * 1.0e-4) - 1.0e-9))));
     std::snprintf(dst, size, "%.*f", decimals, value);
     if (char* const point = std::strchr(dst, '.'))
@@ -780,6 +780,42 @@ public:
         return fData->parameters[index].symbol;
     }
 
+    // Whether a parameter symbol read back from saved state names this parameter. Before the framework was renamed
+    // from DPF on 2026-08-22 the bypass designation's symbol was "dpf_bypass", and sessions saved then use it.
+    bool isSavedParameterSymbol(const uint32_t index, const char* const savedSymbol) const noexcept
+    {
+        const String& symbol(getParameterSymbol(index));
+
+        if (symbol == savedSymbol)
+            return true;
+
+        return symbol == ParameterDesignationSymbols::bypass && std::strcmp(savedSymbol, "dpf_bypass") == 0;
+    }
+
+    // Parse a parameter value read back from saved state: an integer for an integer parameter, otherwise a number in
+    // the C locale. False for text that is not a value the plugin may be given, one that is not finite or is too large
+    // for a float; the range is checked before converting, since converting a larger double is undefined behaviour.
+    bool parseSavedParameterValue(const uint32_t index, const char* const text, float& value) const noexcept
+    {
+        double parsed;
+
+        if (getParameterHints(index) & kParameterIsInteger)
+        {
+            parsed = std::atoi(text);
+        }
+        else
+        {
+            const ScopedSafeLocale ssl;
+            parsed = std::atof(text);
+        }
+
+        if (! d_isFinite(parsed) || std::abs(parsed) > static_cast<double>(std::numeric_limits<float>::max()))
+            return false;
+
+        value = static_cast<float>(parsed);
+        return true;
+    }
+
     const String& getParameterUnit(const uint32_t index) const noexcept
     {
         DAF_SAFE_ASSERT_RETURN(fData != nullptr && index < fData->parameterCount, sFallbackString);
@@ -842,6 +878,11 @@ public:
     {
         DAF_SAFE_ASSERT_RETURN(fPlugin != nullptr,);
         DAF_SAFE_ASSERT_RETURN(fData != nullptr && index < fData->parameterCount,);
+
+        // The backstop for every path into the plugin, whether or not its wrapper checked already: the wrappers
+        // check too, where a value that is not finite would otherwise also reach their own caches or the host.
+        if (! d_isFinite(value))
+            return;
 
         fPlugin->setParameterValue(index, value);
     }
