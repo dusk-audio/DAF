@@ -24,14 +24,14 @@ START_NAMESPACE_DAF
  * Intro */
 
 /**
-   @mainpage DAF %Plugin Framework
+   @mainpage Overview
 
-   DAF %Plugin Framework (or @b DAF for short)
+   The Dusk Audio Framework (or @b DAF for short)
    is a plugin framework designed to make development of new plugins an easy and enjoyable task.@n
    It allows developers to create plugins with custom UIs using a simple C++ API.@n
    The framework facilitates exporting various different plugin formats from the same code-base.
 
-   DAF can build for LADSPA, DSSI, LV2, VST2, VST3 and CLAP formats.@n
+   DAF can build for LADSPA, DSSI, LV2, VST2, VST3, CLAP and AU formats.@n
    A JACK/Standalone mode is also available, allowing you to quickly test plugins.
 
    @section Macros
