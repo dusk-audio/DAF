@@ -323,31 +323,32 @@ const char *x_fib_recent_at (unsigned int i) {
 #define PATHSEP "/"
 #endif
 
+// whether the path fit, with snprintf's result used so that GCC does not warn about truncation
+static int x_fib_path_fits (const int written, const size_t size) {
+	return written > 0 && (size_t) written < size;
+}
+
 const char *x_fib_recent_file(const char *appname) {
 	static char recent_file[1024];
 	assert(!strchr(appname, '/'));
 	const char *xdg = getenv("XDG_DATA_HOME");
-	if (xdg && (strlen(xdg) + strlen(appname) + 10) < sizeof(recent_file)) {
-		sprintf(recent_file, "%s" PATHSEP "%s" PATHSEP "recent", xdg, appname);
+	if (xdg && x_fib_path_fits (snprintf(recent_file, sizeof(recent_file), "%s" PATHSEP "%s" PATHSEP "recent", xdg, appname), sizeof(recent_file))) {
 		return recent_file;
 	}
 #ifdef PLATFORM_WINDOWS
 	const char * homedrive = getenv("HOMEDRIVE");
 	const char * homepath = getenv("HOMEPATH");
-	if (homedrive && homepath && (strlen(homedrive) + strlen(homepath) + strlen(appname) + 29) < PATH_MAX) {
-		sprintf(recent_file, "%s%s" PATHSEP "Application Data" PATHSEP "%s" PATHSEP "recent.txt", homedrive, homepath, appname);
+	if (homedrive && homepath && x_fib_path_fits (snprintf(recent_file, sizeof(recent_file), "%s%s" PATHSEP "Application Data" PATHSEP "%s" PATHSEP "recent.txt", homedrive, homepath, appname), sizeof(recent_file))) {
 		return recent_file;
 	}
 #elif defined PLATFORM_OSX
 	const char *home = getenv("HOME");
-	if (home && (strlen(home) + strlen(appname) + 29) < sizeof(recent_file)) {
-		sprintf(recent_file, "%s/Library/Preferences/%s/recent", home, appname);
+	if (home && x_fib_path_fits (snprintf(recent_file, sizeof(recent_file), "%s/Library/Preferences/%s/recent", home, appname), sizeof(recent_file))) {
 		return recent_file;
 	}
 #else
 	const char *home = getenv("HOME");
-	if (home && (strlen(home) + strlen(appname) + 22) < sizeof(recent_file)) {
-		sprintf(recent_file, "%s/.local/share/%s/recent", home, appname);
+	if (home && x_fib_path_fits (snprintf(recent_file, sizeof(recent_file), "%s/.local/share/%s/recent", home, appname), sizeof(recent_file))) {
 		return recent_file;
 	}
 #endif

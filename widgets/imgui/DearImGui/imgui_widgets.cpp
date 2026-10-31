@@ -4998,7 +4998,8 @@ bool ImGui::InputTextEx(const char* label, const char* hint, char* buf, int buf_
                 apply_new_text = "";
                 apply_new_text_length = 0;
                 value_changed = true;
-                IMSTB_TEXTEDIT_CHARTYPE empty_string;
+                // initialised although none of it is read, as clang 21 warns about passing it uninitialised
+                IMSTB_TEXTEDIT_CHARTYPE empty_string = 0;
                 stb_textedit_replace(state, state->Stb, &empty_string, 0);
             }
             else if (strcmp(buf, state->TextToRevertTo.Data) != 0)
