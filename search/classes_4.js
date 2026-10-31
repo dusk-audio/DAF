@@ -1,5 +1,5 @@
 var searchData=
 [
-  ['filebrowserdata_645',['FileBrowserData',['../structFileBrowserData.html',1,'']]],
-  ['filebrowseroptions_646',['FileBrowserOptions',['../structFileBrowserOptions.html',1,'']]]
+  ['exponentialvaluesmoother_0',['ExponentialValueSmoother',['../classExponentialValueSmoother.html',1,'']]],
+  ['externalwindow_1',['ExternalWindow',['../classExternalWindow.html',1,'']]]
 ];

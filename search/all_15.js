@@ -1,10 +1,11 @@
 var searchData=
 [
-  ['widget_599',['Widget',['../classWidget.html',1,'']]],
-  ['window_600',['Window',['../classWindow.html',1,'Window'],['../classWindow.html#a2f6257937261fcb3e627752dfb248d47',1,'Window::Window(Application &amp;app)'],['../classWindow.html#a647ec84da28005ecf0501825af77adec',1,'Window::Window(Application &amp;app, Window &amp;transientParentWindow)'],['../classWindow.html#a2cd48e2c2d816439cf38faf5c7a9736f',1,'Window::Window(Application &amp;app, uintptr_t parentWindowHandle, double scaleFactor, bool resizable)'],['../classWindow.html#ada557b4543c122a0de22c876c55504ae',1,'Window::Window(Application &amp;app, uintptr_t parentWindowHandle, uint width, uint height, double scaleFactor, bool resizable)']]],
-  ['withalpha_601',['withAlpha',['../structColor.html#a3f163d59e5a313f742acdd2bbd47441f',1,'Color']]],
-  ['writecustomdata_602',['writeCustomData',['../classRingBufferControl.html#a72e173dcae573f6e2e8ac4cfeb8aa96b',1,'RingBufferControl']]],
-  ['writecustomtype_603',['writeCustomType',['../classRingBufferControl.html#a3e9c1857e11f0d9efcc2944d6000504b',1,'RingBufferControl']]],
-  ['writemidievent_604',['writeMidiEvent',['../classPlugin.html#a0467eef817ac130cbbe1c0fbe09660c6',1,'Plugin']]],
-  ['wrtn_605',['wrtn',['../structHeapBuffer.html#a4d330b5567a46f6b6972f5174b262292',1,'HeapBuffer']]]
+  ['valid_0',['valid',['../structTimePosition_1_1BarBeatTick.html#a45a05047e923285af0fbeacb371e3f4e',1,'TimePosition::BarBeatTick']]],
+  ['validatestatevalue_1',['validateStateValue',['../classPlugin.html#abf4c2aa2829c0923a09381578476e9d2',1,'Plugin']]],
+  ['value_2',['value',['../structParameterEnumerationValue.html#a292f282837daa791205027d998907ae9',1,'ParameterEnumerationValue']]],
+  ['values_3',['values',['../structParameterEnumerationValues.html#ae101471c5d819624398001c84c534b7a',1,'ParameterEnumerationValues']]],
+  ['verticallystackedhorizontallayout_4',['VerticallyStackedHorizontalLayout',['../structVerticallyStackedHorizontalLayout.html',1,'']]],
+  ['visibilitychanged_5',['visibilityChanged',['../classExternalWindow.html#a60ddf70411d05cef91f4a1eaa09554b8',1,'ExternalWindow']]],
+  ['vulkangraphicscontext_6',['VulkanGraphicsContext',['../structVulkanGraphicsContext.html',1,'']]],
+  ['vulkanimage_7',['VulkanImage',['../classVulkanImage.html',1,'VulkanImage'],['../classVulkanImage.html#aaa625bb7cbad92de916c0d6877033a42',1,'VulkanImage::VulkanImage()'],['../classVulkanImage.html#a9a3d03e892ee950aa291811e54845568',1,'VulkanImage::VulkanImage(const char *rawData, uint width, uint height, ImageFormat format)'],['../classVulkanImage.html#aa1af6c288a92b400c0f99dd62b709443',1,'VulkanImage::VulkanImage(const char *rawData, const Size&lt; uint &gt; &amp;size, ImageFormat format)'],['../classVulkanImage.html#a5821aca1ae6e78a7e7c9814a42f55f35',1,'VulkanImage::VulkanImage(const VulkanImage &amp;image)']]]
 ];

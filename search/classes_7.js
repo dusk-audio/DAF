@@ -1,10 +1,7 @@
 var searchData=
 [
-  ['idlecallback_653',['IdleCallback',['../structIdleCallback.html',1,'']]],
-  ['imagebase_654',['ImageBase',['../classImageBase.html',1,'']]],
-  ['imagebaseaboutwindow_655',['ImageBaseAboutWindow',['../classImageBaseAboutWindow.html',1,'']]],
-  ['imagebasebutton_656',['ImageBaseButton',['../classImageBaseButton.html',1,'']]],
-  ['imagebaseknob_657',['ImageBaseKnob',['../classImageBaseKnob.html',1,'']]],
-  ['imagebaseslider_658',['ImageBaseSlider',['../classImageBaseSlider.html',1,'']]],
-  ['imagebaseswitch_659',['ImageBaseSwitch',['../classImageBaseSwitch.html',1,'']]]
+  ['heapbuffer_0',['HeapBuffer',['../structHeapBuffer.html',1,'']]],
+  ['heapringbuffer_1',['HeapRingBuffer',['../classHeapRingBuffer.html',1,'']]],
+  ['horizontallystackedverticallayout_2',['HorizontallyStackedVerticalLayout',['../structHorizontallyStackedVerticalLayout.html',1,'']]],
+  ['hugestackbuffer_3',['HugeStackBuffer',['../structHugeStackBuffer.html',1,'']]]
 ];

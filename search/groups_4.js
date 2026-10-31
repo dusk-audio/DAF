@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['namespace_20macros_1250',['Namespace Macros',['../group__NamespaceMacros.html',1,'']]]
+  ['functions_0',['functions',['../group__MathFunctions.html',1,'Math related functions'],['../group__MiscellaneousFunctions.html',1,'Miscellaneous functions'],['../group__StringPrintFunctions.html',1,'String print functions']]]
 ];

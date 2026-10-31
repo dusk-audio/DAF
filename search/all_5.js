@@ -1,22 +1,13 @@
 var searchData=
 [
-  ['filebrowserdata_159',['FileBrowserData',['../structFileBrowserData.html',1,'']]],
-  ['filebrowseroptions_160',['FileBrowserOptions',['../structFileBrowserOptions.html',1,'FileBrowserOptions'],['../structFileBrowserOptions.html#afaad52af434db54ecc629ff68b194273',1,'FileBrowserOptions::FileBrowserOptions()']]],
-  ['filebrowserselected_161',['fileBrowserSelected',['../classWindow.html#a6ec017881675f860ae746dad6c021b63',1,'Window']]],
-  ['fill_162',['fill',['../classNanoVG.html#ae6e189b2c0b5a67c8c227d89b9bdb56e',1,'NanoVG']]],
-  ['fillcolor_163',['fillColor',['../classNanoVG.html#a9a802d6e276195d13bc33d0f4b39cff9',1,'NanoVG::fillColor(const Color &amp;color)'],['../classNanoVG.html#a9b88f568b952402bbcfec289095734a7',1,'NanoVG::fillColor(const int red, const int green, const int blue, const int alpha=255)'],['../classNanoVG.html#a364794e2641625310aab9b7755b1e3d5',1,'NanoVG::fillColor(const float red, const float green, const float blue, const float alpha=1.0f)']]],
-  ['fillpaint_164',['fillPaint',['../classNanoVG.html#aca56cc6d1c2455fc9f750cce4dc132d0',1,'NanoVG']]],
-  ['findfont_165',['findFont',['../classNanoVG.html#afbcfaa824c76e00eb22bd3f7dd5d1ab0',1,'NanoVG']]],
-  ['fixbounds_166',['fixBounds',['../structColor.html#aad01f46af4cdb18b2bcbddd3f63d14d5',1,'Color']]],
-  ['fixdefault_167',['fixDefault',['../structParameterRanges.html#a17519e584ccc28e87b73bfbd1a81cf10',1,'ParameterRanges']]],
-  ['fixvalue_168',['fixValue',['../structParameterRanges.html#a1dac84c100f420bfc529a4d2ea60dc7c',1,'ParameterRanges']]],
-  ['flags_169',['flags',['../structWidget_1_1BaseEvent.html#ae134a6bdbd16a59218b5b4f0ee3a154c',1,'Widget::BaseEvent']]],
-  ['focus_170',['focus',['../classExternalWindow.html#a6957b4f82aa3e3557c4c455bbc6b1e15',1,'ExternalWindow::focus()'],['../classWindow.html#a03985e4ca2c9b4fcf572b5029e8c0115',1,'Window::focus()']]],
-  ['fontblur_171',['fontBlur',['../classNanoVG.html#aa0a42259164f0893ea63929cfce29a75',1,'NanoVG']]],
-  ['fontface_172',['fontFace',['../classNanoVG.html#a22fa48b86dac0cc4ab1cd922de39c52b',1,'NanoVG']]],
-  ['fontfaceid_173',['fontFaceId',['../classNanoVG.html#a2d32dbd0fb0dd0ae36fdc6ef2be65f6c',1,'NanoVG']]],
-  ['fontsize_174',['fontSize',['../classNanoVG.html#a23353792b4267d74f8f7a665d358c1a4',1,'NanoVG']]],
-  ['frame_175',['frame',['../structMidiEvent.html#aca2f6590b33bd2175ab71f985747d88e',1,'MidiEvent::frame()'],['../structTimePosition.html#aa3606d1c518c7ebe6335bc19f72b015b',1,'TimePosition::frame()']]],
-  ['fromhsl_176',['fromHSL',['../structColor.html#a41820f7349e997489d53f98036e76a0c',1,'Color']]],
-  ['fromhtml_177',['fromHTML',['../structColor.html#abdc66d9b8c6422a721f8d576e871f646',1,'Color']]]
+  ['editparameter_0',['editParameter',['../classUI.html#a2efcd4f21af0470e91fb6a342d7667a0',1,'UI']]],
+  ['ellipse_1',['ellipse',['../classNanoVG.html#a2081ea8d4c33481d24ae98d1a65a6f9b',1,'NanoVG']]],
+  ['end_5fnamespace_5fdaf_2',['END_NAMESPACE_DAF',['../group__NamespaceMacros.html#gaa8085844209f95ff89a7fbc5a6a7ef02',1,'DafInfo.hpp']]],
+  ['endframe_3',['endFrame',['../classNanoVG.html#a432d8c79b21f61eb1010a75cc13ee711',1,'NanoVG']]],
+  ['entry_20points_4',['Entry Points',['../group__EntryPoints.html',1,'']]],
+  ['enumvalues_5',['enumValues',['../structParameter.html#ab94ec79aad8e8f6e4bc33d046f029358',1,'Parameter']]],
+  ['exec_6',['exec',['../classApplication.html#a805dd37af3b9adfc1d0ee1e734ad81e3',1,'Application::exec()'],['../classWindow.html#addce529703b96ff6742428c8bd8c4cba',1,'Window::exec()']]],
+  ['exponentialvaluesmoother_7',['ExponentialValueSmoother',['../classExponentialValueSmoother.html',1,'']]],
+  ['externalwindow_8',['ExternalWindow',['../classExternalWindow.html',1,'ExternalWindow'],['../classExternalWindow.html#afc5ed08d95e01734cdfbd6c69d8505c6',1,'ExternalWindow::ExternalWindow()'],['../classExternalWindow.html#a4db15a0baa5e85c04b4a8c3545958aad',1,'ExternalWindow::ExternalWindow(const PrivateData &amp;data)']]],
+  ['extra_20plugin_20macros_9',['Extra Plugin Macros',['../group__ExtraPluginMacros.html',1,'']]]
 ];

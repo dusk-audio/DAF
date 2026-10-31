@@ -1,8 +1,26 @@
 var searchData=
 [
-  ['textrow_712',['TextRow',['../structNanoVG_1_1TextRow.html',1,'NanoVG']]],
-  ['thread_713',['Thread',['../classThread.html',1,'']]],
-  ['timeposition_714',['TimePosition',['../structTimePosition.html',1,'']]],
-  ['toplevelwidget_715',['TopLevelWidget',['../classTopLevelWidget.html',1,'']]],
-  ['triangle_716',['Triangle',['../classTriangle.html',1,'']]]
+  ['safefilewriter_0',['SafeFileWriter',['../structSafeFileWriter.html',1,'']]],
+  ['scopeddenormaldisable_1',['ScopedDenormalDisable',['../classScopedDenormalDisable.html',1,'']]],
+  ['scopedgraphicscontext_2',['ScopedGraphicsContext',['../structWindow_1_1ScopedGraphicsContext.html',1,'Window']]],
+  ['scopedpointer_3',['ScopedPointer',['../classScopedPointer.html',1,'']]],
+  ['scopedsafelocale_4',['ScopedSafeLocale',['../classScopedSafeLocale.html',1,'']]],
+  ['scopelocker_5',['ScopeLocker',['../classScopeLocker.html',1,'']]],
+  ['scopelocker_3c_20recursivemutex_20_3e_6',['ScopeLocker&lt; RecursiveMutex &gt;',['../classScopeLocker.html',1,'']]],
+  ['scopetrylocker_7',['ScopeTryLocker',['../classScopeTryLocker.html',1,'']]],
+  ['scopetrylocker_3c_20recursivemutex_20_3e_8',['ScopeTryLocker&lt; RecursiveMutex &gt;',['../classScopeTryLocker.html',1,'']]],
+  ['scopeunlocker_9',['ScopeUnlocker',['../classScopeUnlocker.html',1,'']]],
+  ['scopeunlocker_3c_20recursivemutex_20_3e_10',['ScopeUnlocker&lt; RecursiveMutex &gt;',['../classScopeUnlocker.html',1,'']]],
+  ['scrollevent_11',['ScrollEvent',['../structWidget_1_1ScrollEvent.html',1,'Widget']]],
+  ['signal_12',['Signal',['../classSignal.html',1,'']]],
+  ['size_13',['Size',['../classSize.html',1,'']]],
+  ['size_3c_20uint_20_3e_14',['Size&lt; uint &gt;',['../classSize.html',1,'']]],
+  ['slidereventhandler_15',['SliderEventHandler',['../classSliderEventHandler.html',1,'']]],
+  ['smallstackbuffer_16',['SmallStackBuffer',['../structSmallStackBuffer.html',1,'']]],
+  ['smallstackringbuffer_17',['SmallStackRingBuffer',['../classSmallStackRingBuffer.html',1,'']]],
+  ['standalonewindow_18',['StandaloneWindow',['../classStandaloneWindow.html',1,'']]],
+  ['state_19',['State',['../structState.html',1,'']]],
+  ['string_20',['String',['../classString.html',1,'']]],
+  ['subwidget_21',['SubWidget',['../classSubWidget.html',1,'']]],
+  ['subwidgetwithsizehint_22',['SubWidgetWithSizeHint',['../structSubWidgetWithSizeHint.html',1,'']]]
 ];

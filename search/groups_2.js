@@ -1,5 +1,5 @@
 var searchData=
 [
-  ['entry_20points_1245',['Entry Points',['../group__EntryPoints.html',1,'']]],
-  ['extra_20plugin_20macros_1246',['Extra Plugin Macros',['../group__ExtraPluginMacros.html',1,'']]]
+  ['classes_0',['Main Classes',['../group__MainClasses.html',1,'']]],
+  ['classes_1',['Plugin helper classes',['../group__PluginHelperClasses.html',1,'']]]
 ];

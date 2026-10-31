@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['distrho_20_25plugin_20framework_1257',['DISTRHO %Plugin Framework',['../index.html',1,'']]]
+  ['daf_20plugin_20framework_0',['DAF Plugin Framework',['../index.html',1,'']]]
 ];

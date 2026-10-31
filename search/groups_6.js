@@ -1,5 +1,7 @@
 var searchData=
 [
-  ['state_20hints_1255',['State Hints',['../group__StateHints.html',1,'']]],
-  ['string_20print_20functions_1256',['String print functions',['../group__StringPrintFunctions.html',1,'']]]
+  ['macros_0',['Macros',['../group__ExtraPluginMacros.html',1,'Extra Plugin Macros'],['../group__NamespaceMacros.html',1,'Namespace Macros'],['../group__PluginMacros.html',1,'Plugin Macros']]],
+  ['main_20classes_1',['Main Classes',['../group__MainClasses.html',1,'']]],
+  ['math_20related_20functions_2',['Math related functions',['../group__MathFunctions.html',1,'']]],
+  ['miscellaneous_20functions_3',['Miscellaneous functions',['../group__MiscellaneousFunctions.html',1,'']]]
 ];

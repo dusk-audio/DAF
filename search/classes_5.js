@@ -1,5 +1,7 @@
 var searchData=
 [
-  ['glyphposition_647',['GlyphPosition',['../structNanoVG_1_1GlyphPosition.html',1,'NanoVG']]],
-  ['graphicscontext_648',['GraphicsContext',['../structGraphicsContext.html',1,'']]]
+  ['filebrowserdata_0',['FileBrowserData',['../structFileBrowserData.html',1,'']]],
+  ['filebrowseroptions_1',['FileBrowserOptions',['../structFileBrowserOptions.html',1,'']]],
+  ['filedropevent_2',['FileDropEvent',['../structWindow_1_1FileDropEvent.html',1,'Window']]],
+  ['focusevent_3',['FocusEvent',['../structWidget_1_1FocusEvent.html',1,'Widget']]]
 ];

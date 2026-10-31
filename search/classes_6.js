@@ -1,7 +1,5 @@
 var searchData=
 [
-  ['heapbuffer_649',['HeapBuffer',['../structHeapBuffer.html',1,'']]],
-  ['heapringbuffer_650',['HeapRingBuffer',['../classHeapRingBuffer.html',1,'']]],
-  ['horizontallystackedverticallayout_651',['HorizontallyStackedVerticalLayout',['../structHorizontallyStackedVerticalLayout.html',1,'']]],
-  ['hugestackbuffer_652',['HugeStackBuffer',['../structHugeStackBuffer.html',1,'']]]
+  ['glyphposition_0',['GlyphPosition',['../structNanoVG_1_1GlyphPosition.html',1,'NanoVG']]],
+  ['graphicscontext_1',['GraphicsContext',['../structGraphicsContext.html',1,'']]]
 ];
