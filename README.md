@@ -450,8 +450,8 @@ revision pins the whole framework. Their former repositories, `dusk-audio/pugl` 
 ## Releases and support
 
 Releases are tagged and published on the
-[releases page](https://github.com/dusk-audio/DAF/releases); the latest is `v1.0.0`. Between
-releases `main` moves on, and CI runs on every push to it. Projects pin one tag or commit.
+[releases page](https://github.com/dusk-audio/DAF/releases). Between releases `main` moves on, and
+CI runs on every push to it. Projects pin one tag or commit.
 
 Bug reports and questions belong on the
 [issue tracker](https://github.com/dusk-audio/DAF/issues), for every part of the tree, including
