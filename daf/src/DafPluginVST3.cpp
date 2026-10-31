@@ -1246,18 +1246,12 @@ public:
                         {
                             if (fPlugin.isParameterOutputOrTrigger(j))
                                 continue;
-                            if (fPlugin.getParameterSymbol(j) != key)
+                            if (! fPlugin.isSavedParameterSymbol(j, key))
                                 continue;
 
-                            if (fPlugin.getParameterHints(j) & kParameterIsInteger)
-                            {
-                                fvalue = std::atoi(value);
-                            }
-                            else
-                            {
-                                const ScopedSafeLocale ssl;
-                                fvalue = std::atof(value);
-                            }
+                            // a saved value the plugin may not be given ("nan", "1e300") is skipped
+                            if (! fPlugin.parseSavedParameterValue(j, value, fvalue))
+                                break;
 
                             fCachedParameterValues[kVst3InternalParameterBaseCount + j] = fvalue;
 
@@ -1668,7 +1662,7 @@ public:
                 int32_t offset;
                 double normalized;
                 if (points <= 0 || v3_cpp_obj(queue)->get_point(queue, points - 1, &offset, &normalized) != V3_OK
-                    || !std::isfinite(normalized) || normalized < 0.0 || normalized > 1.0)
+                    || !d_isFinite(normalized) || normalized < 0.0 || normalized > 1.0)
                     continue;
                 const uint32_t program = d_roundToIntPositive(normalized * fProgramCountMinusOne);
                 fPlugin.loadProgram(program);
@@ -1709,7 +1703,7 @@ public:
                     double normalized;
                     if (points <= 0 || v3_cpp_obj(queue)->get_point(queue, points - 1, &offset, &normalized) != V3_OK)
                         continue;
-                    if (!std::isfinite(normalized) || normalized < 0.0 || normalized > 1.0) continue;
+                    if (!d_isFinite(normalized) || normalized < 0.0 || normalized > 1.0) continue;
                     _setNormalizedPluginParameterValue(id - kVst3InternalParameterCount, normalized);
                 }
             }
@@ -1840,6 +1834,10 @@ public:
                             if (v3_cpp_obj(queue)->get_point(queue, j, &offset, &normalized) != V3_OK)
                                 break;
 
+                            // appendCC converts the value to an integer before clamping it, so it must be in range
+                            if (! d_isFinite(normalized) || normalized < 0.0 || normalized > 1.0)
+                                continue;
+
                             if (inputEventList.appendCC(offset, rindex, normalized))
                             {
                                 canAppendMoreEvents = false;
@@ -1859,10 +1857,15 @@ public:
                 // independent of the queue's sample offset (JUCE semantics).
                 const int32_t point = DAF_PLUGIN_VST3_LAST_PARAMETER_POINT
                                     ? v3_cpp_obj(queue)->get_point_count(queue) - 1 : 0;
+                // a queue whose point cannot be read only skips itself, as an unknown ID does
                 if (v3_cpp_obj(queue)->get_point(queue, point, &offset, &normalized) != V3_OK)
-                    break;
+                    continue;
 
                 if (!DAF_PLUGIN_VST3_LAST_PARAMETER_POINT && offset != 0)
+                    continue;
+
+                // a value that is not finite never reaches the plugin; finite ones out of range are clamped
+                if (! d_isFinite(normalized))
                     continue;
 
                 const uint32_t index = rindex - kVst3InternalParameterCount;
@@ -1910,9 +1913,9 @@ public:
                     continue;
 
                 if (v3_cpp_obj(queue)->get_point(queue, pcount - 1, &offset, &normalized) != V3_OK)
-                    break;
+                    continue;
 
-                if (offset == 0)
+                if (offset == 0 || ! d_isFinite(normalized))
                     continue;
 
                 const uint32_t index = rindex - kVst3InternalParameterCount;
@@ -2351,7 +2354,8 @@ public:
 
     v3_result setParameterNormalized(const v3_param_id rindex, const double normalized)
     {
-        DAF_SAFE_ASSERT_RETURN(normalized >= 0.0 && normalized <= 1.0, V3_INVALID_ARG);
+        // d_isFinite first: under -ffast-math the range check alone cannot be relied on to refuse a NaN
+        DAF_SAFE_ASSERT_RETURN(d_isFinite(normalized) && normalized >= 0.0 && normalized <= 1.0, V3_INVALID_ARG);
 
        #if DAF_PLUGIN_WANT_MIDI_INPUT
         // TODO something to do here?

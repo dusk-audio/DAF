@@ -190,6 +190,10 @@ public:
 
             curValue = *fPortControls[i];
 
+            // a value that is not finite never reaches the plugin
+            if (! d_isFinite(curValue))
+                continue;
+
             if (fPlugin.isParameterInput(i) && d_isNotEqual(fLastControlValues[i], curValue))
             {
                 fLastControlValues[i] = curValue;

@@ -134,6 +134,16 @@ static int runTests()
         DAF_ASSERT_EQUAL(r.entries[3].type, 'p', "parameter type");
         DAF_ASSERT_EQUAL(r.entries[3].key, std::string("gain"), "parameter key");
         DAF_ASSERT_EQUAL(r.entries[3].value, std::string("0.5"), "parameter value");
+
+        // the same stream as written before the framework was renamed from DPF on 2026-08-22, with "__dpf_"
+        // markers, gives the same entries, its program key included
+        ParseResult legacy;
+        DAF_ASSERT_EQUAL(parseAllWays(STATE("__dpf_program__\0" "3\0"
+                                            "__dpf_state_begin__\0" "file\0" "/tmp/a b\0" "empty\0" "\0" "__dpf_state_end__\0"
+                                            "__dpf_parameters_begin__\0" "gain\0" "0.5\0" "__dpf_parameters_end__\0"
+                                            "\xfe\0"), legacy),
+                         true, "legacy stream parses the same in any chunking");
+        DAF_ASSERT_EQUAL(sameResult(legacy, r), true, "legacy stream gives the entries the current one does");
     }
 
     // a terminator alone is a valid, empty state

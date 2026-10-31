@@ -76,6 +76,34 @@ int main()
     DAF_ASSERT_EQUAL(LADSPA_IS_HINT_LOGARITHMIC(d), 0, "linearlow must not be a logarithmic port");
     DAF_ASSERT_NOT_EQUAL(LADSPA_IS_HINT_DEFAULT_LOW(d), 0, "linearlow default must be LOW");
 
+    // A control port value that is not finite never reaches the plugin. The tests build with -ffast-math, as
+    // plugins do; strtof keeps the compiler from seeing the values, and the plugin counts what it is given.
+    {
+        const LADSPA_Handle handle = desc->instantiate(desc, 48000);
+        DAF_ASSERT_NOT_EQUAL(handle, nullptr, "instantiate must succeed");
+
+        float input[64] = {}, output[64] = {};
+        float controls[kParamCount] = { 0.0f, 4096.0f, 632.0f, 3.0f };
+        desc->connect_port(handle, 0, input);
+        desc->connect_port(handle, 1, output);
+        for (uint32_t i = 0; i < kParamCount; ++i)
+            desc->connect_port(handle, static_cast<unsigned long>(portForParameter(i)), &controls[i]);
+
+        desc->activate(handle);
+        const float notFinite[] = { std::strtof("nan", nullptr), std::strtof("inf", nullptr), std::strtof("-inf", nullptr) };
+        for (const float value : notFinite)
+        {
+            controls[kParamLinearLow] = value;
+            desc->run(handle, 64);
+        }
+        controls[kParamLinearLow] = 3.0f;
+        desc->run(handle, 64);
+        desc->deactivate(handle);
+        desc->cleanup(handle);
+
+        DAF_ASSERT_EQUAL(gNonFiniteParameterWrites, 0u, "a control port value that is not finite must not reach the plugin");
+    }
+
     d_stdout("LADSPA wrapper tests passed");
     return 0;
 }

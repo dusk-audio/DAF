@@ -27,6 +27,7 @@
 #include "daf/DafPlugin.hpp"
 
 #include <cstdio>
+#include <string>
 
 START_NAMESPACE_DAF
 
@@ -37,6 +38,9 @@ enum WrapperTestParameters {
     kParamLogHigh,      // logarithmic 1..65535, default 4096 = 65535^0.75 (HIGH on a log scale, LOW on a linear one)
     kParamLogMiddle,    // logarithmic 20..20000, default 632 ~= sqrt(20*20000) (MIDDLE on a log scale)
     kParamLinearLow,    // linear 0..10, default 3 (LOW)
+   #ifdef DAF_WRAPPER_TEST_BYPASS
+    kParamBypass,       // the bypass designation, which saved state names by its symbol
+   #endif
    #if DAF_PLUGIN_WANT_TIMEPOS
     kParamOutFrame,
     kParamOutBar,
@@ -59,11 +63,18 @@ static uint32_t gOutputParameterWrites = 0;
 static uint32_t gTriggerSetterPresses = 0;
 static uint32_t gTriggerRunPresses = 0;
 
+// every time a wrapper handed the plugin a parameter value that is not finite, which it never may
+static uint32_t gNonFiniteParameterWrites = 0;
+
 #if DAF_PLUGIN_WANT_STATE
 static constexpr const char* const kWrapperTestStateKey = "file";
 // Only dedicated complete-restore probes opt in; all other tests retain the
 // original optional-state policy.
 static bool gRequireWrapperTestState = false;
+#endif
+
+#if defined(DAF_WRAPPER_TEST_UPDATE_STATE) && defined(DAF_WRAPPER_TEST_PLAIN_STATE)
+# error both add the second state, a test can have one of them
 #endif
 
 #ifdef DAF_WRAPPER_TEST_UPDATE_STATE
@@ -76,6 +87,13 @@ static bool gUpdateStateFromConstructor = true; // too early, must be false
 static bool gUpdateStateFromInitState = true;   // too early, must be false
 static bool gUpdateStateFromActivate = false;   // must be true
 static bool gUpdateStateUnknownKey = true;      // must be false
+
+static constexpr const uint32_t kWrapperTestStateCount = 2;
+#elif defined(DAF_WRAPPER_TEST_PLAIN_STATE)
+/* A second state that the host keeps without reading it: no hints, so LV2 stores it under the framework's
+ * own URI prefix rather than under the plugin URI. setState() records the value it was last given. */
+static constexpr const char* const kWrapperTestPlainKey = "plain";
+static std::string gPlainStateValue;
 
 static constexpr const uint32_t kWrapperTestStateCount = 2;
 #elif DAF_PLUGIN_WANT_STATE
@@ -145,6 +163,11 @@ protected:
             parameter.unit = "dB";
            #endif
             break;
+       #ifdef DAF_WRAPPER_TEST_BYPASS
+        case kParamBypass:
+            parameter.initDesignation(kParameterDesignationBypass);
+            break;
+       #endif
        #if DAF_PLUGIN_WANT_TIMEPOS
         case kParamOutFrame:
             parameter.hints = kParameterIsOutput;
@@ -189,6 +212,15 @@ protected:
         }
        #endif
 
+       #ifdef DAF_WRAPPER_TEST_PLAIN_STATE
+        if (index == 1)
+        {
+            state.key = kWrapperTestPlainKey;
+            state.label = "Plain";
+            return;
+        }
+       #endif
+
         state.key = kWrapperTestStateKey;
         state.label = "File";
         state.hints = kStateIsFilenamePath;
@@ -196,7 +228,15 @@ protected:
         return; (void)index;
     }
 
+   #ifdef DAF_WRAPPER_TEST_PLAIN_STATE
+    void setState(const char* const key, const char* const value) override
+    {
+        if (std::strcmp(key, kWrapperTestPlainKey) == 0)
+            gPlainStateValue = value;
+    }
+   #else
     void setState(const char*, const char*) override {}
+   #endif
    #endif
 
    #ifdef DAF_WRAPPER_TEST_UPDATE_STATE
@@ -232,6 +272,9 @@ protected:
 
     void setParameterValue(const uint32_t index, const float value) override
     {
+        if (! d_isFinite(value))
+            ++gNonFiniteParameterWrites;
+
        #if DAF_PLUGIN_WANT_TIMEPOS
         if (index >= kParamOutFrame && index <= kParamOutBarStartTick)
             ++gOutputParameterWrites;

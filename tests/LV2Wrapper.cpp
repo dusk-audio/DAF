@@ -19,6 +19,7 @@
  * state through the worker. */
 
 #define DAF_PLUGIN_TARGET_LV2
+#define DAF_WRAPPER_TEST_PLAIN_STATE
 #define DAF_TEST_NO_DGL
 
 #include "tests.hpp"
@@ -221,6 +222,24 @@ static int testStateEchoedAfterPatchSet(Host& host, const LV2_Worker_Interface* 
     return 0;
 }
 
+// A control port value that is not finite never reaches the plugin. The tests build with -ffast-math, as plugins
+// do; strtof keeps the compiler from seeing the values, and the plugin counts what it is given with d_isFinite.
+static int testNonFiniteControls(Host& host)
+{
+    const float notFinite[] = { std::strtof("nan", nullptr), std::strtof("inf", nullptr), std::strtof("-inf", nullptr) };
+    for (const float value : notFinite)
+    {
+        host.controls[kParamLinearLow] = value;
+        host.run();
+    }
+
+    host.controls[kParamLinearLow] = 3.0f;
+    host.run();
+
+    DAF_ASSERT_EQUAL(gNonFiniteParameterWrites, 0u, "a control port value that is not finite must not reach the plugin");
+    return 0;
+}
+
 int main()
 {
     USE_NAMESPACE_DAF;
@@ -273,6 +292,35 @@ int main()
                          "one required LV2 state must accept");
     }
 
+    // Before the framework was renamed from DPF on 2026-08-22, a state the host does not read was stored under
+    // "urn:distrho:<key>", where it now goes under "urn:daf:<key>". A session saved then must still restore it,
+    // and where both are present the current key wins.
+    {
+        const LV2_Handle legacy = host.desc->instantiate(host.desc, kSampleRate, "", features);
+        DAF_ASSERT_NOT_EQUAL(legacy, nullptr, "a second instance must instantiate");
+        const LV2_State_Interface* const state = static_cast<const LV2_State_Interface*>(host.desc->extension_data(LV2_STATE__interface));
+        struct Stored { const char* legacyValue; const char* currentValue; LV2_URID legacyKey, currentKey, type; } stored = {
+            "saved by DPF", nullptr,
+            uridMap(nullptr, "urn:distrho:plain"), uridMap(nullptr, "urn:daf:plain"), uridMap(nullptr, LV2_ATOM__String)
+        };
+        const auto retrieve = [](LV2_State_Handle data, uint32_t key, size_t* size, uint32_t* type, uint32_t* flags) -> const void* {
+            const Stored& s = *static_cast<Stored*>(data);
+            const char* const value = key == s.currentKey ? s.currentValue : key == s.legacyKey ? s.legacyValue : nullptr;
+            if (value == nullptr) return nullptr;
+            *size = std::strlen(value) + 1; *type = s.type; *flags = LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE;
+            return value;
+        };
+        gPlainStateValue.clear();
+        DAF_ASSERT_EQUAL(state->restore(legacy, retrieve, &stored, 0, features), LV2_STATE_SUCCESS,
+                         "a restore with the old key must succeed");
+        DAF_ASSERT_EQUAL(gPlainStateValue == "saved by DPF", true, "a state stored under the old prefix must restore");
+        stored.currentValue = "saved by DAF";
+        DAF_ASSERT_EQUAL(state->restore(legacy, retrieve, &stored, 0, features), LV2_STATE_SUCCESS,
+                         "a restore with both keys must succeed");
+        DAF_ASSERT_EQUAL(gPlainStateValue == "saved by DAF", true, "the current prefix must win over the old one");
+        host.desc->cleanup(legacy);
+    }
+
     // audio in, audio out, events in, events out, then one port per parameter
     uint32_t port = 0;
     host.desc->connect_port(host.handle, port++, host.audioIn);
@@ -291,6 +339,8 @@ int main()
     if (const int ret = testBarExtrapolation(host))
         return ret;
     if (const int ret = testStateEchoedAfterPatchSet(host, worker))
+        return ret;
+    if (const int ret = testNonFiniteControls(host))
         return ret;
 
     host.desc->deactivate(host.handle);

@@ -29,7 +29,7 @@ endif
 # ---------------------------------------------------------------------------------------------------------------------
 
 MANUAL_TESTS  =
-UNIT_TESTS    = AudioUnitBufferList Color FileDrop HostKeyFilter IdleCallbacks ImGuiKnobs Point StateParser
+UNIT_TESTS    = AudioUnitBufferList Color FileDrop HostKeyFilter IdleCallbacks ImGuiKnobs Point StateParser Utils
 
 ifeq ($(MACOS),true)
 UNIT_TESTS   += CocoaRetiredView FileDragCocoa FileDropCocoa

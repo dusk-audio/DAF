@@ -877,18 +877,12 @@ public:
                     {
                         if (fPlugin.isParameterOutputOrTrigger(i))
                             continue;
-                        if (fPlugin.getParameterSymbol(i) != key)
+                        if (! fPlugin.isSavedParameterSymbol(i, key))
                             continue;
 
-                        if (fPlugin.getParameterHints(i) & kParameterIsInteger)
-                        {
-                            fvalue = std::atoi(value);
-                        }
-                        else
-                        {
-                            const ScopedSafeLocale ssl;
-                            fvalue = std::atof(value);
-                        }
+                        // a saved value the plugin may not be given ("nan", "1e300") is skipped
+                        if (! fPlugin.parseSavedParameterValue(i, value, fvalue))
+                            break;
 
                         fPlugin.setParameterValue(i, fvalue);
                        #if DAF_PLUGIN_HAS_UI
@@ -1026,6 +1020,10 @@ public:
 
     void vst_setParameter(const uint32_t index, const float value)
     {
+        // a value that is not finite never reaches the plugin
+        if (! d_isFinite(value))
+            return;
+
         const uint32_t hints = fPlugin.getParameterHints(index);
         const ParameterRanges& ranges(fPlugin.getParameterRanges(index));
 

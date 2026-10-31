@@ -1972,6 +1972,10 @@ public:
     {
         if (event->param_id >= fCachedParameters.numParams || fPlugin.isParameterOutput(event->param_id))
             return;
+        // a value that is not finite never reaches the plugin, nor a finite double too large for a float, which the
+        // conversion to the plugin's float would turn into infinity (and which is undefined behaviour in C++)
+        if (! d_isFinite(event->value) || std::abs(event->value) > static_cast<double>(std::numeric_limits<float>::max()))
+            return;
         fPlugin.setParameterValue(event->param_id, event->value);
         fCachedParameters.values[event->param_id] = fPlugin.getParameterValue(event->param_id);
         fCachedParameters.changed[event->param_id] = true;
@@ -2497,18 +2501,12 @@ public:
                         {
                             if (fPlugin.isParameterOutputOrTrigger(j))
                                 continue;
-                            if (fPlugin.getParameterSymbol(j) != key)
+                            if (! fPlugin.isSavedParameterSymbol(j, key))
                                 continue;
 
-                            if (fPlugin.getParameterHints(j) & kParameterIsInteger)
-                            {
-                                fvalue = std::atoi(value);
-                            }
-                            else
-                            {
-                                const ScopedSafeLocale ssl;
-                                fvalue = std::atof(value);
-                            }
+                            // a saved value the plugin may not be given ("nan", "1e300") is skipped
+                            if (! fPlugin.parseSavedParameterValue(j, value, fvalue))
+                                break;
 
                             fCachedParameters.values[j] = fvalue;
                            #if DAF_PLUGIN_HAS_UI
