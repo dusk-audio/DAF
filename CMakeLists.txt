@@ -29,8 +29,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR
                   OUTPUT_VARIABLE DAF_HOST_UNAME
                   OUTPUT_STRIP_TRAILING_WHITESPACE
                   ERROR_QUIET)
+  # 11.0, as in Makefile.base.mk: the oldest macOS the libc++ of current SDKs still supports
   if(DAF_HOST_UNAME STREQUAL "Darwin")
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum macOS version to target")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version to target")
   endif()
   unset(DAF_HOST_UNAME)
 endif()

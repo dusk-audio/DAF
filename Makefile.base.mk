@@ -243,10 +243,14 @@ endif
 #
 # To override, either set MACOSX_DEPLOYMENT_TARGET in the environment / on the make command line,
 # or pass -mmacosx-version-min=... yourself in CFLAGS/CXXFLAGS (as the macos-* rules below do).
+#
+# 11.0 is the oldest macOS the libc++ of current SDKs still supports: macOS 27's warns "The selected
+# platform is no longer supported by libc++" for anything older, in every C++ file, which fails a
+# -Werror build. It is also the first release that runs on Apple silicon.
 
 ifeq ($(MACOS),true)
 ifeq (,$(findstring -mmacosx-version-min=,$(CFLAGS)$(CXXFLAGS)$(LDFLAGS)))
-MACOSX_DEPLOYMENT_TARGET ?= 10.15
+MACOSX_DEPLOYMENT_TARGET ?= 11.0
 export MACOSX_DEPLOYMENT_TARGET
 endif
 endif
@@ -1066,6 +1070,18 @@ endif
 
 # ---------------------------------------------------------------------------------------------------------------------
 # Convenience rules for common builds
+
+# Universal binaries for the default deployment target, 11.0 (see above). MAX_ALLOWED matches it, so an API newer
+# than the target fails to compile instead of failing to load on an older macOS.
+macos-universal-11.0:
+	$(MAKE) \
+		CFLAGS="$(CFLAGS) -arch x86_64 -arch arm64 -DMAC_OS_X_VERSION_MAX_ALLOWED=MAC_OS_VERSION_11_0 -DMAC_OS_X_VERSION_MIN_REQUIRED=MAC_OS_VERSION_11_0 -mmacosx-version-min=11.0" \
+		CXXFLAGS="$(CXXFLAGS) -arch x86_64 -arch arm64 -DMAC_OS_X_VERSION_MAX_ALLOWED=MAC_OS_VERSION_11_0 -DMAC_OS_X_VERSION_MIN_REQUIRED=MAC_OS_VERSION_11_0 -mmacosx-version-min=11.0" \
+		PKG_CONFIG=/usr/bin/false \
+		PKG_CONFIG_PATH=/NOT
+
+# The rules below build for macOS older than the 11.0 default. An SDK whose libc++ no longer supports that target,
+# such as macOS 27's, warns about it in every C++ file.
 
 macos-intel-10.8:
 	$(MAKE) \
