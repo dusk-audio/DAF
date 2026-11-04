@@ -680,6 +680,11 @@ void puglWaylandSetAppId(PuglView* const view, const char* const appId)
         pugl_wl::puglWaylandSetAppId(asWayland(view), appId);
 }
 
+PuglStatus puglWaylandActivate(PuglView* const view, const char* const token)
+{
+    return puglIsWayland(view) ? pugl_wl::puglWaylandActivate(asWayland(view), token) : PUGL_UNSUPPORTED;
+}
+
 const char* puglWaylandGetExportedHandle(const PuglView* const view)
 {
     return view != nullptr && puglIsWayland(view) ? pugl_wl::puglWaylandGetExportedHandle(asWayland(view)) : nullptr;

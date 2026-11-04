@@ -1103,6 +1103,63 @@ static void testActivation()
     unsetenv("XDG_ACTIVATION_TOKEN");
 }
 
+static void testIncomingActivation()
+{
+    StandIn compositor;
+    compositor.withActivation = true;
+    check(compositor.start(), "handoff compositor starts");
+    PuglWorld* const world = openWorld(compositor);
+    check(world != nullptr, "handoff world opens");
+    if (!world)
+        return compositor.stop();
+    PuglView* const view = makeView(world, false);
+    check(view != nullptr, "handoff view exists");
+    if (view)
+    {
+        check(puglWaylandActivate(view, "hidden") == PUGL_FAILURE, "handoff requires a shown window");
+        puglShow(view, PUGL_SHOW_PASSIVE);
+        char incoming[] = "incoming-token";
+        check(puglWaylandActivate(view, incoming) == PUGL_SUCCESS, "incoming token is accepted before presentation");
+        incoming[0] = 'X';
+        puglWaylandUpdateWithoutExposures(world);
+        check(activationCount(compositor) == 0, "incoming token also waits for first presentation");
+        check(pump(world, [&] { return activationCount(compositor) == 1; }), "presentation consumes incoming token");
+        const auto received = compositor.requestsOf(compositor.activationObject());
+        check(!received.empty() && received.back().text == "incoming-token"
+              && received.back().words == std::vector<uint32_t>{compositor.surface(0)},
+              "handoff copies the token and addresses this window");
+        check(compositor.token(0) == 0 && !puglHasFocus(view), "handoff requests no replacement and invents no focus");
+
+        puglGrabFocus(view);
+        check(pump(world, [&] { return compositor.token(0) != 0; }), "ordinary focus request can be pending");
+        const uint32_t pending = compositor.token(0);
+        check(puglWaylandActivate(view, nullptr) == PUGL_BAD_PARAMETER
+              && puglWaylandActivate(view, "") == PUGL_BAD_PARAMETER, "empty handoff is rejected");
+        check(puglWaylandActivate(view, "fresh-token") == PUGL_SUCCESS, "fresh handoff supersedes pending request");
+        check(pump(world, [&] { return activationCount(compositor) == 2; }), "fresh token activates once");
+        if (pending)
+        {
+            check(pump(world, [&] {
+                const auto requests = compositor.requestsOf(pending);
+                return !requests.empty() && requests.back().opcode == 4;
+            }), "superseded request is destroyed");
+            compositor.tokenDone(pending, "stale-token");
+            settle(world);
+            check(activationCount(compositor) == 2, "late superseded grant cannot activate again");
+        }
+        puglHide(view);
+        puglShow(view, PUGL_SHOW_PASSIVE);
+        check(puglWaylandActivate(view, "discarded-token") == PUGL_SUCCESS, "remapped window accepts a new grant");
+        puglHide(view);
+        puglShow(view, PUGL_SHOW_PASSIVE);
+        settle(world);
+        check(activationCount(compositor) == 2, "hide discards an unused incoming grant");
+        puglFreeView(view);
+    }
+    puglFreeWorld(world);
+    compositor.stop();
+}
+
 static void testActivationAvailability(const bool module)
 {
     StandIn compositor;
@@ -1124,7 +1181,11 @@ static void testActivationAvailability(const bool module)
         settle(world);
         check(activationCount(compositor) == 0, "no launcher activation without protocol or from a module");
         if (!module)
+        {
             check(puglGrabFocus(view) == PUGL_UNSUPPORTED, "missing protocol preserves unsupported focus result");
+            check(puglWaylandActivate(view, "incoming-token") == PUGL_UNSUPPORTED,
+                  "incoming token needs compositor activation support");
+        }
         else
         {
             check(puglUnrealize(view) == PUGL_SUCCESS && puglRealize(view) == PUGL_SUCCESS,
@@ -1149,6 +1210,7 @@ int main()
     testVersion3();
     testVersion1();
     testActivation();
+    testIncomingActivation();
     testActivationAvailability(false);
     testActivationAvailability(true);
 

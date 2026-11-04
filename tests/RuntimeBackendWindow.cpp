@@ -455,8 +455,14 @@ static int checkRequestedWindowSystems()
         DAF_ASSERT_EQUAL(app.getWindowSystem(), x11, "a program that asks for X11 gets it, or nothing");
     }
     {
-        const Application app(true, Application::kTypeAuto, Application::kWindowSystemWayland);
+        Application app(true, Application::kTypeAuto, Application::kWindowSystemWayland);
         DAF_ASSERT_EQUAL(app.getWindowSystem(), wayland, "a program that asks for Wayland gets it, or nothing");
+        if (wayland == Application::kWindowSystemAuto)
+        {
+            DGL_NAMESPACE::Window window(app);
+            window.focusWithActivationToken("no-compositor");
+            window.focusWithActivationToken(nullptr);
+        }
     }
     {
         const Application app(false, Application::kTypeAuto, Application::kWindowSystemWayland);

@@ -513,6 +513,22 @@ void Window::focus()
     pData->focus();
 }
 
+void Window::focusWithActivationToken(const char* const token)
+{
+    if (pData->view == nullptr)
+        return;
+   #if defined(DGL_USING_WAYLAND)
+    if (token != nullptr && token[0] != '\0' && DGL_VIEW_IS_WAYLAND(pData->view))
+    {
+        puglWaylandActivate(pData->view, token);
+        return;
+    }
+   #else
+    (void)token;
+   #endif
+    focus();
+}
+
 bool Window::anyWidgetWantsKeyboardFocus()
 {
     return pData->anyWidgetWantsKeyboardFocus();

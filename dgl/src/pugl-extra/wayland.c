@@ -2753,6 +2753,32 @@ puglWaylandActivationDone(void* const data,
 static const struct xdg_activation_token_v1_listener puglWaylandActivationListener = {
   puglWaylandActivationDone};
 
+PuglStatus
+puglWaylandActivate(PuglView* const view, const char* const token)
+{
+  PuglInternals* const impl = view->impl;
+  PuglWorldInternals* const wimpl = view->world->impl;
+  if (!token || !*token) {
+    return PUGL_BAD_PARAMETER;
+  }
+  if (!wimpl->activation) {
+    return PUGL_UNSUPPORTED;
+  }
+  if (!impl->wlSurface || !impl->visible) {
+    return PUGL_FAILURE;
+  }
+
+  char* const copy = strdup(token);
+  if (!copy) {
+    return PUGL_NO_MEMORY;
+  }
+  puglWaylandCancelActivation(impl);
+  impl->activationToken = copy;
+  puglWaylandActivateIfReady(view);
+  wl_display_flush(wimpl->display);
+  return PUGL_SUCCESS;
+}
+
 static PuglStatus
 puglWaylandRequestActivation(PuglView* const view)
 {

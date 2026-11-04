@@ -481,6 +481,14 @@ public:
     void focus();
 
    /**
+      Request keyboard focus using a launcher-provided xdg-activation token on Wayland.
+      Call after show(), on the window's event thread. The token is copied and used once;
+      the caller must not reuse it. The compositor decides whether to grant focus.
+      On other backends, or with a null or empty token, this calls focus().
+    */
+    void focusWithActivationToken(const char* token);
+
+   /**
       Whether any visible widget of this window wants the keyboard focus.
       This asks Widget::wantsKeyboardFocus() of every visible top-level widget and, recursively,
       of their visible subwidgets. A hidden widget hides its whole subtree.
