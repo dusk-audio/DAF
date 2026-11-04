@@ -235,6 +235,7 @@ extern "C" {
 #  include "pugl-extra/wayland-protocols/wayland-protocol.c"
 #  pragma GCC visibility pop
 # endif
+# include "pugl-extra/wayland-protocols/xdg-activation-v1-protocol.c"
 # include "pugl-extra/wayland-protocols/xdg-shell-protocol.c"
 # include "pugl-extra/wayland-protocols/xdg-decoration-unstable-v1-protocol.c"
 # include "pugl-extra/wayland-protocols/viewporter-protocol.c"
@@ -244,6 +245,7 @@ extern "C" {
 # if defined(__GNUC__)
 #  pragma GCC diagnostic pop
 # endif
+# include "pugl-extra/wayland-protocols/xdg-activation-v1-client-protocol.h"
 # include "pugl-extra/wayland-protocols/xdg-shell-client-protocol.h"
 # include "pugl-extra/wayland-protocols/xdg-decoration-unstable-v1-client-protocol.h"
 # include "pugl-extra/wayland-protocols/viewporter-client-protocol.h"
