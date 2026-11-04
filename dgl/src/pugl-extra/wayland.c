@@ -1172,6 +1172,9 @@ puglWaylandPointerButton(void* const              data,
     return;
   }
 
+  impl->activationSource = view;
+  impl->activationSerial = serial;
+
   const uint32_t number = puglWaylandButtonNumber(button);
   if (number == PUGL_WAYLAND_BTN_UNKNOWN) {
     return;
@@ -1591,8 +1594,10 @@ puglWaylandKeyboardEnter(void* const               data,
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
   PuglView* const           view = puglWaylandViewForSurface(surface);
 
-  impl->lastSerial    = serial;
-  impl->keyboardFocus = view;
+  impl->lastSerial       = serial;
+  impl->keyboardFocus    = view;
+  impl->activationSource = view;
+  impl->activationSerial = serial;
 
   if (!view) {
     return;
@@ -1644,6 +1649,9 @@ puglWaylandKeyboardKey(void* const               data,
   if (!view) {
     return;
   }
+
+  impl->activationSource = view;
+  impl->activationSerial = serial;
 
   const bool pressed = (state == WL_KEYBOARD_KEY_STATE_PRESSED);
 
@@ -2705,6 +2713,88 @@ puglWaylandApplyCursor(PuglWorldInternals* const impl, const PuglCursor cursor)
 }
 
 // --------------------------------------------------------------------------------------------
+// Activation
+
+static void
+puglWaylandCancelActivation(PuglInternals* const impl)
+{
+  if (impl->activationRequest) {
+    xdg_activation_token_v1_destroy(impl->activationRequest);
+    impl->activationRequest = NULL;
+  }
+  free(impl->activationToken);
+  impl->activationToken = NULL;
+}
+
+static void
+puglWaylandActivateIfReady(PuglView* const view)
+{
+  PuglInternals* const impl = view->impl;
+  if (impl->visible && impl->hasPresented && impl->activationToken) {
+    xdg_activation_v1_activate(
+      view->world->impl->activation, impl->activationToken, impl->wlSurface);
+    free(impl->activationToken);
+    impl->activationToken = NULL;
+  }
+}
+
+static void
+puglWaylandActivationDone(void* const data,
+                          struct xdg_activation_token_v1* const request,
+                          const char* const token)
+{
+  PuglView* const view = (PuglView*)data;
+  view->impl->activationRequest = NULL;
+  view->impl->activationToken = token && *token ? strdup(token) : NULL;
+  xdg_activation_token_v1_destroy(request);
+  puglWaylandActivateIfReady(view);
+}
+
+static const struct xdg_activation_token_v1_listener puglWaylandActivationListener = {
+  puglWaylandActivationDone};
+
+static PuglStatus
+puglWaylandRequestActivation(PuglView* const view)
+{
+  PuglInternals* const impl = view->impl;
+  PuglWorldInternals* const wimpl = view->world->impl;
+  if (!wimpl->activation) {
+    return PUGL_UNSUPPORTED;
+  }
+  if (!impl->wlSurface || !impl->visible) {
+    return PUGL_FAILURE;
+  }
+  if (impl->activationRequest || impl->activationToken) {
+    return PUGL_SUCCESS;
+  }
+
+  if (wimpl->launcherToken) {
+    impl->activationToken = wimpl->launcherToken;
+    wimpl->launcherToken = NULL;
+    puglWaylandActivateIfReady(view);
+  } else {
+    impl->activationRequest = xdg_activation_v1_get_activation_token(wimpl->activation);
+    if (!impl->activationRequest) {
+      return PUGL_NO_MEMORY;
+    }
+    xdg_activation_token_v1_add_listener(
+      impl->activationRequest, &puglWaylandActivationListener, view);
+    if (wimpl->activationSource && wimpl->seat) {
+      xdg_activation_token_v1_set_serial(
+        impl->activationRequest, wimpl->activationSerial, wimpl->seat);
+      xdg_activation_token_v1_set_surface(
+        impl->activationRequest, wimpl->activationSource->impl->wlSurface);
+    }
+    if (impl->appId && *impl->appId) {
+      xdg_activation_token_v1_set_app_id(impl->activationRequest, impl->appId);
+    }
+    xdg_activation_token_v1_commit(impl->activationRequest);
+  }
+  wl_display_flush(wimpl->display);
+  return PUGL_SUCCESS;
+}
+
+// --------------------------------------------------------------------------------------------
 // Registry
 
 static void
@@ -2799,6 +2889,10 @@ puglWaylandRegistryGlobal(void* const               data,
     impl->decorationManager =
       (struct zxdg_decoration_manager_v1*)wl_registry_bind(
         registry, name, &zxdg_decoration_manager_v1_interface, 1U);
+
+  } else if (!strcmp(interface, xdg_activation_v1_interface.name)) {
+    impl->activation = (struct xdg_activation_v1*)wl_registry_bind(
+      registry, name, &xdg_activation_v1_interface, 1U);
 
   } else if (!strcmp(interface, zxdg_exporter_v2_interface.name)) {
     impl->exporter = (struct zxdg_exporter_v2*)wl_registry_bind(
@@ -2951,6 +3045,10 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
     wl_output_destroy(impl->outputs[i].output);
   }
 
+  free(impl->launcherToken);
+  if (impl->activation) {
+    xdg_activation_v1_destroy(impl->activation);
+  }
   if (impl->exporter) {
     zxdg_exporter_v2_destroy(impl->exporter);
   }
@@ -2987,7 +3085,7 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
 }
 
 PuglWorldInternals*
-puglInitWorldInternals(const PuglWorldType PUGL_UNUSED(type),
+puglInitWorldInternals(const PuglWorldType type,
                        const PuglWorldFlags PUGL_UNUSED(flags))
 {
   struct wl_display* const display = wl_display_connect(NULL);
@@ -3004,6 +3102,12 @@ puglInitWorldInternals(const PuglWorldType PUGL_UNUSED(type),
   if (!impl) {
     wl_display_disconnect(display);
     return NULL;
+  }
+
+  if (type == PUGL_PROGRAM) {
+    const char* const token = getenv("XDG_ACTIVATION_TOKEN");
+    impl->launcherToken = token && *token ? strdup(token) : NULL;
+    unsetenv("XDG_ACTIVATION_TOKEN");
   }
 
   impl->display     = display;
@@ -3193,6 +3297,9 @@ puglWaylandApplyToplevelAttributes(PuglView* const view)
 static void
 puglWaylandDestroyViewSurface(PuglInternals* const impl)
 {
+  puglWaylandCancelActivation(impl);
+  impl->hasPresented = false;
+  impl->visible = false;
   if (impl->frameCallback) {
     wl_callback_destroy(impl->frameCallback);
     impl->frameCallback = NULL;
@@ -3354,6 +3461,7 @@ puglUnrealize(PuglView* const view)
     return PUGL_FAILURE;
   }
 
+  puglWaylandCancelActivation(impl);
   puglDispatchSimpleEvent(view, PUGL_UNREALIZE);
 
   PuglWorldInternals* const wimpl = view->world->impl;
@@ -3362,6 +3470,9 @@ puglUnrealize(PuglView* const view)
   }
   if (wimpl->keyboardFocus == view) {
     wimpl->keyboardFocus = NULL;
+  }
+  if (wimpl->activationSource == view) {
+    wimpl->activationSource = NULL;
   }
   if (wimpl->repeat.view == view) {
     puglWaylandStopRepeat(wimpl);
@@ -3384,7 +3495,7 @@ puglUnrealize(PuglView* const view)
 }
 
 PuglStatus
-puglShow(PuglView* const view, const PuglShowCommand PUGL_UNUSED(command))
+puglShow(PuglView* const view, const PuglShowCommand command)
 {
   PuglInternals* const impl = view->impl;
   PuglStatus st = impl->wlSurface ? PUGL_SUCCESS : puglRealize(view);
@@ -3393,10 +3504,10 @@ puglShow(PuglView* const view, const PuglShowCommand PUGL_UNUSED(command))
     return st;
   }
 
-  /* There is no "raise" on Wayland: window stacking and focus are entirely the compositor's
-     business, and a client cannot put itself in front.  All three show commands therefore do the
-     same thing, which is to make sure a buffer gets attached. */
   impl->visible = true;
+  if (view->world->impl->launcherToken || command != PUGL_SHOW_PASSIVE) {
+    puglWaylandRequestActivation(view);
+  }
 
   /* puglHide() unmapped the surface, and xdg-shell treats an unmapped surface like a new one: it
      needs another bufferless commit and a fresh configure before a buffer may be attached.  Without
@@ -3428,6 +3539,12 @@ puglHide(PuglView* const view)
 
   if (!impl->wlSurface) {
     return PUGL_FAILURE;
+  }
+
+  puglWaylandCancelActivation(impl);
+  impl->hasPresented = false;
+  if (view->world->impl->activationSource == view) {
+    view->world->impl->activationSource = NULL;
   }
 
   // Attaching a null buffer unmaps the surface
@@ -3764,6 +3881,10 @@ puglWaylandFlushExposures(PuglWorld* const world)
       puglWaylandRequestFrame(view);
 
       st2 = view->backend->leave(view, &expose.expose);
+      if (!st2) {
+        impl->hasPresented = true;
+        puglWaylandActivateIfReady(view);
+      }
     } else {
       /* The backend could not give us anything to draw into (both shm buffers still held by the
          compositor, a context that would not go current, ...).  The expose has already been taken
@@ -4028,10 +4149,9 @@ puglSetViewStyle(PuglView* const view, const PuglViewStyleFlags flags)
 }
 
 PuglStatus
-puglGrabFocus(PuglView* const PUGL_UNUSED(view))
+puglGrabFocus(PuglView* const view)
 {
-  // A Wayland client cannot take the keyboard focus, only the compositor can give it
-  return PUGL_UNSUPPORTED;
+  return puglWaylandRequestActivation(view);
 }
 
 bool

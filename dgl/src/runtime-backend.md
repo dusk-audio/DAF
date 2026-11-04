@@ -202,6 +202,22 @@ for the opengl3 variant). DGL and NanoVG call GL entry points from libGL directl
 dispatch to whichever context is current, GLX or EGL, which is what the Wayland-only build already
 relies on.
 
+## Wayland activation
+
+Both `both` and `wayland` builds use `xdg-activation-v1` when the compositor offers it.
+`Window::focus()` and non-passive `puglShow()` request a token asynchronously, using the most
+recent keyboard focus, key, or pointer-button event's surface and serial. Repeated focus calls
+share an outstanding request. Success means the request was queued; keyboard focus still changes
+only when the compositor sends `wl_keyboard.enter` or `leave`, and force-raise cannot override
+its focus-stealing policy. Without the protocol, focus requests return `PUGL_UNSUPPORTED` and
+showing a window continues to work.
+
+A Wayland program world reads and immediately unsets `XDG_ACTIVATION_TOKEN`. Its first shown
+window uses that launcher token once, after committing its first frame. Module worlds leave the
+host's environment token alone. Hiding or destroying a window cancels both outstanding token
+requests and completed grants waiting for presentation. Passing tokens to an already-running
+application remains the application's responsibility; there is no second-instance handoff API.
+
 ## Not covered by `both` yet
 
 - GLES: GLX cannot create an ES context, so a `both` build renders desktop GL on both backends.
@@ -244,6 +260,10 @@ fails the test rather than turn it into a check that nothing opens.
   scale N, and an X11 window to keep the X server's.
 
 `tests/Wayland.cpp` and `tests/X11Focus.cpp` drive each backend's half of a `both` build directly.
+`tests/WaylandDrop.cpp` uses a socket-pair compositor for file drops and activation: launcher-token
+ownership, source/target separation, input serials, asynchronous replies, one-use grants, mapping
+order, and cancellation at hide/destruction. These protocol checks do not prove that a real
+compositor grants focus.
 
 `tests/plugin-embed-host.cpp` embeds a plugin's UI the way a Linux host does, handing the VST2,
 VST3 and CLAP builds of a plugin an X11 parent window. Under Weston alone each has to refuse,

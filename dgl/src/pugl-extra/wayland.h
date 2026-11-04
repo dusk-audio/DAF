@@ -148,6 +148,7 @@ struct PuglWorldInternalsImpl {
   struct wp_fractional_scale_manager_v1* fractionalScaleManager;
   struct zxdg_decoration_manager_v1*     decorationManager;
   struct zxdg_exporter_v2*               exporter;
+  struct xdg_activation_v1*              activation;
 
   // Cursor theme, loaded lazily on the first puglSetCursor() that needs it
   struct wl_cursor_theme* cursorTheme;
@@ -176,6 +177,11 @@ struct PuglWorldInternalsImpl {
   // Keyboard focus and the most recent input serial, needed by set_selection etc.
   PuglView* keyboardFocus;
   uint32_t  lastSerial;
+
+  // Activation serials must retain their originating surface, unlike clipboard serials.
+  PuglView* activationSource;
+  uint32_t  activationSerial;
+  char*     launcherToken;
 
   // Clipboard, plus unclaimed and drag-and-drop offers that still need to be cleaned up
   PuglWaylandOffer* selectionOffer;
@@ -219,6 +225,8 @@ struct PuglInternalsImpl {
   struct wp_viewport*                 viewport;
   struct wp_fractional_scale_v1*      fractionalScale;
   struct wl_callback*                 frameCallback;
+  struct xdg_activation_token_v1*     activationRequest;
+  char*                              activationToken;
 
   /* The surface exported through xdg-foreign, and the handle the compositor answered with.  Other
      processes, xdg-desktop-portal above all, take a dialog's parent as such a handle since Wayland
@@ -252,6 +260,7 @@ struct PuglInternalsImpl {
   struct wl_output* enteredOutputs[PUGL_WAYLAND_MAX_OUTPUTS];
   uint32_t          numEnteredOutputs;
 
+  bool hasPresented;       ///< A buffer has been committed since the last unmap
   bool configured;         ///< At least one xdg_surface.configure has been acked
   bool visible;            ///< puglShow() called, puglHide() not called since
   bool needsRedisplay;     ///< A redraw was requested while a frame callback was pending

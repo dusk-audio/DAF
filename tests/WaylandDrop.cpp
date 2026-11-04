@@ -1,11 +1,9 @@
 // Copyright (C) 2026 Dusk Audio
 // SPDX-License-Identifier: ISC
 
-// File drops on Wayland (dgl/src/FileDropWayland.hpp, see dgl/src/drop-targets.md), against a stand-in
-// compositor on a socket pair that the client gets through WAYLAND_SOCKET. The stand-in speaks the wire
-// protocol itself, file descriptors included, so the test needs no compositor and links no Wayland library:
-// a DGL_BACKEND=both build must not. It offers what a world and a drag need and nothing more, plays the
-// compositor's side of a drag, and writes down every request the client makes of the drag's offer.
+// File drops and activation against a stand-in compositor on a socket pair supplied through
+// WAYLAND_SOCKET. It speaks the wire protocol, including file descriptors and delayed token replies,
+// so the test needs no compositor and links no Wayland library in a DGL_BACKEND=both build.
 
 #define DAF_TEST_NO_DGL
 #include "tests.hpp"
@@ -63,6 +61,8 @@ public:
     int clientFd = -1;
     uint32_t dataDeviceVersion = 3;
     bool withOutput = false;
+    bool withActivation = false;
+    bool withInput = false;
 
     bool start()
     {
@@ -95,6 +95,56 @@ public:
     {
         const std::lock_guard<std::mutex> lock(mutex);
         return index < surfaces.size() ? surfaces[index] : 0;
+    }
+
+    uint32_t activationObject()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return activation;
+    }
+
+    uint32_t token(const size_t index)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return index < tokens.size() ? tokens[index] : 0;
+    }
+
+    uint32_t seatObject()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return seat;
+    }
+
+    void tokenDone(const uint32_t id, const char* const text)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        post(id, 0, string(text));
+    }
+
+    void keyboardEnter(const uint32_t serial, const uint32_t surfaceId)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        post(keyboard, 1, { serial, surfaceId, 0 });
+    }
+
+    void keyboardKey(const uint32_t serial)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        post(keyboard, 3, { serial, 1000, 30, 1 });
+    }
+
+    void keyboardModifiers(const uint32_t serial)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        post(keyboard, 4, { serial, 0, 0, 0, 0 });
+    }
+
+    void pointerClick(const uint32_t serial, const uint32_t surfaceId)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        post(pointer, 0, { serial - 1, surfaceId, 0, 0 });
+        post(pointer, 3, { serial, 1000, 0x110, 1 });
+        post(pointer, 1, { serial + 1, surfaceId });
     }
 
     bool hasDataDevice()
@@ -190,6 +240,8 @@ private:
     std::vector<Request> requests;
     std::vector<int> fds; // received, not yet given to a request
     std::vector<uint8_t> input;
+    uint32_t activation = 0, seat = 0, pointer = 0, keyboard = 0;
+    std::vector<uint32_t> tokens;
     uint32_t dataDevice = 0;
     uint32_t output = 0;
     uint32_t nextOffer = 0xff000000U;
@@ -322,6 +374,8 @@ private:
                 global(first, 4, "wl_data_device_manager", dataDeviceVersion);
                 if (withOutput)
                     global(first, 5, "wl_output", 2);
+                if (withActivation)
+                    global(first, 6, "xdg_activation_v1", 1);
             }
         }
         else if (interface == "wl_registry" && opcode == 0)
@@ -334,7 +388,12 @@ private:
 
             if (name == "wl_seat")
             {
-                post(id, 0, { 0 }); // capabilities: none
+                seat = id;
+                post(id, 0, { withInput ? 3U : 0U });
+            }
+            else if (name == "xdg_activation_v1")
+            {
+                activation = id;
             }
             else if (name == "wl_output")
             {
@@ -349,6 +408,32 @@ private:
                 post(id, 3, { 2 }); // scale 2
                 post(id, 2, {});    // done
             }
+        }
+        else if (interface == "wl_seat")
+        {
+            if (opcode == 0)
+                pointer = first;
+            else if (opcode == 1)
+                keyboard = first;
+        }
+        else if (interface == "xdg_activation_v1" || interface == "xdg_activation_token_v1")
+        {
+            Request request = { object, opcode, args, std::string(), true, -1 };
+            if (interface == "xdg_activation_v1" && opcode == 1)
+            {
+                objects[first] = "xdg_activation_token_v1";
+                tokens.push_back(first);
+            }
+            else if (interface == "xdg_activation_v1" && opcode == 2)
+            {
+                const size_t next = readString(args, 0, request.text, request.textNull);
+                request.words = { next < args.size() ? args[next] : 0 };
+            }
+            else if (interface == "xdg_activation_token_v1" && opcode == 1)
+            {
+                readString(args, 0, request.text, request.textNull);
+            }
+            requests.push_back(request);
         }
         else if (interface == "wl_compositor")
         {
@@ -533,15 +618,15 @@ static int openDescriptors()
     return count;
 }
 
-static PuglWorld* openWorld(StandIn& compositor)
+static PuglWorld* openWorld(StandIn& compositor, const PuglWorldType type = PUGL_PROGRAM)
 {
     char socket[16];
     std::snprintf(socket, sizeof(socket), "%d", compositor.clientFd);
     setenv("WAYLAND_SOCKET", socket, 1);
    #ifdef DGL_RUNTIME_BACKEND
-    return puglNewWorldOnSystem(PUGL_PROGRAM, 0, false);
+    return puglNewWorldOnSystem(type, 0, false);
    #else
-    return puglNewWorld(PUGL_PROGRAM, 0);
+    return puglNewWorld(type, 0);
    #endif
 }
 
@@ -856,6 +941,203 @@ static void testVersion1()
     compositor.stop();
 }
 
+static size_t activationCount(StandIn& compositor)
+{
+    size_t count = 0;
+    for (const StandIn::Request& request : compositor.requestsOf(compositor.activationObject()))
+        if (request.opcode == 2)
+            ++count;
+    return count;
+}
+
+static void testActivation()
+{
+    StandIn compositor;
+    compositor.withActivation = true;
+    compositor.withInput = true;
+    check(compositor.start(), "activation compositor starts");
+    setenv("XDG_ACTIVATION_TOKEN", "launcher-token", 1);
+    PuglWorld* const world = openWorld(compositor);
+    check(world != nullptr, "activation world opens");
+    if (!world)
+        return compositor.stop();
+    check(getenv("XDG_ACTIVATION_TOKEN") == nullptr, "launcher token is removed from the environment immediately");
+
+    PuglView* const source = makeView(world, false);
+    PuglView* const target = makeView(world, false);
+    check(source && target, "activation views exist");
+    if (!source || !target)
+    {
+        if (source) puglFreeView(source);
+        if (target) puglFreeView(target);
+        puglFreeWorld(world);
+        return compositor.stop();
+    }
+    settle(world);
+    check(activationCount(compositor) == 0, "realize does not consume the launcher token");
+    puglShow(source, PUGL_SHOW_PASSIVE);
+    puglWaylandUpdateWithoutExposures(world);
+    check(activationCount(compositor) == 0, "launcher activation waits for the first presentation");
+    check(pump(world, [&] { return activationCount(compositor) == 1; }), "first shown window uses launcher token");
+    const std::vector<StandIn::Request> launched = compositor.requestsOf(compositor.activationObject());
+    check(!launched.empty() && launched.back().text == "launcher-token"
+          && launched.back().words == std::vector<uint32_t>{compositor.surface(0)}, "launcher token activates the shown surface");
+    check(compositor.token(0) == 0, "launcher token is used directly without requesting another");
+    check(!puglHasFocus(source), "activation does not invent keyboard focus");
+    puglShow(target, PUGL_SHOW_PASSIVE);
+    puglHide(source);
+    puglShow(source, PUGL_SHOW_PASSIVE);
+    settle(world);
+    check(activationCount(compositor) == 1, "launcher token is not reused by another window or a remap");
+
+    compositor.keyboardEnter(30, compositor.surface(0));
+    check(pump(world, [&] { return puglHasFocus(source); }), "keyboard enter is the authority for focus");
+    compositor.keyboardKey(40);
+    compositor.keyboardModifiers(99);
+    settle(world);
+    check(puglGrabFocus(target) == PUGL_SUCCESS, "focus request queues asynchronously");
+    check(pump(world, [&] { return compositor.token(0) != 0; }), "focus request creates a token object");
+    const uint32_t token = compositor.token(0);
+    if (token)
+    {
+        check(pump(world, [&] { return compositor.requestsOf(token).size() >= 3; }), "token parameters and commit arrive");
+        const std::vector<StandIn::Request> requests = compositor.requestsOf(token);
+        check(requests.size() == 3 && requests[0].opcode == 0
+              && requests[0].words == std::vector<uint32_t>{40, compositor.seatObject()}
+              && requests[1].opcode == 2 && requests[1].words == std::vector<uint32_t>{compositor.surface(0)}
+              && requests[2].opcode == 3, "token binds the input serial and source surface before commit");
+        check(activationCount(compositor) == 1, "request cannot activate before token completion");
+        check(puglGrabFocus(target) == PUGL_SUCCESS, "duplicate pending focus request is coalesced");
+        settle(world);
+        check(compositor.token(1) == 0, "coalescing does not allocate another token");
+        compositor.tokenDone(token, "focus-token");
+        check(pump(world, [&] { return activationCount(compositor) == 2; }), "done activates the target");
+        const std::vector<StandIn::Request> activated = compositor.requestsOf(compositor.activationObject());
+        check(activated.back().text == "focus-token"
+              && activated.back().words == std::vector<uint32_t>{compositor.surface(1)}, "target differs from the requesting source");
+        check(pump(world, [&] { return compositor.requestsOf(token).size() == 4; })
+              && compositor.requestsOf(token).back().opcode == 4, "completed token object is destroyed");
+        check(puglHasFocus(source) && !puglHasFocus(target), "completion still does not change keyboard focus");
+    }
+
+    compositor.pointerClick(50, compositor.surface(0));
+    settle(world);
+    puglGrabFocus(target);
+    check(pump(world, [&] { return compositor.token(1) != 0; }), "later request gets a fresh token");
+    const uint32_t hiddenToken = compositor.token(1);
+    if (hiddenToken)
+    {
+        settle(world);
+        const std::vector<StandIn::Request> requests = compositor.requestsOf(hiddenToken);
+        check(!requests.empty() && requests[0].words == std::vector<uint32_t>{50, compositor.seatObject()},
+              "pointer click serial survives a later pointer leave");
+        puglHide(target);
+        check(pump(world, [&] {
+            const auto requests = compositor.requestsOf(hiddenToken);
+            return !requests.empty() && requests.back().opcode == 4;
+        }), "hide destroys pending token");
+        compositor.tokenDone(hiddenToken, "too-late-hidden");
+        settle(world);
+        check(activationCount(compositor) == 2, "late completion cannot activate a hidden view");
+    }
+    puglShow(target, PUGL_SHOW_RAISE);
+    check(pump(world, [&] { return compositor.token(2) != 0; }), "show raise requests activation");
+    const uint32_t destroyedToken = compositor.token(2);
+    puglFreeView(target);
+    if (destroyedToken)
+    {
+        check(pump(world, [&] {
+            const auto requests = compositor.requestsOf(destroyedToken);
+            return !requests.empty() && requests.back().opcode == 4;
+        }), "destruction cancels pending activation");
+        compositor.tokenDone(destroyedToken, "too-late-destroyed");
+        settle(world);
+        check(activationCount(compositor) == 2, "late completion cannot use a destroyed view");
+    }
+    puglGrabFocus(source);
+    check(pump(world, [&] { return compositor.token(3) != 0; }), "source can have a pending request at destruction");
+    puglFreeView(source);
+
+    PuglView* const fresh = makeView(world, false);
+    check(fresh != nullptr, "view opens after the activation source was destroyed");
+    if (fresh)
+    {
+        puglWaylandSetAppId(fresh, "org.dusk.ActivationTest");
+        puglShow(fresh, PUGL_SHOW_FORCE_RAISE);
+        for (int i = 0; i < 3; ++i)
+            puglWaylandUpdateWithoutExposures(world);
+        const uint32_t earlyToken = compositor.token(4);
+        check(earlyToken != 0, "force raise requests a token before presentation");
+        if (earlyToken)
+        {
+            const std::vector<StandIn::Request> requests = compositor.requestsOf(earlyToken);
+            check(requests.size() == 2 && requests[0].opcode == 1
+                  && requests[0].text == "org.dusk.ActivationTest" && requests[1].opcode == 3,
+                  "destroyed source is forgotten and target app id precedes commit");
+            compositor.tokenDone(earlyToken, "ready-before-present");
+            for (int i = 0; i < 3; ++i)
+                puglWaylandUpdateWithoutExposures(world);
+            check(activationCount(compositor) == 2, "completed token waits for presentation");
+            puglHide(fresh);
+            puglShow(fresh, PUGL_SHOW_PASSIVE);
+            settle(world);
+            check(activationCount(compositor) == 2, "hide also discards a completed but unused token");
+        }
+        puglGrabFocus(fresh);
+        check(pump(world, [&] { return compositor.token(5) != 0; }), "discarded grant does not block the next request");
+        const uint32_t emptyToken = compositor.token(5);
+        if (emptyToken)
+        {
+            compositor.tokenDone(emptyToken, "");
+            settle(world);
+            check(activationCount(compositor) == 2, "an empty grant cannot activate a window");
+            const auto requests = compositor.requestsOf(emptyToken);
+            check(!requests.empty() && requests.back().opcode == 4, "empty grant still releases its token object");
+        }
+        puglGrabFocus(fresh);
+        check(pump(world, [&] { return compositor.token(6) != 0; }), "request can remain pending at teardown");
+        puglFreeView(fresh);
+    }
+    puglFreeWorld(world);
+    compositor.stop();
+    unsetenv("XDG_ACTIVATION_TOKEN");
+}
+
+static void testActivationAvailability(const bool module)
+{
+    StandIn compositor;
+    compositor.withActivation = module;
+    check(compositor.start(), "activation fallback compositor starts");
+    setenv("XDG_ACTIVATION_TOKEN", "host-token", 1);
+    PuglWorld* const world = openWorld(compositor, module ? PUGL_MODULE : PUGL_PROGRAM);
+    check(world != nullptr, "fallback world opens");
+    if (!world)
+        return compositor.stop();
+    const char* const token = getenv("XDG_ACTIVATION_TOKEN");
+    check(module ? token && std::strcmp(token, "host-token") == 0 : token == nullptr,
+          "only program worlds consume environment tokens");
+    PuglView* const view = makeView(world, false);
+    check(view != nullptr, "fallback view exists");
+    if (view)
+    {
+        puglShow(view, PUGL_SHOW_PASSIVE);
+        settle(world);
+        check(activationCount(compositor) == 0, "no launcher activation without protocol or from a module");
+        if (!module)
+            check(puglGrabFocus(view) == PUGL_UNSUPPORTED, "missing protocol preserves unsupported focus result");
+        else
+        {
+            check(puglUnrealize(view) == PUGL_SUCCESS && puglRealize(view) == PUGL_SUCCESS,
+                  "a previously shown view can be re-created");
+            check(puglGrabFocus(view) == PUGL_FAILURE, "a re-created window must be shown before activation");
+        }
+        puglFreeView(view);
+    }
+    puglFreeWorld(world);
+    compositor.stop();
+    unsetenv("XDG_ACTIVATION_TOKEN");
+}
+
 int main()
 {
     // the stand-in writes into pipes whose reader may have gone
@@ -866,6 +1148,9 @@ int main()
 
     testVersion3();
     testVersion1();
+    testActivation();
+    testActivationAvailability(false);
+    testActivationAvailability(true);
 
     check(openDescriptors() == before, "no descriptor is left open");
 
