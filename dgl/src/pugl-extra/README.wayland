@@ -184,7 +184,9 @@ Known limitations
 
 * **Embedding is same-connection only.** A parent must be another view in the same Pugl world,
   or a valid host-owned wl_surface on an explicitly borrowed connection. Cross-client handles are
-  invalid; unrecognized parents on owned connections are rejected. The parent must outlive its children.
+  invalid. A borrowed connection rejects any other parent; an owned connection opens a toplevel
+  window for it instead, so a plugin host's X11 window id still gets a floating editor. The parent
+  must outlive its children.
   Children use desynchronized wl_subsurface roles. The host must commit the parent after creating
   or moving a child; DAF never commits, destroys, or changes the listener or queue of a borrowed parent.
   A synchronized ancestor still synchronizes a desynchronized child. Embedded keyboard input needs

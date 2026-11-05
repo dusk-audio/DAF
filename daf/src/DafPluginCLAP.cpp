@@ -85,8 +85,9 @@
  * comment in dgl/src/pugl.hpp for why the choice works that way.
  *
  * CLAP_WINDOW_API_WAYLAND has no embedding contract at all -- clap/ext/gui.h says outright that
- * embed is not supported for it -- and DGL's Wayland backend matches: puglSetParent() is accepted
- * and ignored, every window is an xdg toplevel. So a Wayland-backed build offers floating only.
+ * embed is not supported for it -- and DGL's Wayland backend matches: the plugin's UI opens its own
+ * connection, which embeds only into views of its own world, so a parent from the host gets an xdg
+ * toplevel instead. So a Wayland-backed build offers floating only.
  *
  * A build that found *both* X11 and Wayland still advertises X11 alone. It is tempting to list
  * CLAP_WINDOW_API_WAYLAND as an extra floating-only API there, but an X11-built DGL has no

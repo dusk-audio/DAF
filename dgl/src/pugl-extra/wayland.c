@@ -8,7 +8,8 @@
   Scope, and why it is what it is:
 
   * Embedding requires a parent surface on the same connection. A borrowed connection accepts its
-    host's surface; an owned connection accepts only another view in the same world.
+    host's surface; an owned connection embeds only into another view in the same world and opens
+    a toplevel window for any other parent.
   * Sizes and input coordinates are *buffer pixels*. The compositor speaks *logical pixels*.
     The two differ by the view scale factor, which comes either from wp_fractional_scale_v1 (exact,
     in 120ths) or from the largest integer wl_output scale the surface overlaps.  Every conversion
@@ -3663,10 +3664,17 @@ puglRealize(PuglView* const view)
     return st;
   }
 
-  if (view->parent &&
-      (!wimpl->subcompositor ||
-       (wimpl->ownsDisplay && !puglWaylandFindViewByNative(world, view->parent)))) {
-    return PUGL_UNSUPPORTED;
+  /* A parent that is not a surface of an owned connection, such as a plugin host's X11 window,
+     cannot be embedded into; the view opens as a toplevel window instead of failing. */
+  const bool embedded =
+    view->parent && wimpl->subcompositor &&
+    (!wimpl->ownsDisplay || puglWaylandFindViewByNative(world, view->parent));
+  if (view->parent && !embedded) {
+    if (!wimpl->ownsDisplay) {
+      return PUGL_UNSUPPORTED;
+    }
+    d_debug("pugl: cannot embed into %p, creating a toplevel window instead",
+            (void*)(uintptr_t)view->parent);
   }
 
   puglEnsureHint(view, PUGL_IGNORE_KEY_REPEAT, PUGL_FALSE);
@@ -3683,7 +3691,7 @@ puglRealize(PuglView* const view)
   wl_surface_add_listener(
     impl->wlSurface, &puglWaylandSurfaceEventListener, view);
 
-  if (view->parent) {
+  if (embedded) {
     impl->subsurface = wl_subcompositor_get_subsurface(
       wimpl->subcompositor, impl->wlSurface, (struct wl_surface*)(uintptr_t)view->parent);
     if (!impl->subsurface) {

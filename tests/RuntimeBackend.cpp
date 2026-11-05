@@ -609,10 +609,18 @@ static int checkSubsurfaceRendering()
 
     WorldOwner owned(puglNewWorldOn(kPuglWindowSystemWayland, PUGL_MODULE, 0), puglFreeWorld);
     DAF_ASSERT_NOT_EQUAL(owned.get(), nullptr, "an owned world has a separate connection");
-    ViewOwner rejected = makeGlView(owned.get(), false);
-    DAF_ASSERT_NOT_EQUAL(rejected.get(), nullptr, "a view can be allocated on the owned world");
-    puglSetParent(rejected.get(), reinterpret_cast<PuglNativeView>(host.nativeSurface));
-    DAF_ASSERT_EQUAL(puglRealize(rejected.get()), PUGL_UNSUPPORTED, "a parent from another connection is rejected");
+    for (const PuglNativeView foreignParent : {reinterpret_cast<PuglNativeView>(host.nativeSurface),
+                                               static_cast<PuglNativeView>(0x2a00007)})
+    {
+        ViewOwner floating = makeGlView(owned.get(), false);
+        DAF_ASSERT_NOT_EQUAL(floating.get(), nullptr, "a view can be allocated on the owned world");
+        puglSetParent(floating.get(), foreignParent);
+        DAF_ASSERT_EQUAL(puglRealize(floating.get()), PUGL_SUCCESS,
+                         "a parent from another connection or window system still realizes");
+        const auto* const native = static_cast<const pugl_wl::PuglView*>(floating.get());
+        DAF_ASSERT_EQUAL(native->impl->xdgToplevel != nullptr && native->impl->subsurface == nullptr, true,
+                         "an owned connection opens a toplevel window for a foreign parent");
+    }
     d_stdout("RuntimeBackend: borrowed subsurfaces render, resize, remap and preserve the foreign host");
     return 0;
 }
