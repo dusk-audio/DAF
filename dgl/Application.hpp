@@ -147,8 +147,9 @@ public:
       keep the display alive until those Windows and this Application are destroyed. Construction,
       idle and window operations run on the display owner's thread with no prepared read outstanding.
       The host reads the connection; idle dispatches only this application's pending events.
-      Initialization and synchronous clipboard requests may read the socket while dispatching only
-      this application's events.
+      Initialization may read the socket while dispatching only this application's events.
+      There is no native clipboard or file drop on a borrowed connection: getClipboard() returns
+      nothing and setClipboard() fails until the host routes them through setClipboardCallbacks().
 
       Supplying inputSeat selects host-managed input and prevents DAF from creating another pointer
       or keyboard stream. The seat must belong to this display and outlive this Application.

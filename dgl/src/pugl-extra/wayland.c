@@ -3458,8 +3458,10 @@ puglWaylandInitWorldInternals(struct wl_display* const display,
     return NULL;
   }
 
-  // A second data device can divert clipboard selections from the host.
-  if (!impl->hostManagedInput && impl->dataDeviceManager && impl->seat) {
+  /* On a borrowed connection the host is the same client, so a transfer between it and DAF waits
+     in one queue for a reply only the other queue can produce, and a second data device can divert
+     its selections. The clipboard goes through the host there (Application::setClipboardCallbacks). */
+  if (ownsDisplay && impl->dataDeviceManager && impl->seat) {
     impl->dataDevice = wl_data_device_manager_get_data_device(
       impl->dataDeviceManager, impl->seat);
     wl_data_device_add_listener(
