@@ -350,6 +350,7 @@ bool Window::PrivateData::initPost()
     // create view now, as a few methods we allow devs to use require it
     if (puglRealize(view) != PUGL_SUCCESS)
     {
+        puglFreeView(view);
         view = nullptr;
         d_stderr2("Failed to realize Pugl view, everything will fail!");
         return false;

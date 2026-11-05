@@ -27,7 +27,23 @@
 #include "dgl/src/Widget.cpp"
 #include "dgl/src/WidgetPrivateData.cpp"
 #include "dgl/src/Window.cpp"
+
+START_NAMESPACE_DGL
+static bool forceRealizeFailure = false;
+static PuglStatus testRealize(PuglView* const view)
+{
+    if (forceRealizeFailure)
+    {
+        forceRealizeFailure = false;
+        return PUGL_CREATE_CONTEXT_FAILED;
+    }
+    return puglRealize(view);
+}
+END_NAMESPACE_DGL
+
+#define puglRealize testRealize
 #include "dgl/src/WindowPrivateData.cpp"
+#undef puglRealize
 
 #ifdef DGL_OPENGL
 // ScopedGraphicsContext creates the renderer's drawing state, which lives with the renderers this test does
@@ -90,6 +106,19 @@ public:
     void installNativeDrag(const std::shared_ptr<TestNativeDrag>& drag)
     {
         pData->fileDrag = drag;
+    }
+
+    size_t registeredViews() const
+    {
+       #ifdef DGL_RUNTIME_BACKEND
+        USE_NAMESPACE_DGL;
+        const PuglWorld* const world = pData->appData->world;
+        return world->system == kPuglWindowSystemWayland
+            ? static_cast<const pugl_wl::PuglWorld*>(world)->numViews
+            : static_cast<const pugl_x11::PuglWorld*>(world)->numViews;
+       #else
+        return pData->appData->world->numViews;
+       #endif
     }
 
     // ----------------------------------------------------------------------------------------------------------------
@@ -192,6 +221,22 @@ int main()
     using DGL_NAMESPACE::Application;
     using DGL_NAMESPACE::ApplicationQuitter;
     using DGL_NAMESPACE::Window;
+
+    {
+        Application app(true);
+        DAF_NAMESPACE::PluginWindow survivor(app, 160, 160, 1.0);
+        DAF_ASSERT_EQUAL(survivor.registeredViews(), 1u, "the healthy window registers one view");
+        {
+            DGL_NAMESPACE::forceRealizeFailure = true;
+            DAF_NAMESPACE::PluginWindow failed(app, 160, 160, 1.0);
+            DAF_ASSERT_EQUAL(failed.getNativeWindowHandle(), 0u, "failed realization leaves no native window");
+            DAF_ASSERT_EQUAL(survivor.registeredViews(), 1u, "failed realization leaves no orphaned view");
+        }
+        DAF_ASSERT_EQUAL(survivor.registeredViews(), 1u, "destroying a failed window leaves its sibling alone");
+        DAF_NAMESPACE::PluginWindow recovered(app, 160, 160, 1.0);
+        DAF_ASSERT_NOT_EQUAL(recovered.getNativeWindowHandle(), 0u, "another window can open after failure");
+        DAF_ASSERT_EQUAL(survivor.registeredViews(), 2u, "only the two healthy views remain");
+    }
 
     // Native drag modal loops can close both the Window and its Application.
     {
