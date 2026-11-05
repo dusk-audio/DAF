@@ -877,6 +877,17 @@ START_NAMESPACE_DAF
 #define DAF_PLUGIN_CLAP_ID "studio.kx.daf.effect"
 
 /**
+   The URL of the plugin's manual, given to CLAP hosts (clap_plugin_descriptor::manual_url).
+   Optional; the CLAP descriptor's url is the plugin's homepage (DAF_PLUGIN_HOMEPAGE, Plugin::getHomePage()).
+*/
+#define DAF_PLUGIN_MANUAL_URL "https://example.com/manual"
+
+/**
+   The URL of the plugin's support page, given to CLAP hosts (clap_plugin_descriptor::support_url). Optional.
+*/
+#define DAF_PLUGIN_SUPPORT_URL "https://example.com/support"
+
+/**
    Plugin name abbreviation consisting of 2 or 3 characters in uppercase.
    @note This macro is required when building plugins for the Darkglass Anagram unit.
 */

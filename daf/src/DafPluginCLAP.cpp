@@ -16,7 +16,6 @@
 
 /* TODO items:
  * CV: write a specification
- * INFO: define url, manual url, support url and string version
  * PARAMETERS: test parameter triggers
  * States: skip DSP/UI only states as appropriate
  * UI: expose external-only UIs
@@ -3613,20 +3612,41 @@ static const clap_plugin_descriptor_t* CLAP_ABI clap_get_plugin_descriptor(const
         nullptr
     };
 
+    // "MAJOR.MINOR.MICRO" of getVersion() (d_version()), as the VST3 factory reports it: hosts show it, and an
+    // empty one reads as an unversioned plugin.
+    static const String version = [] {
+        const uint32_t v = sPlugin->getVersion();
+        char text[16] = {};
+        std::snprintf(text, sizeof(text), "%u.%u.%u", (v >> 16) & 0xffu, (v >> 8) & 0xffu, v & 0xffu);
+        return String(text);
+    }();
+
+    // Copies, as the version is: the descriptor is built once and outlives the plugin that answered
+    // (clap_plugin_entry_deinit deletes it, and a host may init the entry again), which may return a member's buffer.
+    static const String name(sPlugin->getName());
+    static const String maker(sPlugin->getMaker());
+    static const String homepage(sPlugin->getHomePage());
+    static const String description(sPlugin->getDescription());
+
     static const clap_plugin_descriptor_t descriptor = {
         CLAP_VERSION,
         DAF_PLUGIN_CLAP_ID,
-        sPlugin->getName(),
-        sPlugin->getMaker(),
-        // TODO url
+        name.buffer(),
+        maker.buffer(),
+        // the plugin's homepage (DAF_PLUGIN_HOMEPAGE or getHomePage()), "" without one
+        homepage.buffer(),
+       #ifdef DAF_PLUGIN_MANUAL_URL
+        DAF_PLUGIN_MANUAL_URL,
+       #else
         "",
-        // TODO manual url
+       #endif
+       #ifdef DAF_PLUGIN_SUPPORT_URL
+        DAF_PLUGIN_SUPPORT_URL,
+       #else
         "",
-        // TODO support url
-        "",
-        // TODO version string
-        "",
-        sPlugin->getDescription(),
+       #endif
+        version.buffer(),
+        description.buffer(),
         features
     };
 

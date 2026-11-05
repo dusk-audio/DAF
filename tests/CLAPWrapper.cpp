@@ -22,9 +22,14 @@
  * and never overwrite a state loaded after it.
  *
  * Output parameters are reported read-only, and parameter events outside the core event space change
- * nothing, whether they come through process() or clap_plugin_params::flush(). */
+ * nothing, whether they come through process() or clap_plugin_params::flush().
+ *
+ * The plugin descriptor carries the version string and the homepage, manual and support URLs. */
 
 #define DAF_PLUGIN_TARGET_CLAP
+#define DAF_PLUGIN_HOMEPAGE "https://example.com/wrapper-test"
+#define DAF_PLUGIN_MANUAL_URL "https://example.com/wrapper-test/manual"
+#define DAF_PLUGIN_SUPPORT_URL "https://example.com/wrapper-test/support"
 #define DAF_WRAPPER_TEST_BYPASS
 #define DAF_WRAPPER_TEST_PARAM_TEXT
 #define DAF_TEST_NO_DGL
@@ -222,6 +227,18 @@ int main()
     const clap_plugin_factory_t* const factory =
         static_cast<const clap_plugin_factory_t*>(clap_entry.get_factory(CLAP_PLUGIN_FACTORY_ID));
     DAF_ASSERT_NOT_EQUAL(factory, nullptr, "the plugin factory must be available");
+
+    // The descriptor reports getVersion() as "MAJOR.MINOR.MICRO" and the homepage, manual and support URLs.
+    {
+        const clap_plugin_descriptor_t* const descriptor = factory->get_plugin_descriptor(factory, 0);
+        DAF_ASSERT_NOT_EQUAL(descriptor, nullptr, "the plugin descriptor must be available");
+        DAF_ASSERT_EQUAL(std::strcmp(descriptor->version, "1.0.0"), 0, "the descriptor version is getVersion()");
+        DAF_ASSERT_EQUAL(std::strcmp(descriptor->url, DAF_PLUGIN_HOMEPAGE), 0, "the descriptor url is the homepage");
+        DAF_ASSERT_EQUAL(std::strcmp(descriptor->manual_url, DAF_PLUGIN_MANUAL_URL), 0,
+                         "the descriptor manual url is DAF_PLUGIN_MANUAL_URL");
+        DAF_ASSERT_EQUAL(std::strcmp(descriptor->support_url, DAF_PLUGIN_SUPPORT_URL), 0,
+                         "the descriptor support url is DAF_PLUGIN_SUPPORT_URL");
+    }
 
     // Required keys reject before applying an otherwise valid parameter edit.
     {
