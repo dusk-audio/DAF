@@ -179,11 +179,16 @@ puglWaylandMonotonicMs(void)
   return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
 }
 
+static const char* const puglWaylandSurfaceTag[] = {"DAF view"};
+
 /// Return the view a wl_surface belongs to, or NULL if it is not ours (or gone)
 static PuglView*
 puglWaylandViewForSurface(struct wl_surface* const surface)
 {
-  return surface ? (PuglView*)wl_surface_get_user_data(surface) : NULL;
+  return surface && wl_proxy_get_tag((struct wl_proxy*)surface) ==
+                      puglWaylandSurfaceTag
+           ? (PuglView*)wl_surface_get_user_data(surface)
+           : NULL;
 }
 
 /// Damage a whole surface, using the buffer-relative request when it is available
@@ -330,12 +335,13 @@ puglWaylandUpdateScale(PuglView* const view)
     impl->bufferScale = 1;
   } else {
     int32_t scale = 1;
+    const PuglWorldInternals* const wimpl = view->world->impl;
     for (uint32_t i = 0; i < impl->numEnteredOutputs; ++i) {
-      const PuglWaylandOutput* const out =
-        (const PuglWaylandOutput*)wl_output_get_user_data(
-          impl->enteredOutputs[i]);
-      if (out && out->scale > scale) {
-        scale = out->scale;
+      for (uint32_t j = 0; j < wimpl->numOutputs; ++j) {
+        const PuglWaylandOutput* const out = &wimpl->outputs[j];
+        if (out->output == impl->enteredOutputs[i] && out->scale > scale) {
+          scale = out->scale;
+        }
       }
     }
 
@@ -2480,7 +2486,7 @@ puglWaylandReadPipe(PuglWorldInternals* const impl,
 
   while (!recv.done) {
     // Same prepare_read/poll/read_events dance as puglWaylandDispatchEvents, plus the pipe
-    if (wl_display_dispatch_pending(display) < 0) {
+    if (wl_display_dispatch_queue_pending(display, impl->queue) < 0) {
       status = PUGL_UNKNOWN_ERROR;
       break;
     }
@@ -2490,8 +2496,8 @@ puglWaylandReadPipe(PuglWorldInternals* const impl,
     }
 
     bool readPrepared = true;
-    while (wl_display_prepare_read(display) != 0) {
-      if (wl_display_dispatch_pending(display) < 0) {
+    while (wl_display_prepare_read_queue(display, impl->queue) != 0) {
+      if (wl_display_dispatch_queue_pending(display, impl->queue) < 0) {
         readPrepared = false;
         status       = PUGL_UNKNOWN_ERROR;
         break;
@@ -2556,7 +2562,7 @@ puglWaylandReadPipe(PuglWorldInternals* const impl,
 
     /* This is what lets a self-paste complete: our own wl_data_source.send handler runs from here,
        and for anything bigger than the pipe buffer it drains recv itself as it goes. */
-    if (wl_display_dispatch_pending(display) < 0) {
+    if (wl_display_dispatch_queue_pending(display, impl->queue) < 0) {
       status = PUGL_UNKNOWN_ERROR;
       break;
     }
@@ -3103,22 +3109,25 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
     wl_registry_destroy(impl->registry);
   }
 
-  if (impl->display) {
+  if (impl->queue) {
+    wl_event_queue_destroy(impl->queue);
+  }
+  if (impl->display && impl->ownsDisplay) {
     wl_display_disconnect(impl->display);
   }
 
   free(impl);
 }
 
-PuglWorldInternals*
-puglInitWorldInternals(const PuglWorldType type,
-                       const PuglWorldFlags PUGL_UNUSED(flags))
+/* Borrowed connections are serialized with their owner's event loop.  Initialization and clipboard
+   receives may read the socket, but only dispatch our queue; ordinary updates leave reading to the
+   owner.  The owner must not have a prepared read outstanding when calling into this world. */
+static PuglWorldInternals*
+puglWaylandInitWorldInternals(struct wl_display* const display,
+                              const bool ownsDisplay,
+                              const PuglWorldType type)
 {
-  struct wl_display* const display = wl_display_connect(NULL);
-
   if (!display) {
-    d_stderr("pugl: failed to connect to a Wayland display (WAYLAND_DISPLAY=%s)",
-             getenv("WAYLAND_DISPLAY") ? getenv("WAYLAND_DISPLAY") : "<unset>");
     return NULL;
   }
 
@@ -3126,30 +3135,55 @@ puglInitWorldInternals(const PuglWorldType type,
     (PuglWorldInternals*)calloc(1, sizeof(PuglWorldInternals));
 
   if (!impl) {
-    wl_display_disconnect(display);
+    if (ownsDisplay) {
+      wl_display_disconnect(display);
+    }
     return NULL;
   }
 
-  if (type == PUGL_PROGRAM) {
+  if (ownsDisplay && type == PUGL_PROGRAM) {
     const char* const token = getenv("XDG_ACTIVATION_TOKEN");
     impl->launcherToken = token && *token ? strdup(token) : NULL;
     unsetenv("XDG_ACTIVATION_TOKEN");
   }
 
   impl->display     = display;
+  impl->ownsDisplay = ownsDisplay;
   impl->scaleFactor = 1.0;
   impl->cursorSize  = 24;
   impl->repeat.fd   = -1;
   impl->repeat.rate = 25;
   impl->repeat.delay = 400;
 
-  impl->registry = wl_display_get_registry(display);
+  impl->queue = wl_display_create_queue(display);
+  if (!impl->queue) {
+    puglWaylandDestroyWorldInternals(impl);
+    return NULL;
+  }
+
+  struct wl_display* const wrapper =
+    (struct wl_display*)wl_proxy_create_wrapper(display);
+  if (!wrapper) {
+    puglWaylandDestroyWorldInternals(impl);
+    return NULL;
+  }
+
+  wl_proxy_set_queue((struct wl_proxy*)wrapper, impl->queue);
+  impl->registry = wl_display_get_registry(wrapper);
+  wl_proxy_wrapper_destroy(wrapper);
+  if (!impl->registry) {
+    puglWaylandDestroyWorldInternals(impl);
+    return NULL;
+  }
   wl_registry_add_listener(
     impl->registry, &puglWaylandRegistryListener, impl);
 
   // First roundtrip collects the globals, second one their initial events
-  wl_display_roundtrip(display);
-  wl_display_roundtrip(display);
+  if (wl_display_roundtrip_queue(display, impl->queue) < 0 ||
+      wl_display_roundtrip_queue(display, impl->queue) < 0) {
+    puglWaylandDestroyWorldInternals(impl);
+    return NULL;
+  }
 
   if (!impl->compositor || !impl->wmBase) {
     d_stderr("pugl: Wayland compositor does not provide %s, cannot create windows",
@@ -3193,6 +3227,20 @@ puglInitWorldInternals(const PuglWorldType type,
 #endif
 
   return impl;
+}
+
+PuglWorldInternals*
+puglInitWorldInternals(const PuglWorldType type,
+                       const PuglWorldFlags PUGL_UNUSED(flags))
+{
+  struct wl_display* const display = wl_display_connect(NULL);
+  if (!display) {
+    d_stderr("pugl: failed to connect to a Wayland display (WAYLAND_DISPLAY=%s)",
+             getenv("WAYLAND_DISPLAY") ? getenv("WAYLAND_DISPLAY") : "<unset>");
+    return NULL;
+  }
+
+  return puglWaylandInitWorldInternals(display, true, type);
 }
 
 void*
@@ -3405,6 +3453,7 @@ puglRealize(PuglView* const view)
   }
 
   wl_surface_set_user_data(impl->wlSurface, view);
+  wl_proxy_set_tag((struct wl_proxy*)impl->wlSurface, puglWaylandSurfaceTag);
   wl_surface_add_listener(
     impl->wlSurface, &puglWaylandSurfaceEventListener, view);
 
@@ -3665,7 +3714,7 @@ puglWaylandBuildPollFds(PuglWorldInternals* const impl)
       impl->pollFds, needed * sizeof(struct pollfd));
 
     if (!grown) {
-      return 0;
+      return (nfds_t)-1;
     }
 
     impl->pollFds    = grown;
@@ -3674,10 +3723,12 @@ puglWaylandBuildPollFds(PuglWorldInternals* const impl)
 
   nfds_t n = 0;
 
-  impl->pollFds[n].fd      = wl_display_get_fd(impl->display);
-  impl->pollFds[n].events  = POLLIN;
-  impl->pollFds[n].revents = 0;
-  ++n;
+  if (impl->ownsDisplay) {
+    impl->pollFds[n].fd      = wl_display_get_fd(impl->display);
+    impl->pollFds[n].events  = POLLIN;
+    impl->pollFds[n].revents = 0;
+    ++n;
+  }
 
   if (impl->repeat.fd >= 0) {
     impl->pollFds[n].fd      = impl->repeat.fd;
@@ -3756,55 +3807,65 @@ puglWaylandDispatchEvents(PuglWorld* const world, const double timeout)
 
   impl->world = world;
 
-  if (wl_display_dispatch_pending(display) < 0) {
+  if (wl_display_dispatch_queue_pending(display, impl->queue) < 0) {
     return PUGL_UNKNOWN_ERROR;
   }
 
-  while (wl_display_prepare_read(display) != 0) {
-    if (wl_display_dispatch_pending(display) < 0) {
-      return PUGL_UNKNOWN_ERROR;
+  if (impl->ownsDisplay) {
+    while (wl_display_prepare_read_queue(display, impl->queue) != 0) {
+      if (wl_display_dispatch_queue_pending(display, impl->queue) < 0) {
+        return PUGL_UNKNOWN_ERROR;
+      }
     }
   }
 
   if (wl_display_flush(display) < 0 && errno != EAGAIN) {
-    wl_display_cancel_read(display);
+    if (impl->ownsDisplay) {
+      wl_display_cancel_read(display);
+    }
     return PUGL_UNKNOWN_ERROR;
   }
 
   const nfds_t nfds   = puglWaylandBuildPollFds(impl);
   const int    dropFd = puglWaylandDropFd(impl);
-  if (!nfds) {
-    wl_display_cancel_read(display);
+  if (nfds == (nfds_t)-1) {
+    if (impl->ownsDisplay) {
+      wl_display_cancel_read(display);
+    }
     return PUGL_NO_MEMORY;
   }
 
   const int timeoutMs =
-    (timeout < 0.0) ? -1 : (int)(timeout * 1000.0 + 0.5);
+    !impl->ownsDisplay ? 0 : (timeout < 0.0) ? -1 : (int)(timeout * 1000.0 + 0.5);
 
   const int ret = poll(impl->pollFds, nfds, timeoutMs);
 
   if (ret < 0) {
-    wl_display_cancel_read(display);
+    if (impl->ownsDisplay) {
+      wl_display_cancel_read(display);
+    }
     return (errno == EINTR) ? PUGL_SUCCESS : PUGL_UNKNOWN_ERROR;
   }
 
-  if (impl->pollFds[0].revents & (POLLIN | POLLERR | POLLHUP)) {
-    if (wl_display_read_events(display) < 0) {
+  if (impl->ownsDisplay) {
+    if (impl->pollFds[0].revents & (POLLIN | POLLERR | POLLHUP)) {
+      if (wl_display_read_events(display) < 0) {
+        return PUGL_UNKNOWN_ERROR;
+      }
+    } else {
+      wl_display_cancel_read(display);
+    }
+
+    if (wl_display_dispatch_queue_pending(display, impl->queue) < 0) {
       return PUGL_UNKNOWN_ERROR;
     }
-  } else {
-    wl_display_cancel_read(display);
-  }
-
-  if (wl_display_dispatch_pending(display) < 0) {
-    return PUGL_UNKNOWN_ERROR;
   }
 
   /* One pass over the timer list already services every timer that expired, so several ready timer
      fds in the same cycle must not each trigger a full scan of their own. */
   bool timersReady = false;
   bool dropReady   = false;
-  for (nfds_t i = 1; i < nfds; ++i) {
+  for (nfds_t i = impl->ownsDisplay ? 1U : 0U; i < nfds; ++i) {
     // the end of a drag's file list shows as a hang-up, with no data left to read
     if (dropFd >= 0 && impl->pollFds[i].fd == dropFd) {
       dropReady = (impl->pollFds[i].revents & (POLLIN | POLLERR | POLLHUP)) != 0;
@@ -3939,7 +4000,9 @@ puglUpdate(PuglWorld* const world, const double timeout)
     return PUGL_BAD_CALL;
   }
 
-  if (timeout < 0.0) {
+  if (!world->impl->ownsDisplay) {
+    st0 = puglWaylandDispatchEvents(world, 0.0);
+  } else if (timeout < 0.0) {
     st0 = puglWaylandDispatchEvents(world, timeout);
   } else if (timeout <= 0.001) {
     st0 = puglWaylandDispatchEvents(world, 0.0);

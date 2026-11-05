@@ -133,6 +133,8 @@ struct PuglWorldInternalsImpl {
 
   // Core globals
   struct wl_display*    display;
+  struct wl_event_queue* queue;
+  bool                  ownsDisplay;
   struct wl_registry*   registry;
   struct wl_compositor* compositor;
   struct wl_shm*        shm;
