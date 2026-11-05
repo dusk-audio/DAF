@@ -717,6 +717,27 @@ static void testForeignSurface()
         assert(wl_surface_get_user_data(surface) == foreign);
     }
 
+    DGL_NAMESPACE::PuglWorld* const otherWorld =
+        puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display);
+    assert(otherWorld);
+    wl::PuglView* const otherView = static_cast<wl::PuglView*>(DGL_NAMESPACE::puglNewView(otherWorld));
+    assert(otherView);
+    wl::puglSetMatchingBackendForCurrentBuild(otherView);
+    assert(wl::puglSetSizeHint(otherView, PUGL_DEFAULT_SIZE, 200, 100) == PUGL_SUCCESS);
+    static unsigned otherFocusEvents = 0;
+    assert(wl::puglSetEventFunc(otherView, [](DGL_NAMESPACE::PuglView*, const PuglEvent* event) {
+        if (event->type == PUGL_FOCUS_IN || event->type == PUGL_FOCUS_OUT)
+            ++otherFocusEvents;
+        return PUGL_SUCCESS;
+    }) == PUGL_SUCCESS);
+    assert(wl::puglRealize(otherView) == PUGL_SUCCESS);
+    puglWaylandKeyboardEnter(impl, nullptr, 5U, otherView->impl->wlSurface, nullptr);
+    assert(impl->keyboardFocus == nullptr && impl->activationSource == nullptr);
+    puglWaylandKeyboardLeave(impl, nullptr, 6U, otherView->impl->wlSurface);
+    assert(otherFocusEvents == 0);
+    DGL_NAMESPACE::puglFreeView(otherView);
+    DGL_NAMESPACE::puglFreeWorld(otherWorld);
+
     wl_output* const output = static_cast<wl_output*>(
         wl_registry_bind(registry, 3U, &wl_output_interface, 2));
     assert(output);

@@ -1753,7 +1753,10 @@ puglWaylandKeyboardEnter(void* const               data,
                          struct wl_array* const    keys)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
-  PuglView* const           view = puglWaylandViewForSurface(surface);
+  PuglView*                 view = puglWaylandViewForSurface(surface);
+  if (view && view->world->impl != impl) {
+    view = NULL;
+  }
 
   impl->lastSerial       = serial;
   impl->activationSource = view;
@@ -1772,7 +1775,7 @@ puglWaylandKeyboardEnter(void* const               data,
       }
     }
     impl->hostKeyboardSurface = surface;
-    if (view && view->world->impl == impl) {
+    if (view) {
       impl->selectedView = view;
     }
     puglWaylandUpdateHostFocus(impl);
@@ -1796,7 +1799,10 @@ puglWaylandKeyboardLeave(void* const               data,
                          struct wl_surface* const  surface)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
-  PuglView* const           view = puglWaylandViewForSurface(surface);
+  PuglView*                 view = puglWaylandViewForSurface(surface);
+  if (view && view->world->impl != impl) {
+    view = NULL;
+  }
 
   impl->lastSerial = serial;
   if (impl->hostManagedInput) {
