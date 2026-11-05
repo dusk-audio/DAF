@@ -62,6 +62,30 @@ static void sendPaste(void* const data, wl_callback* const callback, uint32_t)
     wl_callback_destroy(callback);
 }
 
+static void testActivationProtocol()
+{
+    for (const bool advertised : {false, true})
+    {
+        ConnectionServer server(true, true, false, advertised);
+        wl_display* const display = server.connect();
+        DGL_NAMESPACE::PuglWorld* const world = puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display);
+        assert(world);
+        const auto* const nativeWorld = static_cast<wl::PuglWorld*>(world);
+        assert((nativeWorld->impl->activation != nullptr) == advertised);
+        puglFreeWorld(world);
+        assert(wl_display_roundtrip(display) >= 0);
+        unsigned destroyed = 0;
+        for (const auto& request : server.requests())
+            if (request.type == "xdg_activation_v1")
+            {
+                assert(request.opcode == 0);
+                ++destroyed;
+            }
+        assert(destroyed == unsigned(advertised));
+        wl_display_disconnect(display);
+    }
+}
+
 static void testBorrowedConnection()
 {
     ConnectionServer server;
@@ -939,6 +963,7 @@ int main()
     assert(puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, nullptr) == nullptr);
     assert(!puglGetWaylandInput(nullptr).data);
     alarm(30); // Bound a broken protocol or an accidental blocking borrowed-world update.
+    testActivationProtocol();
     testBorrowedConnection();
     testConnectionOwnership();
     testIndependentSeat();

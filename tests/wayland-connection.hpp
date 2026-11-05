@@ -42,9 +42,9 @@ public:
     };
 
     explicit ConnectionServer(const bool advertiseCompositor = true, const bool advertiseSubcompositor = true,
-                              const bool advertiseSeat = false)
+                              const bool advertiseSeat = false, const bool advertiseActivation = false)
         : advertiseCompositor(advertiseCompositor), advertiseSubcompositor(advertiseSubcompositor),
-          advertiseSeat(advertiseSeat)
+          advertiseSeat(advertiseSeat), advertiseActivation(advertiseActivation)
     {
         int fds[2];
         assert(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) == 0);
@@ -165,6 +165,8 @@ private:
                     global(words[0], 4, "wl_subcompositor", 1);
                 if (advertiseSeat)
                     global(words[0], 5, "wl_seat", 5);
+                if (advertiseActivation)
+                    global(words[0], 6, "xdg_activation_v1", 1);
             }
             else if (type == "wl_registry" && opcode == 0)
             {
@@ -195,6 +197,7 @@ private:
     const bool advertiseCompositor;
     const bool advertiseSubcompositor;
     const bool advertiseSeat;
+    const bool advertiseActivation;
     int serverFd;
     int clientFd;
     std::thread thread;
