@@ -532,6 +532,11 @@ double Window::getScaleFactor() const noexcept
     return pData->scaleFactor;
 }
 
+uint64_t Window::getCompletedDisplayCount() const noexcept
+{
+    return pData->completedDisplayCount;
+}
+
 void Window::focus()
 {
     pData->focus();

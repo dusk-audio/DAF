@@ -492,6 +492,13 @@ public:
     double getScaleFactor() const noexcept;
 
    /**
+      Number of display passes whose widget drawing and renderer cleanup completed.
+      Read on the window's event thread, after the event pump returns successfully.
+      This does not indicate compositor presentation; a skipped or failed draw does not count.
+    */
+    uint64_t getCompletedDisplayCount() const noexcept;
+
+   /**
       Grab the keyboard input focus.
     */
     void focus();

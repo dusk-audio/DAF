@@ -961,6 +961,7 @@ void Window::PrivateData::onPuglExpose()
     }
 
     endContext();
+    ++completedDisplayCount;
 #endif
 }
 

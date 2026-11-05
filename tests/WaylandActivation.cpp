@@ -29,11 +29,6 @@ protected:
     {
         glClearColor(0.2f, 0.4f, 0.3f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
-        if (!presented)
-        {
-            presented = true;
-            std::puts("FRAME");
-        }
     }
 
     void onFocus(const bool focused, const CrossingMode) override
@@ -47,9 +42,6 @@ protected:
             std::printf("KEY %u\n", event.key);
         return true;
     }
-
-private:
-    bool presented = false;
 };
 
 END_NAMESPACE_DGL
@@ -62,6 +54,8 @@ int main()
         return 2;
     Application app(true, Application::kTypeAuto, Application::kWindowSystemWayland);
     ActivationWindow window(app);
+    if (window.getCompletedDisplayCount() != 0)
+        return 6;
     window.show();
     std::printf("WINDOW %lu PID %ld TOKEN_CLEARED %d\n",
                 static_cast<unsigned long>(window.getNativeWindowHandle()), static_cast<long>(getpid()),
@@ -69,9 +63,15 @@ int main()
     if (fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK) == -1)
         return 3;
     std::string input;
+    bool drewFrame = false;
     while (!app.isQuitting())
     {
         app.idle();
+        if (!drewFrame && window.getCompletedDisplayCount() != 0)
+        {
+            drewFrame = true;
+            std::puts("FRAME");
+        }
         char buffer[1024];
         const ssize_t count = read(STDIN_FILENO, buffer, sizeof(buffer));
         if (count == 0)

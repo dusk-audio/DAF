@@ -119,6 +119,7 @@ struct Window::PrivateData : IdleCallback {
 
     /** Scale factor to report to widgets on request, purely informational. */
     double scaleFactor;
+    uint64_t completedDisplayCount = 0;
 
     /** Automatic scaling to apply on widgets, implemented internally. */
     bool autoScaling;
