@@ -101,7 +101,7 @@ public:
             If it already is, it is left current when done, so scopes can nest. */
         explicit ScopedGraphicsContext(Window& window);
 
-        /** Overloaded constructor, gives back context to its transient parent when done */
+        /** Overloaded constructor, restores an active transient-parent context when done. */
         explicit ScopedGraphicsContext(Window& window, Window& transientParentWindow);
 
         /** Destructor for clearing current context, if not done yet */
@@ -259,10 +259,33 @@ public:
       setOffset methods intentionally ignore them. This explicit variant is
       for hosts that own both the parent and embedded child window.
 
+      On Wayland, offsets use parent surface coordinates, independent of the child's
+      buffer scale. The host must commit the parent after creating or moving a child.
+
       @return Whether the platform accepted the position change.
       @see isEmbed()
     */
     bool setEmbeddedOffset(int x, int y);
+
+   /**
+      Show or hide a host-owned embedded child without destroying its resources or closing its
+      application registration. Returns false for a toplevel or failed native operation.
+      On Wayland the host must commit the parent after showing the child.
+    */
+    bool setEmbeddedVisible(bool visible);
+
+   /**
+      Set a Wayland child's rectangle in integer parent-surface coordinates.
+
+      Buffer dimensions follow the native scale; getScaleFactor() follows native scale
+      multiplied by userScale. Fixed pixel size hints do not constrain this rectangle.
+      Changes arrive through the next configure event without recreating the window.
+      The host must commit the parent after creating or moving a child.
+      Calling setSize() returns to pixel sizing; explicitly setting the scale stops native following.
+
+      Returns false for other backends, non-embedded windows, or invalid geometry/scale.
+    */
+    bool setEmbeddedSurfaceGeometry(int x, int y, uint width, uint height, double userScale);
 
    /**
       Get width.
@@ -476,9 +499,24 @@ public:
     double getScaleFactor() const noexcept;
 
    /**
+      Number of display passes whose widget drawing and renderer cleanup completed.
+      Read on the window's event thread, after the event pump returns successfully.
+      This does not indicate compositor presentation; a skipped or failed draw does not count.
+    */
+    uint64_t getCompletedDisplayCount() const noexcept;
+
+   /**
       Grab the keyboard input focus.
     */
     void focus();
+
+   /**
+      Request keyboard focus using a launcher-provided xdg-activation token on Wayland.
+      Call after show(), on the window's event thread. The token is copied and used once;
+      the caller must not reuse it. The compositor decides whether to grant focus.
+      On other backends, or with a null or empty token, this calls focus().
+    */
+    void focusWithActivationToken(const char* token);
 
    /**
       Whether any visible widget of this window wants the keyboard focus.

@@ -27,7 +27,23 @@
 #include "dgl/src/Widget.cpp"
 #include "dgl/src/WidgetPrivateData.cpp"
 #include "dgl/src/Window.cpp"
+
+START_NAMESPACE_DGL
+static bool forceRealizeFailure = false;
+static PuglStatus testRealize(PuglView* const view)
+{
+    if (forceRealizeFailure)
+    {
+        forceRealizeFailure = false;
+        return PUGL_CREATE_CONTEXT_FAILED;
+    }
+    return puglRealize(view);
+}
+END_NAMESPACE_DGL
+
+#define puglRealize testRealize
 #include "dgl/src/WindowPrivateData.cpp"
+#undef puglRealize
 
 #ifdef DGL_OPENGL
 // ScopedGraphicsContext creates the renderer's drawing state, which lives with the renderers this test does
@@ -90,6 +106,19 @@ public:
     void installNativeDrag(const std::shared_ptr<TestNativeDrag>& drag)
     {
         pData->fileDrag = drag;
+    }
+
+    size_t registeredViews() const
+    {
+       #ifdef DGL_RUNTIME_BACKEND
+        USE_NAMESPACE_DGL;
+        const PuglWorld* const world = pData->appData->world;
+        return world->system == kPuglWindowSystemWayland
+            ? static_cast<const pugl_wl::PuglWorld*>(world)->numViews
+            : static_cast<const pugl_x11::PuglWorld*>(world)->numViews;
+       #else
+        return pData->appData->world->numViews;
+       #endif
     }
 
     // ----------------------------------------------------------------------------------------------------------------
@@ -192,6 +221,22 @@ int main()
     using DGL_NAMESPACE::Application;
     using DGL_NAMESPACE::ApplicationQuitter;
     using DGL_NAMESPACE::Window;
+
+    {
+        Application app(true);
+        DAF_NAMESPACE::PluginWindow survivor(app, 160, 160, 1.0);
+        DAF_ASSERT_EQUAL(survivor.registeredViews(), 1u, "the healthy window registers one view");
+        {
+            DGL_NAMESPACE::forceRealizeFailure = true;
+            DAF_NAMESPACE::PluginWindow failed(app, 160, 160, 1.0);
+            DAF_ASSERT_EQUAL(failed.getNativeWindowHandle(), 0u, "failed realization leaves no native window");
+            DAF_ASSERT_EQUAL(survivor.registeredViews(), 1u, "failed realization leaves no orphaned view");
+        }
+        DAF_ASSERT_EQUAL(survivor.registeredViews(), 1u, "destroying a failed window leaves its sibling alone");
+        DAF_NAMESPACE::PluginWindow recovered(app, 160, 160, 1.0);
+        DAF_ASSERT_NOT_EQUAL(recovered.getNativeWindowHandle(), 0u, "another window can open after failure");
+        DAF_ASSERT_EQUAL(survivor.registeredViews(), 2u, "only the two healthy views remain");
+    }
 
     // Native drag modal loops can close both the Window and its Application.
     {
@@ -456,6 +501,46 @@ int main()
             DAF_ASSERT_EQUAL(win.contextIsCurrent(), true, "a nested scope leaves the context to the outer one");
         }
         DAF_ASSERT_EQUAL(win.contextIsCurrent(), false, "the outer scope leaves the context it entered");
+    }
+
+    {
+        Application app(true);
+        DAF_NAMESPACE::PluginWindow parent(app, 160, 160, 1.0);
+        DAF_NAMESPACE::PluginWindow child(app, 160, 160, 1.0);
+        for (unsigned parentActive = 0; parentActive < 2; ++parentActive)
+        {
+            const auto exercise = [&]() -> int {
+                Window::ScopedGraphicsContext scope(child, parent);
+                DAF_ASSERT_EQUAL(child.contextIsCurrent(), true, "a transient scope enters the child");
+                scope.done();
+                DAF_ASSERT_EQUAL(parent.contextIsCurrent(), parentActive != 0, "done restores only an active parent");
+                scope.reinit();
+                DAF_ASSERT_EQUAL(child.contextIsCurrent(), true, "reinit enters the child again");
+                scope.done();
+                DAF_ASSERT_EQUAL(parent.contextIsCurrent(), parentActive != 0, "repeated done preserves parent state");
+                return 0;
+            };
+            if (parentActive)
+            {
+                const Window::ScopedGraphicsContext outer(parent);
+                if (exercise()) return 1;
+            }
+            else if (exercise()) return 1;
+            DAF_ASSERT_EQUAL(parent.contextIsCurrent(), false, "the parent has no unmatched context entry");
+        }
+        if (app.getWindowSystem() == Application::kWindowSystemWayland)
+        {
+            const Window::ScopedGraphicsContext outer(parent);
+            {
+                const Window::ScopedGraphicsContext inner(child);
+                {
+                    const Window::ScopedGraphicsContext nested(parent);
+                    DAF_ASSERT_EQUAL(parent.contextIsCurrent(), true, "a different-window scope can re-enter its caller");
+                }
+                DAF_ASSERT_EQUAL(child.contextIsCurrent(), true, "nested destruction restores the child");
+            }
+            DAF_ASSERT_EQUAL(parent.contextIsCurrent(), true, "different-window scope restores its caller");
+        }
     }
    #endif
 

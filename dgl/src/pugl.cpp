@@ -39,6 +39,7 @@
 
 /* we will include all header files used in pugl in their C++ friendly form, then pugl stuff in custom namespace */
 #include <cassert>
+#include <cerrno>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
@@ -235,6 +236,7 @@ extern "C" {
 #  include "pugl-extra/wayland-protocols/wayland-protocol.c"
 #  pragma GCC visibility pop
 # endif
+# include "pugl-extra/wayland-protocols/xdg-activation-v1-protocol.c"
 # include "pugl-extra/wayland-protocols/xdg-shell-protocol.c"
 # include "pugl-extra/wayland-protocols/xdg-decoration-unstable-v1-protocol.c"
 # include "pugl-extra/wayland-protocols/viewporter-protocol.c"
@@ -244,6 +246,7 @@ extern "C" {
 # if defined(__GNUC__)
 #  pragma GCC diagnostic pop
 # endif
+# include "pugl-extra/wayland-protocols/xdg-activation-v1-client-protocol.h"
 # include "pugl-extra/wayland-protocols/xdg-shell-client-protocol.h"
 # include "pugl-extra/wayland-protocols/xdg-decoration-unstable-v1-client-protocol.h"
 # include "pugl-extra/wayland-protocols/viewporter-client-protocol.h"
@@ -310,6 +313,131 @@ START_NAMESPACE_DGL
 # endif
 # include "pugl-platform.hpp"
 #endif
+
+// --------------------------------------------------------------------------------------------------------------------
+// DGL specific, borrowed Wayland connection
+
+PuglWorld* puglNewWorldWithWaylandDisplay(const PuglWorldType type,
+                                        const PuglWorldFlags flags,
+                                        void* const display,
+                                        void* const inputSeat)
+{
+    if (display == nullptr)
+    {
+        d_stderr2("DGL: cannot borrow a null Wayland display");
+        return nullptr;
+    }
+
+   #ifdef DGL_USING_WAYLAND
+    #ifdef DGL_RUNTIME_BACKEND
+    if (const char* const failure = dglWaylandLoad())
+    {
+        d_stderr2("DGL: cannot borrow the Wayland display: %s", failure);
+        return nullptr;
+    }
+    namespace backend = pugl_wl;
+    #else
+    namespace backend = DGL_NAMESPACE;
+    #endif
+
+    struct HostConnection {
+        wl_display* display;
+        wl_seat* seat;
+    } host = {static_cast<wl_display*>(display), static_cast<wl_seat*>(inputSeat)};
+    backend::PuglWorld* const world = backend::puglNewWorldWithInit(
+        type, flags,
+        [](PuglWorldType worldType, PuglWorldFlags, void* context) {
+            const auto* const host = static_cast<const HostConnection*>(context);
+            return backend::puglWaylandInitWorldInternals(
+                host->display, false, worldType, host->seat);
+        }, &host);
+    #ifdef DGL_RUNTIME_BACKEND
+    if (world != nullptr)
+        world->system = kPuglWindowSystemWayland;
+    #endif
+    return world;
+   #else
+    (void)type;
+    (void)flags;
+    (void)inputSeat;
+    d_stderr2("DGL: this build cannot borrow a Wayland display");
+    return nullptr;
+   #endif
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+// DGL specific, host Wayland input
+
+DGL_NAMESPACE::WaylandInput puglGetWaylandInput(PuglWorld* const world)
+{
+    DGL_NAMESPACE::WaylandInput input = {};
+   #ifdef DGL_USING_WAYLAND
+    if (world == nullptr)
+        return input;
+    #ifdef DGL_RUNTIME_BACKEND
+    if (world->system != kPuglWindowSystemWayland)
+        return input;
+    namespace backend = pugl_wl;
+    #else
+    namespace backend = DGL_NAMESPACE;
+    #endif
+    auto* const impl = static_cast<backend::PuglWorld*>(world)->impl;
+    if (!impl->hostManagedInput)
+        return input;
+    input.keyboard = &backend::puglWaylandKeyboardListener;
+    input.pointer = &backend::puglWaylandPointerListener;
+    input.data = impl;
+    input.consumed = [](void* data) {
+        return static_cast<backend::PuglWorldInternals*>(data)->lastEventConsumed;
+    };
+    input.hasKeyboardFocus = [](void* data) {
+        return static_cast<backend::PuglWorldInternals*>(data)->keyboardFocus != nullptr;
+    };
+    input.releaseFocus = [](void* data) {
+        auto* const impl = static_cast<backend::PuglWorldInternals*>(data);
+        impl->selectedView = nullptr;
+        backend::puglWaylandUpdateHostFocus(impl);
+    };
+    input.reset = [](void* data) {
+        backend::puglWaylandResetHostInput(static_cast<backend::PuglWorldInternals*>(data));
+    };
+   #else
+    (void)world;
+   #endif
+    return input;
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+// DGL specific, foreign Wayland activation
+
+bool puglActivateWaylandSurface(PuglWorld* const world, void* const surface, const char* const token)
+{
+   #ifdef DGL_USING_WAYLAND
+    if (world == nullptr || surface == nullptr || token == nullptr || *token == '\0')
+        return false;
+    #ifdef DGL_RUNTIME_BACKEND
+    if (world->system != kPuglWindowSystemWayland)
+        return false;
+    namespace backend = pugl_wl;
+    #else
+    namespace backend = DGL_NAMESPACE;
+    #endif
+    auto* const impl = static_cast<backend::PuglWorld*>(world)->impl;
+    if (impl->activation == nullptr)
+        return false;
+    xdg_activation_v1_activate(impl->activation, token, static_cast<wl_surface*>(surface));
+    int result;
+    do {
+        result = wl_display_flush(impl->display);
+    } while (result < 0 && errno == EINTR);
+    return result >= 0 || errno == EAGAIN;
+   #else
+    (void)world;
+    (void)surface;
+    (void)token;
+    return false;
+   #endif
+}
 
 // --------------------------------------------------------------------------------------------------------------------
 // DGL specific, build-specific drawing prepare

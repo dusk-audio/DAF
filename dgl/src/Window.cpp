@@ -55,11 +55,11 @@ Window::ScopedGraphicsContext::ScopedGraphicsContext(Window& win, Window& transi
     : window(win),
       ppData(transientWin.pData),
       active(false),
-      reenter(window.pData->view != nullptr)
+      reenter(false)
 {
-    if (reenter)
+    if (window.pData->view != nullptr)
     {
-        puglBackendLeave(ppData->view);
+        reenter = puglBackendIsCurrent(ppData->view, false) && puglBackendLeave(ppData->view);
         active = puglBackendEnter(window.pData->view);
         if (active)
             window.pData->createContextIfNeeded();
@@ -94,8 +94,10 @@ void Window::ScopedGraphicsContext::reinit()
     DAF_SAFE_ASSERT_RETURN(!reenter,);
     DAF_SAFE_ASSERT_RETURN(ppData != nullptr,);
 
-    reenter = true;
-    puglBackendLeave(ppData->view);
+    if (window.pData->view == nullptr)
+        return;
+
+    reenter = puglBackendIsCurrent(ppData->view, false) && puglBackendLeave(ppData->view);
     active = puglBackendEnter(window.pData->view);
 }
 
@@ -253,6 +255,41 @@ bool Window::setEmbeddedOffset(const int x, const int y)
     return puglSetPositionHint(pData->view, PUGL_CURRENT_POSITION, x, y) == PUGL_SUCCESS;
 }
 
+bool Window::setEmbeddedVisible(const bool visible)
+{
+    if (!pData->isEmbed || pData->view == nullptr)
+        return false;
+    if (pData->isVisible == visible)
+        return true;
+    const PuglStatus status = visible ? puglShow(pData->view, PUGL_SHOW_PASSIVE) : puglHide(pData->view);
+    if (status != PUGL_SUCCESS)
+        return false;
+    pData->isVisible = visible;
+    return true;
+}
+
+bool Window::setEmbeddedSurfaceGeometry(const int x, const int y, const uint width, const uint height,
+                                       const double userScale)
+{
+   #ifdef DGL_USING_WAYLAND
+    if (!pData->isEmbed || pData->view == nullptr || width <= 1 || height <= 1
+        || !d_isFinite(userScale) || userScale <= 0.0)
+        return false;
+    if (puglWaylandSetEmbeddedGeometry(pData->view, x, y, width, height) != PUGL_SUCCESS)
+        return false;
+    pData->nativeScaleMultiplier = userScale;
+    pData->followsPuglScaleFactor = true;
+    return true;
+   #else
+    (void)x;
+    (void)y;
+    (void)width;
+    (void)height;
+    (void)userScale;
+    return false;
+   #endif
+}
+
 uint Window::getWidth() const noexcept
 {
     DAF_SAFE_ASSERT_RETURN(pData->view != nullptr, 0);
@@ -388,11 +425,23 @@ void Window::setIgnoringKeyRepeat(const bool ignore) noexcept
 
 const void* Window::getClipboard(size_t& dataSize)
 {
+    const auto callbacks = pData->appData->clipboardCallbacks;
+    if (callbacks.get != nullptr)
+    {
+        dataSize = 0;
+        const void* const data = callbacks.get(callbacks.context, dataSize);
+        if (data == nullptr)
+            dataSize = 0;
+        return data;
+    }
     return pData->getClipboard(dataSize);
 }
 
 bool Window::setClipboard(const char* const mimeType, const void* const data, const size_t dataSize)
 {
+    const auto callbacks = pData->appData->clipboardCallbacks;
+    if (callbacks.set != nullptr)
+        return callbacks.set(callbacks.context, mimeType != nullptr ? mimeType : "text/plain", data, dataSize);
     return pData->view != nullptr
         && puglSetClipboard(pData->view, mimeType != nullptr ? mimeType : "text/plain", data, dataSize) == PUGL_SUCCESS;
 }
@@ -508,9 +557,30 @@ double Window::getScaleFactor() const noexcept
     return pData->scaleFactor;
 }
 
+uint64_t Window::getCompletedDisplayCount() const noexcept
+{
+    return pData->completedDisplayCount;
+}
+
 void Window::focus()
 {
     pData->focus();
+}
+
+void Window::focusWithActivationToken(const char* const token)
+{
+    if (pData->view == nullptr)
+        return;
+   #if defined(DGL_USING_WAYLAND)
+    if (token != nullptr && token[0] != '\0' && DGL_VIEW_IS_WAYLAND(pData->view))
+    {
+        puglWaylandActivate(pData->view, token);
+        return;
+    }
+   #else
+    (void)token;
+   #endif
+    focus();
 }
 
 bool Window::anyWidgetWantsKeyboardFocus()

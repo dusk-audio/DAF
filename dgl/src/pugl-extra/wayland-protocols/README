@@ -54,6 +54,13 @@ Interface versions in the generated code:
   zxdg_exporter_v2, zxdg_exported_v2                                  1
   zxdg_importer_v2, zxdg_imported_v2                                  1
 
+The activation protocol was fetched 2026-11-04 from the same project's mirror at
+https://github.com/wayland-mirror/wayland-protocols, commit
+b9edf66597586c914b5b1ff3d964d7ed201adab9:
+
+  xdg-activation-v1.xml             staging/xdg-activation/xdg-activation-v1.xml
+  xdg_activation_v1, xdg_activation_token_v1                         1
+
 The core protocol, wayland.xml, is vendored as well, for DGL_BACKEND=both builds only. Those load
 libwayland-client at runtime instead of linking it (see dgl/src/pugl-extra/wayland-loader-names.h),
 so the wl_*_interface objects that the protocol code refers to cannot come from the library: they
@@ -78,7 +85,7 @@ Regenerating
 With wayland-scanner installed, from this directory:
 
     for p in xdg-shell viewporter fractional-scale-v1 xdg-decoration-unstable-v1 \
-             xdg-foreign-unstable-v2; do
+             xdg-foreign-unstable-v2 xdg-activation-v1; do
         wayland-scanner client-header "$p.xml" "$p-client-protocol.h"
         wayland-scanner private-code   "$p.xml" "$p-protocol.c"
     done

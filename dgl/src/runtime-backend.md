@@ -202,6 +202,28 @@ for the opengl3 variant). DGL and NanoVG call GL entry points from libGL directl
 dispatch to whichever context is current, GLX or EGL, which is what the Wayland-only build already
 relies on.
 
+## Wayland activation
+
+Both `both` and `wayland` builds use `xdg-activation-v1` when the compositor offers it.
+`Window::focus()` and non-passive `puglShow()` request a token asynchronously, using the most
+recent keyboard focus, key, or pointer-button event's surface and serial. Repeated focus calls
+share an outstanding request. Success means the request was queued; keyboard focus still changes
+only when the compositor sends `wl_keyboard.enter` or `leave`, and force-raise cannot override
+its focus-stealing policy. Without the protocol, focus requests return `PUGL_UNSUPPORTED` and
+showing a window continues to work.
+
+A Wayland program world reads and immediately unsets `XDG_ACTIVATION_TOKEN`. Its first shown
+window uses that launcher token once, after committing its first frame. Module worlds leave the
+host's environment token alone. Hiding or destroying a window cancels both outstanding token
+requests and completed grants waiting for presentation.
+
+An application can forward a new launcher's token through its single-instance IPC and call
+`Window::focusWithActivationToken(token)` on the existing window's event thread after `show()`.
+DAF copies the token, supersedes any pending focus request, and consumes it after presentation.
+The application owns IPC and must not reuse a token. This also works for a minimized window;
+the compositor decides whether to restore and focus it. Other backends, and calls with an empty
+token, use the normal `focus()` behavior.
+
 ## Not covered by `both` yet
 
 - GLES: GLX cannot create an ES context, so a `both` build renders desktop GL on both backends.
@@ -244,6 +266,27 @@ fails the test rather than turn it into a check that nothing opens.
   scale N, and an X11 window to keep the X server's.
 
 `tests/Wayland.cpp` and `tests/X11Focus.cpp` drive each backend's half of a `both` build directly.
+`tests/WaylandDrop.cpp` uses a socket-pair compositor for file drops and activation: launcher-token
+ownership, source/target separation, input serials, asynchronous replies, one-use grants, mapping
+order, and cancellation at hide/destruction. These protocol checks do not prove that a real
+compositor grants focus.
+
+`tests/wayland-activation.py` checks real focus under a private headless Mutter. It uses a
+native GTK 4 launcher to mint tokens from pointer input, removes `DISPLAY` from both clients,
+and requires the launcher to lose focus and the same DAF window to receive a distinct key
+after launch, covered-window handoff, and restoration through Mutter's minimize shortcut.
+It retains the isolated session and protocol logs in a new directory supplied by the caller:
+
+```sh
+make -C dgl DGL_BACKEND=both USE_WEB_VIEW=true opengl -j6
+make -C tests DGL_BACKEND=both ../build/tests/WaylandActivation -j6
+python3 tests/wayland-activation.py run build/tests/WaylandActivation /tmp/daf-activation-check
+```
+
+This requires Mutter, dbus-run-session, and Python GObject with GTK 4. The runner creates its
+own HOME, runtime directory, session bus and compositor, and cleans up its private processes.
+It proves DAF activation; application-specific IPC and unsaved-document prompts need their own
+integration checks.
 
 `tests/plugin-embed-host.cpp` embeds a plugin's UI the way a Linux host does, handing the VST2,
 VST3 and CLAP builds of a plugin an X11 parent window. Under Weston alone each has to refuse,

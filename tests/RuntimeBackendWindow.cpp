@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <string>
 
 #define DAF_TEST_POINT_CPP
@@ -37,7 +38,19 @@
 #include "dgl/src/Geometry.cpp"
 #include "dgl/src/Widget.cpp"
 #include "dgl/src/WidgetPrivateData.cpp"
+
+START_NAMESPACE_DGL
+static unsigned int nativeClipboardWrites = 0;
+static PuglStatus testSetClipboard(PuglView* view, const char* type, const void* data, size_t size)
+{
+    ++nativeClipboardWrites;
+    return puglSetClipboard(view, type, data, size);
+}
+END_NAMESPACE_DGL
+
+#define puglSetClipboard testSetClipboard
 #include "dgl/src/Window.cpp"
+#undef puglSetClipboard
 
 #ifndef DGL_RUNTIME_BACKEND
 # error This test is for DGL_BACKEND=both builds
@@ -108,6 +121,29 @@ public:
         : Window(app, 0, 240, 180, 0.0, true),
           reshaped(false) {}
 
+    PluginWindow(DGL_NAMESPACE::Application& app, const uintptr_t parent)
+        : Window(app, parent, 240, 180, 3.0, false),
+          reshaped(false) {}
+
+    void* nativeDisplay() const
+    {
+        return DGL_NAMESPACE::puglGetNativeWorld(DGL_NAMESPACE::puglGetWorld(pData->view));
+    }
+
+    bool hasPresentedFrameForTest() const
+    {
+        return static_cast<const DGL_NAMESPACE::pugl_wl::PuglView*>(pData->view)->impl->frameCallbackWorks;
+    }
+
+    bool setNativeScaleForTest(const uint32_t scale)
+    {
+        auto* const view = static_cast<DGL_NAMESPACE::pugl_wl::PuglView*>(pData->view);
+        if (!view->impl->viewport || !view->impl->fractionalScale)
+            return false;
+        DGL_NAMESPACE::pugl_wl::puglWaylandPreferredScale(view, view->impl->fractionalScale, scale);
+        return true;
+    }
+
     bool isX11() const
     {
         return DGL_NAMESPACE::puglViewIsX11(pData->view);
@@ -157,6 +193,84 @@ protected:
 };
 
 END_NAMESPACE_DAF
+
+static int checkEmbeddedGeometry(DGL_NAMESPACE::Application& hostApp, DAF_NAMESPACE::PluginWindow& host)
+{
+    DAF_ASSERT_EQUAL(host.setEmbeddedSurfaceGeometry(0, 0, 100, 80, 1.25), false,
+                     "a toplevel never accepts embedded geometry");
+    if (host.isX11())
+    {
+        DAF_NAMESPACE::PluginWindow child(hostApp, host.getNativeWindowHandle());
+        DAF_ASSERT_EQUAL(child.setEmbeddedSurfaceGeometry(0, 0, 100, 80, 1.25), false,
+                         "an X11 child rejects Wayland geometry");
+        DAF_ASSERT_SAFE_EQUAL(child.getScaleFactor(), 3.0, "the rejected operation preserves X11 drawing scale");
+        return 0;
+    }
+
+    DGL_NAMESPACE::Application app(DGL_NAMESPACE::Application::ExternalWaylandDisplay{host.nativeDisplay()});
+    DAF_NAMESPACE::PluginWindow child(app, host.getNativeWindowHandle());
+    const uintptr_t childHandle = child.getNativeWindowHandle();
+    DAF_ASSERT_NOT_EQUAL(childHandle, uintptr_t(0), "the borrowed child realizes");
+    DAF_ASSERT_EQUAL(child.setEmbeddedSurfaceGeometry(16, 8, 125, 50, 1.25), true,
+                     "the host opts into logical sizing and native scale following");
+    wl_surface_commit(reinterpret_cast<wl_surface*>(host.getNativeWindowHandle()));
+    const auto pump = [&] {
+        child.reshaped = false;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!child.reshaped && std::chrono::steady_clock::now() < deadline)
+        {
+            hostApp.idle();
+            app.idle();
+        }
+        return child.reshaped;
+    };
+    DAF_ASSERT_EQUAL(pump(), true, "logical geometry configures the DGL child");
+    const auto frameDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!child.hasPresentedFrameForTest() && std::chrono::steady_clock::now() < frameDeadline)
+    {
+        hostApp.idle();
+        app.idle();
+    }
+    DAF_ASSERT_EQUAL(child.hasPresentedFrameForTest(), true, "initial compositor scale arrives before synthetic updates");
+    DAF_ASSERT_EQUAL(child.followsPuglScaleFactor(), true, "logical geometry replaces an explicit pixel scale");
+    DAF_ASSERT_SAFE_EQUAL(child.getScaleFactor(), child.puglScaleFactor() * 1.25,
+                         "drawing scale combines the native scale and user multiplier");
+    if (child.setNativeScaleForTest(120))
+    {
+        for (const uint32_t scale : {180u, 240u, 120u})
+        {
+            DAF_ASSERT_EQUAL(child.setNativeScaleForTest(scale), true, "a native scale event reaches the child");
+            DAF_ASSERT_EQUAL(pump(), true, "native scale configures the existing child");
+            DAF_ASSERT_SAFE_EQUAL(child.getScaleFactor(), scale / 120.0 * 1.25,
+                                 "DGL retains the user multiplier across native scale changes");
+            DAF_ASSERT_SAFE_EQUAL(child.lastScaleFactor, child.getScaleFactor(), "scale callbacks report the product");
+            DAF_ASSERT_EQUAL(child.getWidth(), uint(std::lround(125.0 * scale / 120.0)), "DGL reports buffer width");
+            DAF_ASSERT_EQUAL(child.getHeight(), uint(std::lround(50.0 * scale / 120.0)), "DGL reports buffer height");
+            DAF_ASSERT_EQUAL(child.getNativeWindowHandle(), childHandle, "native scale never recreates the window");
+        }
+    }
+    else
+    {
+        d_stdout("RuntimeBackendWindow: SKIP fractional geometry events (compositor lacks fractional scale/viewport)");
+    }
+    const uint width = child.getWidth();
+    const uint height = child.getHeight();
+    const uint changes = child.scaleFactorChanges;
+    DAF_ASSERT_EQUAL(child.setEmbeddedSurfaceGeometry(16, 8, 125, 50, 1.5), true,
+                     "the drawing multiplier can change without changing geometry");
+    DAF_ASSERT_EQUAL(pump(), true, "a multiplier-only change reaches the configure path");
+    DAF_ASSERT_SAFE_EQUAL(child.getScaleFactor(), child.puglScaleFactor() * 1.5, "the multiplier-only change takes effect");
+    DAF_ASSERT_EQUAL(child.scaleFactorChanges, changes + 1, "a multiplier-only change notifies once");
+    DAF_ASSERT_EQUAL(child.getWidth(), width, "the drawing multiplier never changes buffer width");
+    DAF_ASSERT_EQUAL(child.getHeight(), height, "the drawing multiplier never changes buffer height");
+    for (const double scale : {0.0, -1.0, std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::quiet_NaN()})
+        DAF_ASSERT_EQUAL(child.setEmbeddedSurfaceGeometry(16, 8, 125, 50, scale), false, "invalid scale is rejected");
+    DAF_ASSERT_EQUAL(child.setEmbeddedSurfaceGeometry(16, 8, 0, 50, 2.0), false, "invalid geometry rejects its multiplier");
+    DAF_ASSERT_SAFE_EQUAL(child.getScaleFactor(), child.puglScaleFactor() * 1.5, "rejected geometry preserves drawing scale");
+    DAF_ASSERT_EQUAL(child.getNativeWindowHandle(), childHandle, "all geometry changes preserve native identity");
+    return 0;
+}
 
 #ifdef HAVE_DBUS
 // --------------------------------------------------------------------------------------------------------------------
@@ -455,8 +569,14 @@ static int checkRequestedWindowSystems()
         DAF_ASSERT_EQUAL(app.getWindowSystem(), x11, "a program that asks for X11 gets it, or nothing");
     }
     {
-        const Application app(true, Application::kTypeAuto, Application::kWindowSystemWayland);
+        Application app(true, Application::kTypeAuto, Application::kWindowSystemWayland);
         DAF_ASSERT_EQUAL(app.getWindowSystem(), wayland, "a program that asks for Wayland gets it, or nothing");
+        if (wayland == Application::kWindowSystemAuto)
+        {
+            DGL_NAMESPACE::Window window(app);
+            window.focusWithActivationToken("no-compositor");
+            window.focusWithActivationToken(nullptr);
+        }
     }
     {
         const Application app(false, Application::kTypeAuto, Application::kWindowSystemWayland);
@@ -530,6 +650,8 @@ int main()
         }
     }
     DAF_ASSERT_SAFE_EQUAL(win.getScaleFactor(), win.puglScaleFactor(), "the window has pugl's scale factor");
+
+    if (checkEmbeddedGeometry(app, win)) return 1;
 
     // a portal is handed the window in its own backend's form, never an X11 id for a Wayland window
     const char* const parentHandle = win.getPortalParentHandle();
@@ -613,6 +735,76 @@ int main()
         DAF_ASSERT_EQUAL(DGL_NAMESPACE::waylandWaitLoopUpdates > 0, true, "a Wayland window waits on Wayland events");
         DAF_ASSERT_EQUAL(DGL_NAMESPACE::x11WaitLoopUpdates, 0, "a Wayland window never waits on X11 events");
     }
+
+    struct Clipboard {
+        std::string text;
+        unsigned int reads = 0;
+        unsigned int writes = 0;
+        bool reject = false;
+    } clipboard;
+    DGL_NAMESPACE::Application::ClipboardCallbacks callbacks;
+    callbacks.context = &clipboard;
+    callbacks.get = [](void* context, size_t& size) -> const void* {
+        auto& value = *static_cast<Clipboard*>(context);
+        ++value.reads;
+        size = value.text.size() + 1;
+        return value.reject ? nullptr : value.text.c_str();
+    };
+    callbacks.set = [](void* context, const char* type, const void* data, size_t size) {
+        auto& value = *static_cast<Clipboard*>(context);
+        ++value.writes;
+        if (value.reject || std::strcmp(type, "text/plain") != 0 || data == nullptr || size == 0)
+            return false;
+        value.text.assign(static_cast<const char*>(data), size - 1);
+        return true;
+    };
+    DAF_ASSERT_EQUAL(app.setClipboardCallbacks(callbacks), true, "complete host clipboard callbacks are accepted");
+    auto incomplete = callbacks;
+    incomplete.set = nullptr;
+    DAF_ASSERT_EQUAL(app.setClipboardCallbacks(incomplete), false, "partial clipboard callbacks preserve registration");
+    const unsigned int writesBefore = DGL_NAMESPACE::nativeClipboardWrites;
+    const int x11WaitsBefore = DGL_NAMESPACE::x11WaitLoopUpdates;
+    const int waylandWaitsBefore = DGL_NAMESPACE::waylandWaitLoopUpdates;
+    DGL_NAMESPACE::pasteWithTypesToCome = true;
+    {
+        DAF_NAMESPACE::PluginWindow sibling(app);
+        const char unicode[] = "host \xce\xa9 \xe2\x82\xac";
+        std::string temporary(unicode);
+        DAF_ASSERT_EQUAL(sibling.setClipboard(nullptr, temporary.c_str(), temporary.size() + 1), true,
+                         "host clipboard receives normalized text MIME");
+        temporary.assign("overwritten");
+        size_t size = 99;
+        const void* data = win.getClipboard(size);
+        DAF_ASSERT_NOT_EQUAL(data, nullptr, "another window reads the host clipboard");
+        DAF_ASSERT_EQUAL(size, sizeof(unicode), "host clipboard retains the UTF-8 byte count and terminator");
+        DAF_ASSERT_EQUAL(std::memcmp(data, unicode, size), 0, "publication copies temporary data");
+        DAF_ASSERT_EQUAL(win.setClipboard("application/octet-stream", "a", 2), false,
+                         "unsupported formats do not fall back to the native selection");
+        DAF_ASSERT_EQUAL(win.setClipboard(nullptr, "", 1), true, "empty text reaches the host clipboard");
+        data = sibling.getClipboard(size);
+        DAF_ASSERT_NOT_EQUAL(data, nullptr, "empty text is still a successful read");
+        DAF_ASSERT_EQUAL(size, 1, "empty host text includes its terminator");
+        DAF_ASSERT_EQUAL(*static_cast<const char*>(data), '\0', "empty host text is terminated");
+        clipboard.reject = true;
+        DAF_ASSERT_EQUAL(win.getClipboard(size), static_cast<const void*>(nullptr), "host rejection is final");
+        DAF_ASSERT_EQUAL(size, 0, "rejected reads report no data");
+        DAF_ASSERT_EQUAL(win.setClipboard(nullptr, "a", 2), false, "rejected publication is final");
+        clipboard.reject = false;
+    }
+    DAF_ASSERT_EQUAL(clipboard.reads, 3, "both windows use the shared reader");
+    DAF_ASSERT_EQUAL(clipboard.writes, 4, "both windows use the shared publisher");
+    DAF_ASSERT_EQUAL(DGL_NAMESPACE::nativeClipboardWrites, writesBefore, "callbacks never create a native selection");
+    DAF_ASSERT_EQUAL(DGL_NAMESPACE::x11WaitLoopUpdates, x11WaitsBefore, "callbacks never enter the X11 wait loop");
+    DAF_ASSERT_EQUAL(DGL_NAMESPACE::waylandWaitLoopUpdates, waylandWaitsBefore, "callbacks never enter the Wayland wait loop");
+    {
+        DGL_NAMESPACE::Application independent(true);
+        DAF_NAMESPACE::PluginWindow other(independent);
+        size_t size = 0;
+        other.getClipboard(size);
+        DAF_ASSERT_EQUAL(clipboard.reads, 3, "another application does not share the callbacks");
+    }
+    DGL_NAMESPACE::pasteWithTypesToCome = false;
+    DAF_ASSERT_EQUAL(app.setClipboardCallbacks({}), true, "host callbacks can be removed");
 
     // What the window puts on the clipboard comes back through its own backend's paste. A compositor only
     // offers the selection to the client with keyboard focus, which no window gets on a headless one, so on

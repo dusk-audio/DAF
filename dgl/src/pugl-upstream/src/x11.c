@@ -796,6 +796,29 @@ puglRealize(PuglView* const view)
   return st;
 }
 
+static void
+restoreEmbeddedParentFocus(PuglView* const view)
+{
+  if (!view->parent || !view->impl->win) {
+    return;
+  }
+
+  Display* const display = view->world->impl->display;
+  Window         focus   = None;
+  int            revert  = RevertToNone;
+  XWindowAttributes attrs = PUGL_INIT_STRUCT;
+
+  // Keep the ownership check and handoff atomic with other clients' focus changes.
+  XGrabServer(display);
+  XGetInputFocus(display, &focus, &revert);
+  if (focus == view->impl->win &&
+      XGetWindowAttributes(display, view->parent, &attrs) &&
+      attrs.map_state == IsViewable) {
+    XSetInputFocus(display, view->parent, RevertToPointerRoot, CurrentTime);
+  }
+  XUngrabServer(display);
+}
+
 PuglStatus
 puglUnrealize(PuglView* const view)
 {
@@ -824,6 +847,7 @@ puglUnrealize(PuglView* const view)
   }
 
   if (view->world->impl->display && impl->win) {
+    restoreEmbeddedParentFocus(view);
     XDestroyWindow(view->world->impl->display, impl->win);
     impl->win = None;
   }
@@ -870,8 +894,11 @@ puglHide(PuglView* const view)
     return PUGL_BAD_CALL;
   }
 
+  PuglX11ErrorTrap trap;
+  puglX11BeginErrorTrap(&trap, view->world->impl->display);
+  restoreEmbeddedParentFocus(view);
   XUnmapWindow(view->world->impl->display, view->impl->win);
-  return PUGL_SUCCESS;
+  return puglX11EndErrorTrap(&trap) ? PUGL_FAILURE : PUGL_SUCCESS;
 }
 
 void

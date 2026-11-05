@@ -25,19 +25,29 @@
 #define DGL_WAYLAND_CLIENT_FUNCTIONS(X) \
     X(wl_display_cancel_read) \
     X(wl_display_connect) \
+    X(wl_display_create_queue) \
     X(wl_display_disconnect) \
     X(wl_display_dispatch_pending) \
+    X(wl_display_dispatch_queue_pending) \
     X(wl_display_flush) \
     X(wl_display_get_fd) \
     X(wl_display_prepare_read) \
+    X(wl_display_prepare_read_queue) \
     X(wl_display_read_events) \
     X(wl_display_roundtrip) \
+    X(wl_display_roundtrip_queue) \
+    X(wl_event_queue_destroy) \
     X(wl_proxy_add_listener) \
+    X(wl_proxy_create_wrapper) \
     X(wl_proxy_destroy) \
+    X(wl_proxy_get_tag) \
     X(wl_proxy_get_user_data) \
     X(wl_proxy_get_version) \
     X(wl_proxy_marshal_flags) \
-    X(wl_proxy_set_user_data)
+    X(wl_proxy_set_queue) \
+    X(wl_proxy_set_tag) \
+    X(wl_proxy_set_user_data) \
+    X(wl_proxy_wrapper_destroy)
 
 #define DGL_WAYLAND_CURSOR_FUNCTIONS(X) \
     X(wl_cursor_image_get_buffer) \
@@ -83,11 +93,16 @@
     X(eglDestroySurface) \
     X(eglGetConfigAttrib) \
     X(eglGetCurrentContext) \
+    X(eglGetCurrentDisplay) \
+    X(eglGetCurrentSurface) \
     X(eglGetDisplay) \
+    X(eglGetError) \
     X(eglGetPlatformDisplay) \
     X(eglGetProcAddress) \
     X(eglInitialize) \
     X(eglMakeCurrent) \
+    X(eglQueryAPI) \
+    X(eglQueryString) \
     X(eglSwapBuffers) \
     X(eglSwapInterval) \
     X(eglTerminate)

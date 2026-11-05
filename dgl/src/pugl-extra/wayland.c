@@ -7,17 +7,15 @@
 
   Scope, and why it is what it is:
 
-  * Top level (floating) windows only.  Wayland has no cross-client window embedding, so
-    puglSetParent() cannot be honoured; a "parent" that happens to be another view of this same
-    process is turned into an xdg_toplevel transient parent instead, and anything else is ignored
-    with a debug message.  See README.wayland.
-  * All coordinates Pugl deals in are *buffer pixels*.  The compositor speaks *logical pixels*.
+  * Embedding requires a parent surface on the same connection. A borrowed connection accepts its
+    host's surface; an owned connection accepts only another view in the same world.
+  * Sizes and input coordinates are *buffer pixels*. The compositor speaks *logical pixels*.
     The two differ by the view scale factor, which comes either from wp_fractional_scale_v1 (exact,
     in 120ths) or from the largest integer wl_output scale the surface overlaps.  Every conversion
     goes through puglWaylandLogicalToPixels()/puglWaylandPixelsToLogical() so the direction is never
     in doubt.
-  * There is no such thing as a window position on Wayland, so configure events always report 0,0
-    and puglSetWindowPosition() is a no-op that reports PUGL_UNSUPPORTED.
+  * Toplevel positions are unknown. Subsurface offsets use the parent's surface coordinates,
+    independently of the child's buffer scale, and take effect on the next parent commit.
 
   This file is compiled as C++, as part of the dgl/src/pugl.cpp unity build, so it avoids C-only
   constructs and casts explicitly from void*.
@@ -179,11 +177,16 @@ puglWaylandMonotonicMs(void)
   return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
 }
 
+static const char* const puglWaylandSurfaceTag[] = {"DAF view"};
+
 /// Return the view a wl_surface belongs to, or NULL if it is not ours (or gone)
 static PuglView*
 puglWaylandViewForSurface(struct wl_surface* const surface)
 {
-  return surface ? (PuglView*)wl_surface_get_user_data(surface) : NULL;
+  return surface && wl_proxy_get_tag((struct wl_proxy*)surface) ==
+                      puglWaylandSurfaceTag
+           ? (PuglView*)wl_surface_get_user_data(surface)
+           : NULL;
 }
 
 /// Damage a whole surface, using the buffer-relative request when it is available
@@ -277,10 +280,9 @@ puglWaylandQueueConfigure(PuglView* const view)
 {
   PuglInternals* const impl = view->impl;
 
-  // Wayland never tells a client where its window is, so the position is always reported as 0,0
   PuglEvent event        = {{PUGL_CONFIGURE, 0U}};
-  event.configure.x      = 0;
-  event.configure.y      = 0;
+  event.configure.x      = impl->subsurface ? impl->parentPosition.x : 0;
+  event.configure.y      = impl->subsurface ? impl->parentPosition.y : 0;
   event.configure.width  = impl->size.width;
   event.configure.height = impl->size.height;
   event.configure.style  = puglWaylandViewStyle(view);
@@ -330,12 +332,13 @@ puglWaylandUpdateScale(PuglView* const view)
     impl->bufferScale = 1;
   } else {
     int32_t scale = 1;
+    const PuglWorldInternals* const wimpl = view->world->impl;
     for (uint32_t i = 0; i < impl->numEnteredOutputs; ++i) {
-      const PuglWaylandOutput* const out =
-        (const PuglWaylandOutput*)wl_output_get_user_data(
-          impl->enteredOutputs[i]);
-      if (out && out->scale > scale) {
-        scale = out->scale;
+      for (uint32_t j = 0; j < wimpl->numOutputs; ++j) {
+        const PuglWaylandOutput* const out = &wimpl->outputs[j];
+        if (out->output == impl->enteredOutputs[i] && out->scale > scale) {
+          scale = out->scale;
+        }
       }
     }
 
@@ -426,8 +429,8 @@ puglWaylandConstrainSize(const PuglView* const view, PuglArea size)
 /**
    Settle on a new view size.
 
-   `logicalRequest` is what the compositor asked for, zero when it does not care and the choice is
-   ours.  Everything else is derived from it and the current scale.
+   `logicalRequest` is the host's subsurface size or the compositor's toplevel request,
+   zero when the choice is ours.
 */
 static bool
 puglWaylandSetSize(PuglView* const view, const PuglArea logicalRequest)
@@ -449,14 +452,13 @@ puglWaylandSetSize(PuglView* const view, const PuglArea logicalRequest)
     logical = puglGetInitialSize(view);
   }
 
-  // The size hints are in pixels, so constrain there and convert back
-  PuglArea pixels = puglWaylandConstrainSize(
-    view, puglWaylandLogicalToPixels(logical, impl->scale));
-
-  logical = puglWaylandPixelsToLogical(pixels, impl->scale);
-
-  // Renormalise so the buffer is exactly the logical size times the scale
-  pixels = puglWaylandLogicalToPixels(logical, impl->scale);
+  PuglArea pixels = puglWaylandLogicalToPixels(logical, impl->scale);
+  // Host-sized subsurfaces keep their logical extent even when fixed pixel hints would constrain it.
+  if (!impl->subsurface || !puglIsValidArea(impl->requestedLogicalSize)) {
+    pixels  = puglWaylandConstrainSize(view, pixels);
+    logical = puglWaylandPixelsToLogical(pixels, impl->scale);
+    pixels  = puglWaylandLogicalToPixels(logical, impl->scale);
+  }
 
   impl->size          = pixels;
   impl->logicalSize   = logical;
@@ -979,6 +981,54 @@ static const struct wl_output_listener puglWaylandOutputListener = {
 // --------------------------------------------------------------------------------------------
 // Pointer
 
+static bool
+puglWaylandRoutePress(PuglWaylandPresses* const presses,
+                      const uint32_t code, const bool pressed, PuglView** const view)
+{
+  PuglView* const candidate = *view;
+  *view = NULL;
+  for (size_t i = 0; i < presses->count; ++i) {
+    if (presses->data[i].code == code) {
+      if (!pressed) {
+        *view = presses->data[i].view;
+        presses->data[i] = presses->data[--presses->count];
+      }
+      return true;
+    }
+  }
+  if (!pressed || !candidate) {
+    return false;
+  }
+  if (presses->count == presses->capacity) {
+    if (presses->capacity > SIZE_MAX / sizeof(PuglWaylandPress) / 2U) {
+      return false;
+    }
+    const size_t capacity = presses->capacity ? presses->capacity * 2U : 8U;
+    PuglWaylandPress* const data =
+      (PuglWaylandPress*)realloc(presses->data, capacity * sizeof(PuglWaylandPress));
+    if (!data) {
+      return false;
+    }
+    presses->data = data;
+    presses->capacity = capacity;
+  }
+  presses->data[presses->count].code = code;
+  presses->data[presses->count++].view = candidate;
+  *view = candidate;
+  return true;
+}
+
+static void
+puglWaylandCancelPresses(PuglWaylandPresses* const presses, const PuglView* const view)
+{
+  // Keep ownership until release, even when the recipient has lost focus or been destroyed.
+  for (size_t i = 0; i < presses->count; ++i) {
+    if (presses->data[i].view == view) {
+      presses->data[i].view = NULL;
+    }
+  }
+}
+
 static PuglMods
 puglWaylandMods(const PuglWorldInternals* const impl)
 {
@@ -1035,19 +1085,48 @@ static PuglStatus puglWaylandApplyCursor(PuglWorldInternals* impl,
                                          PuglCursor          cursor);
 
 static void
+puglWaylandClearPointerFocus(PuglWorldInternals* const impl)
+{
+  PuglView* const view = impl->pointerFocus;
+  impl->pointerFocus = NULL;
+  memset(&impl->scroll, 0, sizeof(impl->scroll));
+  if (view) {
+    PuglEvent event      = {{PUGL_POINTER_OUT, 0U}};
+    event.crossing.time  = puglWaylandTime(view->world);
+    event.crossing.x     = impl->pointerX;
+    event.crossing.y     = impl->pointerY;
+    event.crossing.xRoot = impl->pointerX;
+    event.crossing.yRoot = impl->pointerY;
+    event.crossing.state = puglWaylandMods(impl);
+    event.crossing.mode  = PUGL_CROSSING_NORMAL;
+    puglDispatchEvent(view, &event);
+  }
+}
+
+static void
 puglWaylandPointerEnter(void* const              data,
-                        struct wl_pointer* const PUGL_UNUSED(pointer),
+                        struct wl_pointer* const pointer,
                         const uint32_t           serial,
                         struct wl_surface* const surface,
                         const wl_fixed_t         surfaceX,
                         const wl_fixed_t         surfaceY)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
-  PuglView* const           view = puglWaylandViewForSurface(surface);
+  PuglView* view = puglWaylandViewForSurface(surface);
+  if (view && view->world->impl != impl) {
+    view = NULL;
+  }
+  if (impl->hostManagedInput) {
+    impl->pointer = pointer;
+    if (view && !view->impl->visible) {
+      view = NULL;
+    }
+  }
 
   impl->lastSerial         = serial;
   impl->pointerEnterSerial = serial;
   impl->pointerFocus       = view;
+  memset(&impl->scroll, 0, sizeof(impl->scroll));
 
   if (!view) {
     return;
@@ -1077,27 +1156,19 @@ puglWaylandPointerLeave(void* const              data,
                         struct wl_surface* const surface)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
-  PuglView* const           view = puglWaylandViewForSurface(surface);
+  PuglView* const view = impl->pointerFocus;
 
   impl->lastSerial = serial;
 
-  if (impl->pointerFocus == view) {
-    impl->pointerFocus = NULL;
-  }
-
-  if (!view) {
+  if (!view || view->impl->wlSurface != surface) {
     return;
   }
 
-  PuglEvent event      = {{PUGL_POINTER_OUT, 0U}};
-  event.crossing.time  = puglWaylandTime(view->world);
-  event.crossing.x     = impl->pointerX;
-  event.crossing.y     = impl->pointerY;
-  event.crossing.xRoot = impl->pointerX;
-  event.crossing.yRoot = impl->pointerY;
-  event.crossing.state = puglWaylandMods(impl);
-  event.crossing.mode  = PUGL_CROSSING_NORMAL;
-  puglDispatchEvent(view, &event);
+  const uint32_t enterSerial = impl->pointerEnterSerial;
+  puglWaylandFlushScroll(impl);
+  if (impl->pointerFocus == view && impl->pointerEnterSerial == enterSerial) {
+    puglWaylandClearPointerFocus(impl);
+  }
 }
 
 static void
@@ -1164,17 +1235,32 @@ puglWaylandPointerButton(void* const              data,
                          const uint32_t           state)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
-  PuglView* const           view = impl->pointerFocus;
+  PuglView* view = impl->pointerFocus;
 
   impl->lastSerial = serial;
-
-  if (!view) {
-    return;
-  }
-
+  impl->lastEventConsumed = false;
   const uint32_t number = puglWaylandButtonNumber(button);
   if (number == PUGL_WAYLAND_BTN_UNKNOWN) {
     return;
+  }
+  const bool pressed = state == WL_POINTER_BUTTON_STATE_PRESSED;
+  const bool consumed = impl->hostManagedInput &&
+    puglWaylandRoutePress(&impl->heldButtons, button, pressed, &view);
+
+  if (!view) {
+    impl->lastEventConsumed = consumed;
+    return;
+  }
+
+  impl->activationSource = view;
+  impl->activationSerial = serial;
+
+  if (impl->hostManagedInput && number == 0U && pressed) {
+    puglGrabFocus(view);
+    if (impl->pointerFocus != view || !view->impl->visible) {
+      impl->lastEventConsumed = consumed;
+      return;
+    }
   }
 
   PuglEvent event     = {{PUGL_NOTHING, 0U}};
@@ -1189,6 +1275,7 @@ puglWaylandPointerButton(void* const              data,
   event.button.state  = puglWaylandMods(impl);
   event.button.button = number;
   puglDispatchEvent(view, &event);
+  impl->lastEventConsumed = consumed;
 }
 
 static void
@@ -1199,6 +1286,9 @@ puglWaylandPointerAxis(void* const              data,
                        const wl_fixed_t         value)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
+  if (!impl->pointerFocus) {
+    return;
+  }
 
   const double lines = wl_fixed_to_double(value) / PUGL_WAYLAND_AXIS_PER_LINE;
 
@@ -1394,6 +1484,64 @@ puglWaylandStopRepeat(PuglWorldInternals* const impl)
 }
 
 static void
+puglWaylandUpdateHostFocus(PuglWorldInternals* const impl)
+{
+  struct wl_surface* const hostSurface = impl->hostKeyboardSurface;
+  PuglView* next = impl->selectedView;
+  if (next && (!next->impl->visible || !impl->hostKeyboardSurface ||
+               (next->impl->wlSurface != impl->hostKeyboardSurface &&
+                next->parent != (PuglNativeView)(uintptr_t)impl->hostKeyboardSurface))) {
+    next = NULL;
+  }
+  if (next == impl->keyboardFocus) {
+    return;
+  }
+
+  const uint64_t generation = ++impl->focusGeneration;
+  PuglView* const previous = impl->keyboardFocus;
+  impl->keyboardFocus = NULL;
+  puglWaylandCancelPresses(&impl->heldKeys, previous);
+  puglWaylandStopRepeat(impl);
+  if (impl->xkb.composeState) {
+    xkb_compose_state_reset(impl->xkb.composeState);
+  }
+  if (previous) {
+    PuglEvent event = {{PUGL_FOCUS_OUT, 0U}};
+    event.focus.mode = PUGL_CROSSING_NORMAL;
+    puglDispatchEvent(previous, &event);
+  }
+
+  // Focus-out callbacks can change host focus, select, or destroy the proposed recipient.
+  if (generation != impl->focusGeneration || next != impl->selectedView ||
+      hostSurface != impl->hostKeyboardSurface) {
+    return;
+  }
+  impl->keyboardFocus = next;
+  if (next) {
+    PuglEvent event = {{PUGL_FOCUS_IN, 0U}};
+    event.focus.mode = PUGL_CROSSING_NORMAL;
+    puglDispatchEvent(next, &event);
+  }
+}
+
+static void
+puglWaylandForgetHostInput(PuglView* const view)
+{
+  PuglWorldInternals* const impl = view->world->impl;
+  if (impl->hostManagedInput) {
+    puglWaylandCancelPresses(&impl->heldKeys, view);
+    puglWaylandCancelPresses(&impl->heldButtons, view);
+    if (impl->pointerFocus == view) {
+      puglWaylandClearPointerFocus(impl);
+    }
+    if (impl->selectedView == view) {
+      impl->selectedView = NULL;
+    }
+    puglWaylandUpdateHostFocus(impl);
+  }
+}
+
+static void
 puglWaylandStartRepeat(PuglWorldInternals* const impl,
                        PuglView* const           view,
                        const uint32_t            key,
@@ -1461,9 +1609,10 @@ puglWaylandDispatchKey(PuglWorldInternals* const impl,
     event.key.key = puglWaylandUnshiftedCodepoint(xkb, keycode);
   }
 
+  const uint64_t focusGeneration = impl->focusGeneration;
   puglDispatchEvent(view, &event);
 
-  if (!pressed) {
+  if (!pressed || impl->keyboardFocus != view || impl->focusGeneration != focusGeneration) {
     return;
   }
 
@@ -1586,12 +1735,34 @@ puglWaylandKeyboardEnter(void* const               data,
                          struct wl_keyboard* const PUGL_UNUSED(keyboard),
                          const uint32_t            serial,
                          struct wl_surface* const  surface,
-                         struct wl_array* const    PUGL_UNUSED(keys))
+                         struct wl_array* const    keys)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
   PuglView* const           view = puglWaylandViewForSurface(surface);
 
-  impl->lastSerial    = serial;
+  impl->lastSerial       = serial;
+  impl->activationSource = view;
+  impl->activationSerial = serial;
+
+  if (impl->hostManagedInput) {
+    for (size_t i = impl->heldKeys.count; i > 0; --i) {
+      const uint32_t code = impl->heldKeys.data[i - 1U].code;
+      bool held = false;
+      const uint32_t* const codes = keys ? (const uint32_t*)keys->data : NULL;
+      for (size_t j = 0; keys && j < keys->size / sizeof(uint32_t); ++j) {
+        held |= codes[j] == code;
+      }
+      if (!held) {
+        impl->heldKeys.data[i - 1U] = impl->heldKeys.data[--impl->heldKeys.count];
+      }
+    }
+    impl->hostKeyboardSurface = surface;
+    if (view && view->world->impl == impl) {
+      impl->selectedView = view;
+    }
+    puglWaylandUpdateHostFocus(impl);
+    return;
+  }
   impl->keyboardFocus = view;
 
   if (!view) {
@@ -1613,6 +1784,13 @@ puglWaylandKeyboardLeave(void* const               data,
   PuglView* const           view = puglWaylandViewForSurface(surface);
 
   impl->lastSerial = serial;
+  if (impl->hostManagedInput) {
+    if (impl->hostKeyboardSurface == surface) {
+      impl->hostKeyboardSurface = NULL;
+      puglWaylandUpdateHostFocus(impl);
+    }
+    return;
+  }
   puglWaylandStopRepeat(impl);
 
   if (impl->keyboardFocus == view) {
@@ -1637,26 +1815,34 @@ puglWaylandKeyboardKey(void* const               data,
                        const uint32_t            state)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
-  PuglView* const           view = impl->keyboardFocus;
+  PuglView* view = impl->keyboardFocus;
 
   impl->lastSerial = serial;
+  const bool pressed = state == WL_KEYBOARD_KEY_STATE_PRESSED;
+  const bool consumed = impl->hostManagedInput &&
+    puglWaylandRoutePress(&impl->heldKeys, key, pressed, &view);
 
   if (!view) {
+    impl->lastEventConsumed = consumed;
     return;
   }
 
-  const bool pressed = (state == WL_KEYBOARD_KEY_STATE_PRESSED);
+  impl->activationSource = view;
+  impl->activationSerial = serial;
 
   if (!pressed && impl->repeat.key == key) {
     puglWaylandStopRepeat(impl);
   }
 
+  const uint64_t focusGeneration = impl->focusGeneration;
   puglWaylandDispatchKey(impl, view, key, pressed, time / 1e3);
 
-  if (pressed && !view->hints[PUGL_IGNORE_KEY_REPEAT] && impl->xkb.keymap &&
+  if (pressed && impl->keyboardFocus == view && impl->focusGeneration == focusGeneration &&
+      !view->hints[PUGL_IGNORE_KEY_REPEAT] && impl->xkb.keymap &&
       xkb_keymap_key_repeats(impl->xkb.keymap, key + 8U)) {
     puglWaylandStartRepeat(impl, view, key, time / 1e3);
   }
+  impl->lastEventConsumed = consumed;
 }
 
 static void
@@ -1738,6 +1924,37 @@ static const struct wl_keyboard_listener puglWaylandKeyboardListener = {
 };
 
 static void
+puglWaylandResetHostInput(PuglWorldInternals* const impl)
+{
+  impl->pointer = NULL;
+  impl->keyboard = NULL;
+  impl->hostKeyboardSurface = NULL;
+  impl->selectedView = NULL;
+  impl->heldKeys.count = 0;
+  impl->heldButtons.count = 0;
+  impl->lastSerial = 0;
+  impl->pointerEnterSerial = 0;
+  impl->activationSource = NULL;
+  impl->activationSerial = 0;
+  impl->mods = 0;
+  puglWaylandStopRepeat(impl);
+  puglWaylandUpdateHostFocus(impl);
+  puglWaylandClearPointerFocus(impl);
+  if (impl->xkb.state) {
+    xkb_state_unref(impl->xkb.state);
+    impl->xkb.state = NULL;
+  }
+  if (impl->xkb.keymap) {
+    xkb_keymap_unref(impl->xkb.keymap);
+    impl->xkb.keymap = NULL;
+  }
+  if (impl->xkb.composeState) {
+    xkb_compose_state_reset(impl->xkb.composeState);
+  }
+  impl->lastEventConsumed = false;
+}
+
+static void
 puglWaylandHandleRepeat(PuglWorldInternals* const impl)
 {
 #if PUGL_WAYLAND_HAVE_TIMERFD
@@ -1760,7 +1977,12 @@ puglWaylandHandleRepeat(PuglWorldInternals* const impl)
     expirations = 8;
   }
 
+  const uint64_t focusGeneration = impl->focusGeneration;
   for (uint64_t i = 0; i < expirations; ++i) {
+    if (impl->repeat.view != view || impl->repeat.key != key ||
+        impl->focusGeneration != focusGeneration) {
+      break;
+    }
     puglWaylandDispatchKey(impl, view, key, true, puglWaylandTime(view->world));
   }
 #else
@@ -1777,6 +1999,10 @@ puglWaylandSeatCapabilities(void* const           data,
                             const uint32_t        capabilities)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
+
+  if (impl->hostManagedInput) {
+    return;
+  }
 
   const bool hasPointer  = (capabilities & WL_SEAT_CAPABILITY_POINTER) != 0U;
   const bool hasKeyboard = (capabilities & WL_SEAT_CAPABILITY_KEYBOARD) != 0U;
@@ -2472,7 +2698,7 @@ puglWaylandReadPipe(PuglWorldInternals* const impl,
 
   while (!recv.done) {
     // Same prepare_read/poll/read_events dance as puglWaylandDispatchEvents, plus the pipe
-    if (wl_display_dispatch_pending(display) < 0) {
+    if (wl_display_dispatch_queue_pending(display, impl->queue) < 0) {
       status = PUGL_UNKNOWN_ERROR;
       break;
     }
@@ -2482,8 +2708,8 @@ puglWaylandReadPipe(PuglWorldInternals* const impl,
     }
 
     bool readPrepared = true;
-    while (wl_display_prepare_read(display) != 0) {
-      if (wl_display_dispatch_pending(display) < 0) {
+    while (wl_display_prepare_read_queue(display, impl->queue) != 0) {
+      if (wl_display_dispatch_queue_pending(display, impl->queue) < 0) {
         readPrepared = false;
         status       = PUGL_UNKNOWN_ERROR;
         break;
@@ -2548,7 +2774,7 @@ puglWaylandReadPipe(PuglWorldInternals* const impl,
 
     /* This is what lets a self-paste complete: our own wl_data_source.send handler runs from here,
        and for anything bigger than the pipe buffer it drains recv itself as it goes. */
-    if (wl_display_dispatch_pending(display) < 0) {
+    if (wl_display_dispatch_queue_pending(display, impl->queue) < 0) {
       status = PUGL_UNKNOWN_ERROR;
       break;
     }
@@ -2705,6 +2931,114 @@ puglWaylandApplyCursor(PuglWorldInternals* const impl, const PuglCursor cursor)
 }
 
 // --------------------------------------------------------------------------------------------
+// Activation
+
+static void
+puglWaylandCancelActivation(PuglInternals* const impl)
+{
+  if (impl->activationRequest) {
+    xdg_activation_token_v1_destroy(impl->activationRequest);
+    impl->activationRequest = NULL;
+  }
+  free(impl->activationToken);
+  impl->activationToken = NULL;
+}
+
+static void
+puglWaylandActivateIfReady(PuglView* const view)
+{
+  PuglInternals* const impl = view->impl;
+  if (impl->visible && impl->hasPresented && impl->activationToken) {
+    xdg_activation_v1_activate(
+      view->world->impl->activation, impl->activationToken, impl->wlSurface);
+    free(impl->activationToken);
+    impl->activationToken = NULL;
+  }
+}
+
+static void
+puglWaylandActivationDone(void* const data,
+                          struct xdg_activation_token_v1* const request,
+                          const char* const token)
+{
+  PuglView* const view = (PuglView*)data;
+  view->impl->activationRequest = NULL;
+  view->impl->activationToken = token && *token ? strdup(token) : NULL;
+  xdg_activation_token_v1_destroy(request);
+  puglWaylandActivateIfReady(view);
+}
+
+static const struct xdg_activation_token_v1_listener puglWaylandActivationListener = {
+  puglWaylandActivationDone};
+
+PuglStatus
+puglWaylandActivate(PuglView* const view, const char* const token)
+{
+  PuglInternals* const impl = view->impl;
+  PuglWorldInternals* const wimpl = view->world->impl;
+  if (!token || !*token) {
+    return PUGL_BAD_PARAMETER;
+  }
+  if (!wimpl->activation || impl->subsurface) {
+    return PUGL_UNSUPPORTED;
+  }
+  if (!impl->wlSurface || !impl->visible) {
+    return PUGL_FAILURE;
+  }
+
+  char* const copy = strdup(token);
+  if (!copy) {
+    return PUGL_NO_MEMORY;
+  }
+  puglWaylandCancelActivation(impl);
+  impl->activationToken = copy;
+  puglWaylandActivateIfReady(view);
+  wl_display_flush(wimpl->display);
+  return PUGL_SUCCESS;
+}
+
+static PuglStatus
+puglWaylandRequestActivation(PuglView* const view)
+{
+  PuglInternals* const impl = view->impl;
+  PuglWorldInternals* const wimpl = view->world->impl;
+  if (!wimpl->activation || impl->subsurface) {
+    return PUGL_UNSUPPORTED;
+  }
+  if (!impl->wlSurface || !impl->visible) {
+    return PUGL_FAILURE;
+  }
+  if (impl->activationRequest || impl->activationToken) {
+    return PUGL_SUCCESS;
+  }
+
+  if (wimpl->launcherToken) {
+    impl->activationToken = wimpl->launcherToken;
+    wimpl->launcherToken = NULL;
+    puglWaylandActivateIfReady(view);
+  } else {
+    impl->activationRequest = xdg_activation_v1_get_activation_token(wimpl->activation);
+    if (!impl->activationRequest) {
+      return PUGL_NO_MEMORY;
+    }
+    xdg_activation_token_v1_add_listener(
+      impl->activationRequest, &puglWaylandActivationListener, view);
+    if (wimpl->activationSource && wimpl->seat) {
+      xdg_activation_token_v1_set_serial(
+        impl->activationRequest, wimpl->activationSerial, wimpl->seat);
+      xdg_activation_token_v1_set_surface(
+        impl->activationRequest, wimpl->activationSource->impl->wlSurface);
+    }
+    if (impl->appId && *impl->appId) {
+      xdg_activation_token_v1_set_app_id(impl->activationRequest, impl->appId);
+    }
+    xdg_activation_token_v1_commit(impl->activationRequest);
+  }
+  wl_display_flush(wimpl->display);
+  return PUGL_SUCCESS;
+}
+
+// --------------------------------------------------------------------------------------------
 // Registry
 
 static void
@@ -2735,6 +3069,10 @@ puglWaylandRegistryGlobal(void* const               data,
       name,
       &wl_compositor_interface,
       MIN(version, PUGL_WAYLAND_COMPOSITOR_VERSION));
+
+  } else if (!strcmp(interface, wl_subcompositor_interface.name)) {
+    impl->subcompositor = (struct wl_subcompositor*)wl_registry_bind(
+      registry, name, &wl_subcompositor_interface, 1U);
 
   } else if (!strcmp(interface, wl_shm_interface.name)) {
     impl->shm =
@@ -2799,6 +3137,10 @@ puglWaylandRegistryGlobal(void* const               data,
     impl->decorationManager =
       (struct zxdg_decoration_manager_v1*)wl_registry_bind(
         registry, name, &zxdg_decoration_manager_v1_interface, 1U);
+
+  } else if (!strcmp(interface, xdg_activation_v1_interface.name)) {
+    impl->activation = (struct xdg_activation_v1*)wl_registry_bind(
+      registry, name, &xdg_activation_v1_interface, 1U);
 
   } else if (!strcmp(interface, zxdg_exporter_v2_interface.name)) {
     impl->exporter = (struct zxdg_exporter_v2*)wl_registry_bind(
@@ -2891,6 +3233,8 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
   }
   free(impl->timers);
   free(impl->pollFds);
+  free(impl->heldKeys.data);
+  free(impl->heldButtons.data);
 
   if (impl->xkb.composeState) {
     xkb_compose_state_unref(impl->xkb.composeState);
@@ -2915,7 +3259,7 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
     wl_cursor_theme_destroy(impl->cursorTheme);
   }
 
-  if (impl->keyboard) {
+  if (impl->keyboard && !impl->hostManagedInput) {
     if (wl_keyboard_get_version(impl->keyboard) >=
         WL_KEYBOARD_RELEASE_SINCE_VERSION) {
       wl_keyboard_release(impl->keyboard);
@@ -2923,7 +3267,7 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
       wl_keyboard_destroy(impl->keyboard);
     }
   }
-  if (impl->pointer) {
+  if (impl->pointer && !impl->hostManagedInput) {
     if (wl_pointer_get_version(impl->pointer) >=
         WL_POINTER_RELEASE_SINCE_VERSION) {
       wl_pointer_release(impl->pointer);
@@ -2939,7 +3283,7 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
       wl_data_device_destroy(impl->dataDevice);
     }
   }
-  if (impl->seat) {
+  if (impl->seat && !impl->hostManagedInput) {
     if (wl_seat_get_version(impl->seat) >= WL_SEAT_RELEASE_SINCE_VERSION) {
       wl_seat_release(impl->seat);
     } else {
@@ -2951,6 +3295,10 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
     wl_output_destroy(impl->outputs[i].output);
   }
 
+  free(impl->launcherToken);
+  if (impl->activation) {
+    xdg_activation_v1_destroy(impl->activation);
+  }
   if (impl->exporter) {
     zxdg_exporter_v2_destroy(impl->exporter);
   }
@@ -2972,6 +3320,9 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
   if (impl->shm) {
     wl_shm_destroy(impl->shm);
   }
+  if (impl->subcompositor) {
+    wl_subcompositor_destroy(impl->subcompositor);
+  }
   if (impl->compositor) {
     wl_compositor_destroy(impl->compositor);
   }
@@ -2979,22 +3330,26 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
     wl_registry_destroy(impl->registry);
   }
 
-  if (impl->display) {
+  if (impl->queue) {
+    wl_event_queue_destroy(impl->queue);
+  }
+  if (impl->display && impl->ownsDisplay) {
     wl_display_disconnect(impl->display);
   }
 
   free(impl);
 }
 
-PuglWorldInternals*
-puglInitWorldInternals(const PuglWorldType PUGL_UNUSED(type),
-                       const PuglWorldFlags PUGL_UNUSED(flags))
+/* Borrowed connections are serialized with their owner's event loop.  Initialization and clipboard
+   receives may read the socket, but only dispatch our queue; ordinary updates leave reading to the
+   owner.  The owner must not have a prepared read outstanding when calling into this world. */
+static PuglWorldInternals*
+puglWaylandInitWorldInternals(struct wl_display* const display,
+                              const bool ownsDisplay,
+                              const PuglWorldType type,
+                              struct wl_seat* const inputSeat)
 {
-  struct wl_display* const display = wl_display_connect(NULL);
-
   if (!display) {
-    d_stderr("pugl: failed to connect to a Wayland display (WAYLAND_DISPLAY=%s)",
-             getenv("WAYLAND_DISPLAY") ? getenv("WAYLAND_DISPLAY") : "<unset>");
     return NULL;
   }
 
@@ -3002,24 +3357,57 @@ puglInitWorldInternals(const PuglWorldType PUGL_UNUSED(type),
     (PuglWorldInternals*)calloc(1, sizeof(PuglWorldInternals));
 
   if (!impl) {
-    wl_display_disconnect(display);
+    if (ownsDisplay) {
+      wl_display_disconnect(display);
+    }
     return NULL;
   }
 
+  if (ownsDisplay && type == PUGL_PROGRAM) {
+    const char* const token = getenv("XDG_ACTIVATION_TOKEN");
+    impl->launcherToken = token && *token ? strdup(token) : NULL;
+    unsetenv("XDG_ACTIVATION_TOKEN");
+  }
+
   impl->display     = display;
+  impl->ownsDisplay = ownsDisplay;
+  impl->hostManagedInput = inputSeat != NULL;
+  impl->seat        = inputSeat;
   impl->scaleFactor = 1.0;
   impl->cursorSize  = 24;
   impl->repeat.fd   = -1;
   impl->repeat.rate = 25;
   impl->repeat.delay = 400;
 
-  impl->registry = wl_display_get_registry(display);
+  impl->queue = wl_display_create_queue(display);
+  if (!impl->queue) {
+    puglWaylandDestroyWorldInternals(impl);
+    return NULL;
+  }
+
+  struct wl_display* const wrapper =
+    (struct wl_display*)wl_proxy_create_wrapper(display);
+  if (!wrapper) {
+    puglWaylandDestroyWorldInternals(impl);
+    return NULL;
+  }
+
+  wl_proxy_set_queue((struct wl_proxy*)wrapper, impl->queue);
+  impl->registry = wl_display_get_registry(wrapper);
+  wl_proxy_wrapper_destroy(wrapper);
+  if (!impl->registry) {
+    puglWaylandDestroyWorldInternals(impl);
+    return NULL;
+  }
   wl_registry_add_listener(
     impl->registry, &puglWaylandRegistryListener, impl);
 
   // First roundtrip collects the globals, second one their initial events
-  wl_display_roundtrip(display);
-  wl_display_roundtrip(display);
+  if (wl_display_roundtrip_queue(display, impl->queue) < 0 ||
+      wl_display_roundtrip_queue(display, impl->queue) < 0) {
+    puglWaylandDestroyWorldInternals(impl);
+    return NULL;
+  }
 
   if (!impl->compositor || !impl->wmBase) {
     d_stderr("pugl: Wayland compositor does not provide %s, cannot create windows",
@@ -3028,7 +3416,8 @@ puglInitWorldInternals(const PuglWorldType PUGL_UNUSED(type),
     return NULL;
   }
 
-  if (impl->dataDeviceManager && impl->seat) {
+  // A second data device can divert clipboard selections from the host.
+  if (!impl->hostManagedInput && impl->dataDeviceManager && impl->seat) {
     impl->dataDevice = wl_data_device_manager_get_data_device(
       impl->dataDeviceManager, impl->seat);
     wl_data_device_add_listener(
@@ -3063,6 +3452,20 @@ puglInitWorldInternals(const PuglWorldType PUGL_UNUSED(type),
 #endif
 
   return impl;
+}
+
+PuglWorldInternals*
+puglInitWorldInternals(const PuglWorldType type,
+                       const PuglWorldFlags PUGL_UNUSED(flags))
+{
+  struct wl_display* const display = wl_display_connect(NULL);
+  if (!display) {
+    d_stderr("pugl: failed to connect to a Wayland display (WAYLAND_DISPLAY=%s)",
+             getenv("WAYLAND_DISPLAY") ? getenv("WAYLAND_DISPLAY") : "<unset>");
+    return NULL;
+  }
+
+  return puglWaylandInitWorldInternals(display, true, type, NULL);
 }
 
 void*
@@ -3193,6 +3596,9 @@ puglWaylandApplyToplevelAttributes(PuglView* const view)
 static void
 puglWaylandDestroyViewSurface(PuglInternals* const impl)
 {
+  puglWaylandCancelActivation(impl);
+  impl->hasPresented = false;
+  impl->visible = false;
   if (impl->frameCallback) {
     wl_callback_destroy(impl->frameCallback);
     impl->frameCallback = NULL;
@@ -3222,6 +3628,10 @@ puglWaylandDestroyViewSurface(PuglInternals* const impl)
   if (impl->xdgSurface) {
     xdg_surface_destroy(impl->xdgSurface);
     impl->xdgSurface = NULL;
+  }
+  if (impl->subsurface) {
+    wl_subsurface_destroy(impl->subsurface);
+    impl->subsurface = NULL;
   }
   if (impl->wlSurface) {
     wl_surface_destroy(impl->wlSurface);
@@ -3253,13 +3663,10 @@ puglRealize(PuglView* const view)
     return st;
   }
 
-  if (view->parent) {
-    /* Wayland has no cross-client embedding: there is no protocol by which a host can hand out a
-       surface for a plugin to draw into.  Rather than fail (which would leave the UI with no window
-       at all), fall back to a top level window and say so once. */
-    d_debug("pugl: Wayland has no window embedding, ignoring parent %p and "
-            "creating a top level window instead",
-            (void*)(uintptr_t)view->parent);
+  if (view->parent &&
+      (!wimpl->subcompositor ||
+       (wimpl->ownsDisplay && !puglWaylandFindViewByNative(world, view->parent)))) {
+    return PUGL_UNSUPPORTED;
   }
 
   puglEnsureHint(view, PUGL_IGNORE_KEY_REPEAT, PUGL_FALSE);
@@ -3272,22 +3679,40 @@ puglRealize(PuglView* const view)
   }
 
   wl_surface_set_user_data(impl->wlSurface, view);
+  wl_proxy_set_tag((struct wl_proxy*)impl->wlSurface, puglWaylandSurfaceTag);
   wl_surface_add_listener(
     impl->wlSurface, &puglWaylandSurfaceEventListener, view);
 
-  impl->xdgSurface =
-    xdg_wm_base_get_xdg_surface(wimpl->wmBase, impl->wlSurface);
-  if (!impl->xdgSurface) {
-    puglWaylandDestroyViewSurface(impl);
-    return PUGL_REALIZE_FAILED;
+  if (view->parent) {
+    impl->subsurface = wl_subcompositor_get_subsurface(
+      wimpl->subcompositor, impl->wlSurface, (struct wl_surface*)(uintptr_t)view->parent);
+    if (!impl->subsurface) {
+      puglWaylandDestroyViewSurface(impl);
+      return PUGL_REALIZE_FAILED;
+    }
+    wl_subsurface_set_desync(impl->subsurface);
+    const PuglPoint position = view->positionHints[PUGL_DEFAULT_POSITION];
+    if (puglIsValidPosition(position.x, position.y)) {
+      impl->parentPosition = position;
+    }
+    wl_subsurface_set_position(impl->subsurface, impl->parentPosition.x, impl->parentPosition.y);
+    impl->configured = true;
+  } else {
+    impl->xdgSurface = xdg_wm_base_get_xdg_surface(wimpl->wmBase, impl->wlSurface);
+    if (!impl->xdgSurface) {
+      puglWaylandDestroyViewSurface(impl);
+      return PUGL_REALIZE_FAILED;
+    }
+
+    xdg_surface_add_listener(impl->xdgSurface, &puglWaylandSurfaceListener, view);
+
+    impl->xdgToplevel = xdg_surface_get_toplevel(impl->xdgSurface);
+    if (!impl->xdgToplevel) {
+      puglWaylandDestroyViewSurface(impl);
+      return PUGL_REALIZE_FAILED;
+    }
+    xdg_toplevel_add_listener(impl->xdgToplevel, &puglWaylandToplevelListener, view);
   }
-
-  xdg_surface_add_listener(
-    impl->xdgSurface, &puglWaylandSurfaceListener, view);
-
-  impl->xdgToplevel = xdg_surface_get_toplevel(impl->xdgSurface);
-  xdg_toplevel_add_listener(
-    impl->xdgToplevel, &puglWaylandToplevelListener, view);
 
   // Fractional scaling needs a viewport to scale the buffer down into the logical size
   if (wimpl->viewporter) {
@@ -3302,7 +3727,7 @@ puglRealize(PuglView* const view)
       impl->fractionalScale, &puglWaylandFractionalScaleListener, view);
   }
 
-  if (wimpl->decorationManager) {
+  if (wimpl->decorationManager && impl->xdgToplevel) {
     impl->decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(
       wimpl->decorationManager, impl->xdgToplevel);
     zxdg_toplevel_decoration_v1_add_listener(
@@ -3313,7 +3738,7 @@ puglRealize(PuglView* const view)
 
   /* Exported eagerly rather than on demand: the handle comes back in a later event, and the point
      where an application wants it (opening a portal dialog) is too late to start waiting. */
-  if (wimpl->exporter) {
+  if (wimpl->exporter && impl->xdgToplevel) {
     impl->exported =
       zxdg_exporter_v2_export_toplevel(wimpl->exporter, impl->wlSurface);
 
@@ -3337,9 +3762,10 @@ puglRealize(PuglView* const view)
     return st;
   }
 
-  /* An initial commit with no buffer is how a client asks xdg-shell for its first configure.  The
-     window does not appear until a buffer is attached, which happens on the first expose. */
-  wl_surface_commit(impl->wlSurface);
+  // xdg-shell requires a bufferless commit before its initial configure.
+  if (impl->xdgSurface) {
+    wl_surface_commit(impl->wlSurface);
+  }
   wl_display_flush(wimpl->display);
 
   return puglDispatchSimpleEvent(view, PUGL_REALIZE);
@@ -3354,6 +3780,9 @@ puglUnrealize(PuglView* const view)
     return PUGL_FAILURE;
   }
 
+  puglWaylandCancelActivation(impl);
+  impl->visible = false;
+  puglWaylandForgetHostInput(view);
   puglDispatchSimpleEvent(view, PUGL_UNREALIZE);
 
   PuglWorldInternals* const wimpl = view->world->impl;
@@ -3362,6 +3791,9 @@ puglUnrealize(PuglView* const view)
   }
   if (wimpl->keyboardFocus == view) {
     wimpl->keyboardFocus = NULL;
+  }
+  if (wimpl->activationSource == view) {
+    wimpl->activationSource = NULL;
   }
   if (wimpl->repeat.view == view) {
     puglWaylandStopRepeat(wimpl);
@@ -3384,7 +3816,7 @@ puglUnrealize(PuglView* const view)
 }
 
 PuglStatus
-puglShow(PuglView* const view, const PuglShowCommand PUGL_UNUSED(command))
+puglShow(PuglView* const view, const PuglShowCommand command)
 {
   PuglInternals* const impl = view->impl;
   PuglStatus st = impl->wlSurface ? PUGL_SUCCESS : puglRealize(view);
@@ -3393,22 +3825,26 @@ puglShow(PuglView* const view, const PuglShowCommand PUGL_UNUSED(command))
     return st;
   }
 
-  /* There is no "raise" on Wayland: window stacking and focus are entirely the compositor's
-     business, and a client cannot put itself in front.  All three show commands therefore do the
-     same thing, which is to make sure a buffer gets attached. */
   impl->visible = true;
+  if (view->world->impl->launcherToken || command != PUGL_SHOW_PASSIVE) {
+    puglWaylandRequestActivation(view);
+  }
 
-  /* puglHide() unmapped the surface, and xdg-shell treats an unmapped surface like a new one: it
+  /* xdg-shell treats an unmapped surface like a new one: it
      needs another bufferless commit and a fresh configure before a buffer may be attached.  Without
      this the next expose attaches straight away, which mutter calls a buggy client ("committed
      initial non-empty content without acknowledging configuration") and stricter compositors may
      refuse.  The expose queued below waits for the configure, as it does after realize. */
   if (impl->unmapped) {
     impl->unmapped = false;
-    puglWaylandApplyToplevelAttributes(view);
-    puglUpdateSizeHints(view);
-    wl_surface_commit(impl->wlSurface);
-    wl_display_flush(view->world->impl->display);
+    if (impl->subsurface) {
+      impl->configured = true;
+    } else {
+      puglWaylandApplyToplevelAttributes(view);
+      puglUpdateSizeHints(view);
+      wl_surface_commit(impl->wlSurface);
+      wl_display_flush(view->world->impl->display);
+    }
   }
 
   puglWaylandQueueConfigure(view);
@@ -3430,6 +3866,14 @@ puglHide(PuglView* const view)
     return PUGL_FAILURE;
   }
 
+  puglWaylandCancelActivation(impl);
+  impl->hasPresented = false;
+  impl->visible = false;
+  puglWaylandForgetHostInput(view);
+  if (view->world->impl->activationSource == view) {
+    view->world->impl->activationSource = NULL;
+  }
+
   // Attaching a null buffer unmaps the surface
   wl_surface_attach(impl->wlSurface, NULL, 0, 0);
   wl_surface_commit(impl->wlSurface);
@@ -3439,7 +3883,6 @@ puglHide(PuglView* const view)
      until puglShow() has asked for a new one.  A frame callback still pending was for a buffer that
      is gone and may never come back; drop it so it does not hold up the first frame after showing
      again. */
-  impl->visible    = false;
   impl->configured = false;
   impl->unmapped   = true;
 
@@ -3522,7 +3965,7 @@ puglWaylandBuildPollFds(PuglWorldInternals* const impl)
       impl->pollFds, needed * sizeof(struct pollfd));
 
     if (!grown) {
-      return 0;
+      return (nfds_t)-1;
     }
 
     impl->pollFds    = grown;
@@ -3531,10 +3974,12 @@ puglWaylandBuildPollFds(PuglWorldInternals* const impl)
 
   nfds_t n = 0;
 
-  impl->pollFds[n].fd      = wl_display_get_fd(impl->display);
-  impl->pollFds[n].events  = POLLIN;
-  impl->pollFds[n].revents = 0;
-  ++n;
+  if (impl->ownsDisplay) {
+    impl->pollFds[n].fd      = wl_display_get_fd(impl->display);
+    impl->pollFds[n].events  = POLLIN;
+    impl->pollFds[n].revents = 0;
+    ++n;
+  }
 
   if (impl->repeat.fd >= 0) {
     impl->pollFds[n].fd      = impl->repeat.fd;
@@ -3613,55 +4058,65 @@ puglWaylandDispatchEvents(PuglWorld* const world, const double timeout)
 
   impl->world = world;
 
-  if (wl_display_dispatch_pending(display) < 0) {
+  if (wl_display_dispatch_queue_pending(display, impl->queue) < 0) {
     return PUGL_UNKNOWN_ERROR;
   }
 
-  while (wl_display_prepare_read(display) != 0) {
-    if (wl_display_dispatch_pending(display) < 0) {
-      return PUGL_UNKNOWN_ERROR;
+  if (impl->ownsDisplay) {
+    while (wl_display_prepare_read_queue(display, impl->queue) != 0) {
+      if (wl_display_dispatch_queue_pending(display, impl->queue) < 0) {
+        return PUGL_UNKNOWN_ERROR;
+      }
     }
   }
 
   if (wl_display_flush(display) < 0 && errno != EAGAIN) {
-    wl_display_cancel_read(display);
+    if (impl->ownsDisplay) {
+      wl_display_cancel_read(display);
+    }
     return PUGL_UNKNOWN_ERROR;
   }
 
   const nfds_t nfds   = puglWaylandBuildPollFds(impl);
   const int    dropFd = puglWaylandDropFd(impl);
-  if (!nfds) {
-    wl_display_cancel_read(display);
+  if (nfds == (nfds_t)-1) {
+    if (impl->ownsDisplay) {
+      wl_display_cancel_read(display);
+    }
     return PUGL_NO_MEMORY;
   }
 
   const int timeoutMs =
-    (timeout < 0.0) ? -1 : (int)(timeout * 1000.0 + 0.5);
+    !impl->ownsDisplay ? 0 : (timeout < 0.0) ? -1 : (int)(timeout * 1000.0 + 0.5);
 
   const int ret = poll(impl->pollFds, nfds, timeoutMs);
 
   if (ret < 0) {
-    wl_display_cancel_read(display);
+    if (impl->ownsDisplay) {
+      wl_display_cancel_read(display);
+    }
     return (errno == EINTR) ? PUGL_SUCCESS : PUGL_UNKNOWN_ERROR;
   }
 
-  if (impl->pollFds[0].revents & (POLLIN | POLLERR | POLLHUP)) {
-    if (wl_display_read_events(display) < 0) {
+  if (impl->ownsDisplay) {
+    if (impl->pollFds[0].revents & (POLLIN | POLLERR | POLLHUP)) {
+      if (wl_display_read_events(display) < 0) {
+        return PUGL_UNKNOWN_ERROR;
+      }
+    } else {
+      wl_display_cancel_read(display);
+    }
+
+    if (wl_display_dispatch_queue_pending(display, impl->queue) < 0) {
       return PUGL_UNKNOWN_ERROR;
     }
-  } else {
-    wl_display_cancel_read(display);
-  }
-
-  if (wl_display_dispatch_pending(display) < 0) {
-    return PUGL_UNKNOWN_ERROR;
   }
 
   /* One pass over the timer list already services every timer that expired, so several ready timer
      fds in the same cycle must not each trigger a full scan of their own. */
   bool timersReady = false;
   bool dropReady   = false;
-  for (nfds_t i = 1; i < nfds; ++i) {
+  for (nfds_t i = impl->ownsDisplay ? 1U : 0U; i < nfds; ++i) {
     // the end of a drag's file list shows as a hang-up, with no data left to read
     if (dropFd >= 0 && impl->pollFds[i].fd == dropFd) {
       dropReady = (impl->pollFds[i].revents & (POLLIN | POLLERR | POLLHUP)) != 0;
@@ -3764,6 +4219,10 @@ puglWaylandFlushExposures(PuglWorld* const world)
       puglWaylandRequestFrame(view);
 
       st2 = view->backend->leave(view, &expose.expose);
+      if (!st2) {
+        impl->hasPresented = true;
+        puglWaylandActivateIfReady(view);
+      }
     } else {
       /* The backend could not give us anything to draw into (both shm buffers still held by the
          compositor, a context that would not go current, ...).  The expose has already been taken
@@ -3792,7 +4251,9 @@ puglUpdate(PuglWorld* const world, const double timeout)
     return PUGL_BAD_CALL;
   }
 
-  if (timeout < 0.0) {
+  if (!world->impl->ownsDisplay) {
+    st0 = puglWaylandDispatchEvents(world, 0.0);
+  } else if (timeout < 0.0) {
     st0 = puglWaylandDispatchEvents(world, timeout);
   } else if (timeout <= 0.001) {
     st0 = puglWaylandDispatchEvents(world, 0.0);
@@ -3934,13 +4395,48 @@ puglGetScaleFactor(const PuglView* const view)
 }
 
 PuglStatus
-puglSetWindowPosition(PuglView* const PUGL_UNUSED(view),
-                      const int       PUGL_UNUSED(x),
-                      const int       PUGL_UNUSED(y))
+puglSetWindowPosition(PuglView* const view, const int x, const int y)
 {
-  /* Wayland deliberately does not let a client place its own windows, and does not tell it where
-     they ended up.  Reporting this rather than silently succeeding keeps callers honest. */
-  return PUGL_UNSUPPORTED;
+  PuglInternals* const impl = view->impl;
+  if (!impl->subsurface) {
+    return PUGL_UNSUPPORTED;
+  }
+
+  impl->parentPosition.x = (PuglCoord)x;
+  impl->parentPosition.y = (PuglCoord)y;
+  wl_subsurface_set_position(impl->subsurface, x, y);
+  puglWaylandQueueConfigure(view);
+  wl_display_flush(view->world->impl->display);
+  return PUGL_SUCCESS;
+}
+
+PuglStatus
+puglWaylandSetEmbeddedGeometry(PuglView* const view,
+                               const int x,
+                               const int y,
+                               const unsigned width,
+                               const unsigned height)
+{
+  PuglInternals* const impl = view->impl;
+  if (!impl->subsurface) {
+    return PUGL_UNSUPPORTED;
+  }
+  if (!puglIsValidPosition(x, y) || !puglIsValidSize(width, height)) {
+    return PUGL_BAD_PARAMETER;
+  }
+  if (view->world->state == PUGL_WORLD_EXPOSING) {
+    return PUGL_BAD_CALL;
+  }
+
+  impl->requestedLogicalSize.width  = (PuglSpan)width;
+  impl->requestedLogicalSize.height = (PuglSpan)height;
+  impl->parentPosition.x = (PuglCoord)x;
+  impl->parentPosition.y = (PuglCoord)y;
+  wl_subsurface_set_position(impl->subsurface, x, y);
+  puglWaylandSetSize(view, impl->requestedLogicalSize);
+  puglWaylandQueueConfigure(view);
+  puglWaylandQueueFullExpose(view);
+  return PUGL_SUCCESS;
 }
 
 PuglStatus
@@ -4028,10 +4524,18 @@ puglSetViewStyle(PuglView* const view, const PuglViewStyleFlags flags)
 }
 
 PuglStatus
-puglGrabFocus(PuglView* const PUGL_UNUSED(view))
+puglGrabFocus(PuglView* const view)
 {
-  // A Wayland client cannot take the keyboard focus, only the compositor can give it
-  return PUGL_UNSUPPORTED;
+  PuglWorldInternals* const impl = view->world->impl;
+  if (impl->hostManagedInput && view->impl->subsurface) {
+    if (!view->impl->visible) {
+      return PUGL_BAD_CALL;
+    }
+    impl->selectedView = view;
+    puglWaylandUpdateHostFocus(impl);
+    return PUGL_SUCCESS;
+  }
+  return puglWaylandRequestActivation(view);
 }
 
 bool

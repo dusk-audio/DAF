@@ -21,17 +21,56 @@
 #include "pugl/pugl.h"
 
 #include <stdlib.h>
-#include <string.h>
+
+typedef struct {
+  EGLenum    api;
+  EGLDisplay display;
+  EGLContext context;
+  EGLSurface draw;
+  EGLSurface read;
+} PuglWaylandGlBinding;
 
 typedef struct {
   EGLDisplay            display;
+  EGLenum               api;
   EGLConfig             config;
   EGLContext            context;
   EGLSurface            surface;
   struct wl_egl_window* window;
   PuglArea              size;
-  bool                  entered; ///< Whether the matching enter() got as far as succeeding
+  PuglWaylandGlBinding* bindings;
+  size_t                numBindings;
+  size_t                bindingCapacity;
 } PuglWaylandGlSurface;
+
+static bool
+puglWaylandGlSaveBinding(PuglWaylandGlBinding* const binding, const EGLenum api)
+{
+  binding->api = eglQueryAPI();
+  if (eglBindAPI(api) != EGL_TRUE) {
+    return false;
+  }
+
+  // GL and GLES share a current context, independently of a possible OpenVG binding.
+  binding->display = eglGetCurrentDisplay();
+  binding->context = eglGetCurrentContext();
+  binding->draw    = eglGetCurrentSurface(EGL_DRAW);
+  binding->read    = eglGetCurrentSurface(EGL_READ);
+  return true;
+}
+
+static bool
+puglWaylandGlRestoreBinding(const PuglWaylandGlBinding* const binding,
+                           const EGLDisplay fallbackDisplay,
+                           const EGLenum api)
+{
+  const bool selected = eglBindAPI(api) == EGL_TRUE;
+  const bool restored = selected &&
+    eglMakeCurrent(binding->display != EGL_NO_DISPLAY ? binding->display : fallbackDisplay,
+                   binding->draw, binding->read, binding->context) == EGL_TRUE;
+  const bool apiRestored = eglBindAPI(binding->api) == EGL_TRUE;
+  return restored && apiRestored;
+}
 
 /* EGL does not accept EGL_DONT_CARE for the "at least this many bits" attributes, and does not need
    to: zero already means "no preference" for all of them. */
@@ -92,6 +131,8 @@ puglWaylandGlOpenDisplay(struct wl_display* const wlDisplay)
    There is exactly one EGLDisplay per wl_display no matter how many windows exist, so it is
    reference counted in the world rather than owned by a view: eglTerminate() destroys every context
    and surface belonging to the display, which would break sibling views.
+   An already-initialized display belongs to the host: eglInitialize() is not reference counted,
+   so only the party that first initializes it may terminate it.
 */
 static EGLDisplay
 puglWaylandGlAcquireDisplay(PuglWorldInternals* const wimpl)
@@ -106,14 +147,17 @@ puglWaylandGlAcquireDisplay(PuglWorldInternals* const wimpl)
     return EGL_NO_DISPLAY;
   }
 
-  EGLint major = 0;
-  EGLint minor = 0;
-  if (eglInitialize(display, &major, &minor) != EGL_TRUE) {
-    return EGL_NO_DISPLAY;
+  const bool initialized = eglQueryString(display, EGL_VERSION) != NULL;
+  if (!initialized) {
+    if (eglGetError() != EGL_NOT_INITIALIZED ||
+        eglInitialize(display, NULL, NULL) != EGL_TRUE) {
+      return EGL_NO_DISPLAY;
+    }
   }
 
   wimpl->eglDisplay  = display;
   wimpl->eglRefCount = 1U;
+  wimpl->eglInitializedByUs = !initialized;
   return display;
 }
 
@@ -125,8 +169,11 @@ puglWaylandGlReleaseDisplay(PuglWorldInternals* const wimpl)
   }
 
   if (--wimpl->eglRefCount == 0U) {
-    eglTerminate((EGLDisplay)wimpl->eglDisplay);
+    if (wimpl->eglInitializedByUs) {
+      eglTerminate((EGLDisplay)wimpl->eglDisplay);
+    }
     wimpl->eglDisplay = NULL;
+    wimpl->eglInitializedByUs = false;
   }
 }
 
@@ -140,11 +187,6 @@ puglWaylandGlConfigure(PuglView* const view)
 
   const EGLDisplay display = puglWaylandGlAcquireDisplay(wimpl);
   if (display == EGL_NO_DISPLAY) {
-    return PUGL_CREATE_CONTEXT_FAILED;
-  }
-
-  if (eglBindAPI(isGles ? EGL_OPENGL_ES_API : EGL_OPENGL_API) != EGL_TRUE) {
-    puglWaylandGlReleaseDisplay(wimpl);
     return PUGL_CREATE_CONTEXT_FAILED;
   }
 
@@ -188,6 +230,7 @@ puglWaylandGlConfigure(PuglView* const view)
   }
 
   surface->display = display;
+  surface->api     = isGles ? EGL_OPENGL_ES_API : EGL_OPENGL_API;
   surface->config  = config;
   surface->context = EGL_NO_CONTEXT;
   surface->surface = EGL_NO_SURFACE;
@@ -215,7 +258,7 @@ puglWaylandGlConfigure(PuglView* const view)
 }
 
 static PuglStatus
-puglWaylandGlCreate(PuglView* const view)
+puglWaylandGlCreateSurface(PuglView* const view)
 {
   PuglInternals* const        impl    = view->impl;
   PuglWaylandGlSurface* const surface = (PuglWaylandGlSurface*)impl->surface;
@@ -319,10 +362,21 @@ puglWaylandGlCreate(PuglView* const view)
   const int hint = view->hints[PUGL_SWAP_INTERVAL];
   eglSwapInterval(surface->display, hint == PUGL_DONT_CARE ? 0 : hint);
 
-  eglMakeCurrent(
-    surface->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-
   return PUGL_SUCCESS;
+}
+
+static PuglStatus
+puglWaylandGlCreate(PuglView* const view)
+{
+  PuglWaylandGlSurface* const surface = (PuglWaylandGlSurface*)view->impl->surface;
+  PuglWaylandGlBinding binding;
+  if (!surface || !puglWaylandGlSaveBinding(&binding, surface->api)) {
+    return PUGL_CREATE_CONTEXT_FAILED;
+  }
+
+  const PuglStatus status = puglWaylandGlCreateSurface(view);
+  const bool restored = puglWaylandGlRestoreBinding(&binding, surface->display, surface->api);
+  return status ? status : restored ? PUGL_SUCCESS : PUGL_CREATE_CONTEXT_FAILED;
 }
 
 static void
@@ -335,8 +389,19 @@ puglWaylandGlDestroy(PuglView* const view)
     return;
   }
 
-  eglMakeCurrent(
-    surface->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+  const EGLenum api = eglQueryAPI();
+  if (eglBindAPI(surface->api) == EGL_TRUE) {
+    if (surface->context != EGL_NO_CONTEXT && eglGetCurrentContext() == surface->context) {
+      if (surface->numBindings) {
+        puglWaylandGlRestoreBinding(&surface->bindings[0], surface->display, surface->api);
+      } else {
+        eglMakeCurrent(surface->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        eglBindAPI(api);
+      }
+    } else {
+      eglBindAPI(api);
+    }
+  }
 
   if (surface->surface != EGL_NO_SURFACE) {
     eglDestroySurface(surface->display, surface->surface);
@@ -348,6 +413,7 @@ puglWaylandGlDestroy(PuglView* const view)
     wl_egl_window_destroy(surface->window);
   }
 
+  free(surface->bindings);
   free(surface);
   view->impl->surface = NULL;
 
@@ -364,10 +430,6 @@ puglWaylandGlEnter(PuglView* const view, const PuglExposeEvent* const expose)
     return PUGL_FAILURE;
   }
 
-  /* Every failure below leaves this false, which is what stops leave() from swapping a surface that
-     was never made current.  wayland.c re-arms needsRedisplay for a failed enter(). */
-  surface->entered = false;
-
   if (surface->context == EGL_NO_CONTEXT ||
       surface->surface == EGL_NO_SURFACE) {
     return PUGL_FAILURE;
@@ -381,14 +443,31 @@ puglWaylandGlEnter(PuglView* const view, const PuglExposeEvent* const expose)
     surface->size = size;
   }
 
+  if (surface->numBindings == surface->bindingCapacity) {
+    const size_t capacity = surface->numBindings + 1;
+    PuglWaylandGlBinding* const bindings = (PuglWaylandGlBinding*)realloc(
+      surface->bindings, capacity * sizeof(PuglWaylandGlBinding));
+    if (!bindings) {
+      return PUGL_NO_MEMORY;
+    }
+    surface->bindings = bindings;
+    surface->bindingCapacity = capacity;
+  }
+
+  PuglWaylandGlBinding* const binding = &surface->bindings[surface->numBindings];
+  if (!puglWaylandGlSaveBinding(binding, surface->api)) {
+    return PUGL_FAILURE;
+  }
+
   if (eglMakeCurrent(surface->display,
                      surface->surface,
                      surface->surface,
                      surface->context) != EGL_TRUE) {
+    puglWaylandGlRestoreBinding(binding, surface->display, surface->api);
     return PUGL_FAILURE;
   }
 
-  surface->entered = true;
+  ++surface->numBindings;
 
   (void)expose;
   return PUGL_SUCCESS;
@@ -400,30 +479,20 @@ puglWaylandGlLeave(PuglView* const view, const PuglExposeEvent* const expose)
   PuglWaylandGlSurface* const surface =
     (PuglWaylandGlSurface*)view->impl->surface;
 
-  if (!surface) {
+  if (!surface || !surface->numBindings) {
     return PUGL_FAILURE;
   }
 
-  const bool entered = surface->entered;
-  surface->entered   = false;
-
-  if (expose && entered) {
+  if (expose) {
     /* This is what commits the wl_surface, frame callback request included, so any new size and
        scale go out right before it, in the same commit as the buffer drawn for them */
     puglWaylandApplyGeometry(view);
     eglSwapBuffers(surface->display, surface->surface);
   }
 
-  /* The unbind happens either way: wayland.c calls leave() even for a failed enter(), and asking
-     EGL to make nothing current is harmless when nothing is current in the first place. */
-  const PuglStatus st = eglMakeCurrent(surface->display,
-                                       EGL_NO_SURFACE,
-                                       EGL_NO_SURFACE,
-                                       EGL_NO_CONTEXT) == EGL_TRUE
-                          ? PUGL_SUCCESS
-                          : PUGL_FAILURE;
-
-  return entered ? st : PUGL_FAILURE;
+  return puglWaylandGlRestoreBinding(&surface->bindings[--surface->numBindings],
+                                    surface->display, surface->api)
+           ? PUGL_SUCCESS : PUGL_FAILURE;
 }
 
 PuglGlFunc

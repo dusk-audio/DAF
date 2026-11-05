@@ -156,6 +156,7 @@ Window::PrivateData::PrivateData(Application& a, Window* const s, PrivateData* c
       isVisible(false),
       isEmbed(false),
       followsPuglScaleFactor(ppData->followsPuglScaleFactor),
+      nativeScaleMultiplier(ppData->nativeScaleMultiplier),
       usesScheduledRepaints(false),
       usesSizeRequest(false),
       grabsFocusOnClick(false),
@@ -350,6 +351,7 @@ bool Window::PrivateData::initPost()
     // create view now, as a few methods we allow devs to use require it
     if (puglRealize(view) != PUGL_SUCCESS)
     {
+        puglFreeView(view);
         view = nullptr;
         d_stderr2("Failed to realize Pugl view, everything will fail!");
         return false;
@@ -848,7 +850,7 @@ void Window::PrivateData::onPuglConfigure(const uint width, const uint height)
    #ifdef DGL_USING_WAYLAND
     if (DGL_VIEW_IS_WAYLAND(view) && followsPuglScaleFactor)
     {
-        const double nextScaleFactor = DGL_NAMESPACE::getScaleFactor(view);
+        const double nextScaleFactor = DGL_NAMESPACE::getScaleFactor(view) * nativeScaleMultiplier;
 
         if (d_isNotEqual(scaleFactor, nextScaleFactor))
         {
@@ -959,6 +961,7 @@ void Window::PrivateData::onPuglExpose()
     }
 
     endContext();
+    ++completedDisplayCount;
 #endif
 }
 

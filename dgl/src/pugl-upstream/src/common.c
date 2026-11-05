@@ -39,20 +39,42 @@ puglStrerror(const PuglStatus status)
   return "Unknown error";
 }
 
-PuglWorld*
-puglNewWorld(PuglWorldType type, PuglWorldFlags flags)
+typedef PuglWorldInternals* (*PuglWorldInitFunc)(PuglWorldType, PuglWorldFlags, void*);
+
+static PuglWorld*
+puglNewWorldWithInit(PuglWorldType type,
+                     PuglWorldFlags flags,
+                     PuglWorldInitFunc init,
+                     void* context)
 {
   PuglWorld* world = (PuglWorld*)calloc(1, sizeof(PuglWorld));
-  if (!world || !(world->impl = puglInitWorldInternals(type, flags)) ||
-      puglSetString(&world->strings[PUGL_CLASS_NAME], "Pugl")) {
+  if (!world || !(world->impl = init(type, flags, context))) {
+    free(world);
+    return NULL;
+  }
+
+  world->type = type;
+  if (puglSetString(&world->strings[PUGL_CLASS_NAME], "Pugl")) {
+    puglFreeWorldInternals(world);
     free(world);
     return NULL;
   }
 
   world->startTime = puglGetTime(world);
-  world->type      = type;
 
   return world;
+}
+
+static PuglWorldInternals*
+puglInitOwnedWorld(PuglWorldType type, PuglWorldFlags flags, void* PUGL_UNUSED(context))
+{
+  return puglInitWorldInternals(type, flags);
+}
+
+PuglWorld*
+puglNewWorld(PuglWorldType type, PuglWorldFlags flags)
+{
+  return puglNewWorldWithInit(type, flags, puglInitOwnedWorld, NULL);
 }
 
 void

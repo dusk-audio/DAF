@@ -85,6 +85,9 @@ MANUAL_TESTS += Demo.opengl
 MANUAL_TESTS += FileBrowserDialog
 MANUAL_TESTS += NanoImage
 MANUAL_TESTS += NanoSubWidgets
+ifeq ($(LINUX),true)
+MANUAL_TESTS += WaylandActivation
+endif
 endif
 
 ifneq ($(WASM),true)
@@ -99,6 +102,10 @@ endif
 ifeq ($(HAVE_OPENGL),true)
 UNIT_TESTS   += NanoSubWidgetsClip
 UNIT_TESTS   += Window.opengl
+ifeq ($(LINUX),true)
+UNIT_TESTS   += StaticTarget.opengl
+../build/tests/StaticTarget.cpp.opengl.o: BUILD_CXX_FLAGS += -Istatic-target -I../daf -I../dgl -DDAF_TEST_STATIC_TARGET_RUNTIME
+endif
 endif
 ifeq ($(HAVE_STUB),true)
 UNIT_TESTS   += KnobEventHandler.stub
@@ -147,6 +154,7 @@ CHECK_TARGETS  = $(BUILD_CHECKS:%=../build/tests/%.cpp.o)
 # its dependency file and a header change never rebuilds it.
 ALL_OBJS  = $(foreach test,$(MANUAL_TESTS) $(UNIT_TESTS),../build/tests/$(basename $(test)).cpp$(suffix $(test)).o)
 ALL_OBJS += $(CHECK_TARGETS)
+ALL_OBJS += ../build/tests/WaylandActivation.cpp.opengl.o
 
 # ---------------------------------------------------------------------------------------------------------------------
 
@@ -274,6 +282,14 @@ clean:
 ../build/tests/FileDropDemo$(APP_EXT): ../build/tests/FileDropDemo.cpp.cairo.o ../build/libdgl-cairo.a
 	@echo "Linking FileDropDemo (Cairo)"
 	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) $(CAIRO_LIBS) -o $@
+
+../build/tests/WaylandActivation$(APP_EXT): ../build/tests/WaylandActivation.cpp.opengl.o ../build/libdgl-opengl.a
+	@echo "Linking WaylandActivation (OpenGL)"
+	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) $(OPENGL_LIBS) -o $@
+
+../build/tests/StaticTarget.opengl$(APP_EXT): ../build/tests/StaticTarget.cpp.opengl.o ../build/libdgl-opengl.a
+	@echo "Linking StaticTarget (OpenGL)"
+	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) $(OPENGL_LIBS) -o $@
 
 # ---------------------------------------------------------------------------------------------------------------------
 

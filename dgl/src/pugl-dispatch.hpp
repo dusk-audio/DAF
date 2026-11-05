@@ -167,12 +167,14 @@ static bool puglWaylandCanMakeGlContext(pugl_wl::PuglWorld* const world)
 
     EGLConfig config = nullptr;
     EGLint numConfigs = 0;
+    const EGLenum previousApi = eglQueryAPI();
     const bool usable = eglBindAPI(api) == EGL_TRUE
                      && eglChooseConfig(display, attributes, &config, 1, &numConfigs) == EGL_TRUE
                      && numConfigs > 0;
+    const bool restored = eglBindAPI(previousApi) == EGL_TRUE;
 
     pugl_wl::puglWaylandGlReleaseDisplay(world->impl);
-    return usable;
+    return usable && restored;
 }
 #endif
 
@@ -678,6 +680,19 @@ void puglWaylandSetAppId(PuglView* const view, const char* const appId)
 {
     if (puglIsWayland(view))
         pugl_wl::puglWaylandSetAppId(asWayland(view), appId);
+}
+
+PuglStatus puglWaylandActivate(PuglView* const view, const char* const token)
+{
+    return puglIsWayland(view) ? pugl_wl::puglWaylandActivate(asWayland(view), token) : PUGL_UNSUPPORTED;
+}
+
+PuglStatus puglWaylandSetEmbeddedGeometry(PuglView* const view, const int x, const int y,
+                                        const unsigned width, const unsigned height)
+{
+    return puglIsWayland(view)
+         ? pugl_wl::puglWaylandSetEmbeddedGeometry(asWayland(view), x, y, width, height)
+         : PUGL_UNSUPPORTED;
 }
 
 const char* puglWaylandGetExportedHandle(const PuglView* const view)

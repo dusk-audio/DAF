@@ -82,9 +82,12 @@ struct Application::PrivateData {
 
     /** List of idle callbacks for this application. */
     IdleCallbacks idleCallbacks;
+    ClipboardCallbacks clipboardCallbacks;
 
     /** Constructor and destructor */
     explicit PrivateData(bool standalone, Type type, WindowSystem windowSystem);
+    explicit PrivateData(ExternalWaylandDisplay display);
+    PrivateData(PuglWorld* nativeWorld, bool standalone);
     ~PrivateData();
 
     /** Flag one window as shown, which increments @a visibleWindows.

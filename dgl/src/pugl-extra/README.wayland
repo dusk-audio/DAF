@@ -87,6 +87,7 @@ Required; the backend refuses to start without them:
 Used when advertised, degraded gracefully when not:
 
   wl_seat              wl_pointer and wl_keyboard
+  wl_subcompositor     same-connection embedded surfaces
   wl_output            integer scale, via wl_surface.enter/leave
   wl_shm               cursor themes, and the Cairo backend's buffers
   wl_data_device_manager    clipboard get and set
@@ -102,9 +103,12 @@ primary selection, text-input, DnD, Vulkan, and the importer half of xdg-foreign
 Coordinates and scaling
 -----------------------
 
-Pugl talks in *buffer pixels* everywhere: configure sizes, expose regions, pointer positions. The
+Pugl uses *buffer pixels* for configure sizes, expose regions and pointer positions. The
 compositor talks in *logical pixels*. `puglWaylandLogicalToPixels()` / `puglWaylandPixelsToLogical()`
 are the only places the two meet, so the direction of a conversion is never ambiguous.
+
+Embedded offsets instead use the parent surface's coordinates. They are not divided by the
+child's scale: the host's coordinate transform need not match the child's buffer scale.
 
 The scale factor is, in order of preference:
 
@@ -144,6 +148,16 @@ PUGL_FOCUS_IN and PUGL_FOCUS_OUT arrive only when the seat advertises a keyboard
 has a seat with no capabilities at all, so a window there is never told it has the focus, and an
 application that hangs state off focus has to cope with that.
 
+With host-managed input, puglGrabFocus() selects a visible embedded child without requesting
+activation. It receives keyboard focus only while its parent has the host's keyboard focus.
+A primary-button press selects the child before dispatching the button event. Parent focus loss,
+hiding, or destroying the child sends focus-out and cancels repeat and compose state. Returning
+to the parent restores its selected child; showing a hidden child requires selecting it again.
+Key and button releases retain the owner of their press. Keyboard focus loss cancels keys;
+hiding or destroying the child cancels both. Their releases are consumed without dispatching elsewhere.
+Keys already held on keyboard entry are not synthesized as presses, and releases owned by the
+host remain with the host even if a DAF child becomes selected in between.
+
 PUGL_CURSOR_NONE hides the pointer with wl_pointer.set_cursor and a null surface, which needs
 neither a cursor theme nor wl_shm. Like every other cursor it applies to the pointer that is
 currently over the view: setting one while the pointer is elsewhere is remembered and applied on the
@@ -168,22 +182,27 @@ empty string and the caller opens an unparented dialog, which is what happens to
 Known limitations
 -----------------
 
-* **No embedding.** Wayland has no cross-client window embedding; there is no protocol by which a
-  host hands out a surface for a plugin to draw into. puglSetParent() is accepted and ignored with a
-  debug message, and the view becomes a top level window instead. This is the big one: it means a
-  plugin UI in a Wayland-native host appears as a separate floating window. Plugin embedding on
-  Linux remains an X11 (or XWayland) affair.
+* **Embedding is same-connection only.** A parent must be another view in the same Pugl world,
+  or a valid host-owned wl_surface on an explicitly borrowed connection. Cross-client handles are
+  invalid; unrecognized parents on owned connections are rejected. The parent must outlive its children.
+  Children use desynchronized wl_subsurface roles. The host must commit the parent after creating
+  or moving a child; DAF never commits, destroys, or changes the listener or queue of a borrowed parent.
+  A synchronized ancestor still synchronizes a desynchronized child. Embedded keyboard input needs
+  host coordination: the compositor gives keyboard focus to the parent, never to a subsurface.
+  Plugin formats still use their existing X11 embedding contract.
 
-* **No window positions.** puglSetWindowPosition() returns PUGL_UNSUPPORTED and configure events
-  always report 0,0. Wayland does not let a client place its own windows or learn where they are.
+* **No toplevel positions.** puglSetWindowPosition() returns PUGL_UNSUPPORTED for toplevels, whose
+  configure events report 0,0. Subsurfaces accept and report parent-relative positions.
   Root-relative pointer coordinates (xRoot/yRoot) are reported as the surface-relative ones.
 
 * **Transient parents only within one process.** puglSetTransientParent() maps to
   xdg_toplevel.set_parent when the handle belongs to another view of this process, and is ignored
   otherwise (again, no cross-client handles exist).
 
-* **No raise, no focus grab.** puglRaiseWindow() does nothing and puglGrabFocus() returns
-  PUGL_UNSUPPORTED. Stacking and focus are compositor policy.
+* **Toplevel activation is compositor policy.** puglRaiseWindow() does nothing. Focus requests use
+  xdg-activation when available, with a launcher token or a token requested from input. Success
+  means the request was submitted, not that the compositor granted focus. Selecting a child in
+  host-managed input mode changes logical focus within its parent without activating a toplevel.
 
 * **puglSetViewStyle is partial.** Fullscreen, maximise and minimise map onto xdg_toplevel;
   MODAL / ABOVE / BELOW / DEMANDING have no equivalent and are ignored.

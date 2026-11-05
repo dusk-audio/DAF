@@ -124,6 +124,17 @@ typedef struct {
   uint32_t time;       ///< Timestamp of the most recent axis event
 } PuglWaylandScroll;
 
+typedef struct {
+  uint32_t code;
+  PuglView* view;
+} PuglWaylandPress;
+
+typedef struct {
+  PuglWaylandPress* data;
+  size_t count;
+  size_t capacity;
+} PuglWaylandPresses;
+
 struct PuglWorldInternalsImpl {
   /* The world these internals belong to.  puglInitWorldInternals() is not given it, so it is filled
      in as soon as anything that has it runs (see puglInitViewInternals and
@@ -133,8 +144,12 @@ struct PuglWorldInternalsImpl {
 
   // Core globals
   struct wl_display*    display;
+  struct wl_event_queue* queue;
+  bool                  ownsDisplay;
+  bool                  hostManagedInput;
   struct wl_registry*   registry;
   struct wl_compositor* compositor;
+  struct wl_subcompositor* subcompositor;
   struct wl_shm*        shm;
   struct wl_seat*       seat;
   struct wl_pointer*    pointer;
@@ -148,6 +163,7 @@ struct PuglWorldInternalsImpl {
   struct wp_fractional_scale_manager_v1* fractionalScaleManager;
   struct zxdg_decoration_manager_v1*     decorationManager;
   struct zxdg_exporter_v2*               exporter;
+  struct xdg_activation_v1*              activation;
 
   // Cursor theme, loaded lazily on the first puglSetCursor() that needs it
   struct wl_cursor_theme* cursorTheme;
@@ -160,6 +176,7 @@ struct PuglWorldInternalsImpl {
      as void* so that this header stays usable in builds with no OpenGL. */
   void*    eglDisplay;
   unsigned eglRefCount;
+  bool     eglInitializedByUs;
 
   // Keyboard
   PuglWaylandXkb       xkb;
@@ -176,6 +193,17 @@ struct PuglWorldInternalsImpl {
   // Keyboard focus and the most recent input serial, needed by set_selection etc.
   PuglView* keyboardFocus;
   uint32_t  lastSerial;
+  struct wl_surface* hostKeyboardSurface;
+  PuglView* selectedView;
+  uint64_t focusGeneration;
+  PuglWaylandPresses heldKeys;
+  PuglWaylandPresses heldButtons;
+  bool lastEventConsumed;
+
+  // Activation serials must retain their originating surface, unlike clipboard serials.
+  PuglView* activationSource;
+  uint32_t  activationSerial;
+  char*     launcherToken;
 
   // Clipboard, plus unclaimed and drag-and-drop offers that still need to be cleaned up
   PuglWaylandOffer* selectionOffer;
@@ -211,14 +239,17 @@ struct PuglWorldInternalsImpl {
 };
 
 struct PuglInternalsImpl {
-  // Surface and its xdg-shell role
+  // Surface and its mutually exclusive shell or subsurface role
   struct wl_surface*                  wlSurface;
+  struct wl_subsurface*               subsurface;
   struct xdg_surface*                 xdgSurface;
   struct xdg_toplevel*                xdgToplevel;
   struct zxdg_toplevel_decoration_v1* decoration;
   struct wp_viewport*                 viewport;
   struct wp_fractional_scale_v1*      fractionalScale;
   struct wl_callback*                 frameCallback;
+  struct xdg_activation_token_v1*     activationRequest;
+  char*                              activationToken;
 
   /* The surface exported through xdg-foreign, and the handle the compositor answered with.  Other
      processes, xdg-desktop-portal above all, take a dialog's parent as such a handle since Wayland
@@ -235,7 +266,8 @@ struct PuglInternalsImpl {
 
   PuglArea size;                 ///< Current size in buffer pixels (what Pugl reports)
   PuglArea logicalSize;          ///< Current size in logical pixels (what the compositor uses)
-  PuglArea requestedLogicalSize; ///< Size the compositor last asked for, zero if it does not care
+  PuglArea requestedLogicalSize; ///< Host subsurface size or compositor request, zero for free sizing
+  PuglPoint parentPosition;      ///< Subsurface offset in the parent's surface coordinates
 
   double   scale;                    ///< Scale factor in effect, at least 1.0
   int32_t  bufferScale;              ///< wl_surface buffer scale, 1 when a viewport is used
@@ -252,6 +284,7 @@ struct PuglInternalsImpl {
   struct wl_output* enteredOutputs[PUGL_WAYLAND_MAX_OUTPUTS];
   uint32_t          numEnteredOutputs;
 
+  bool hasPresented;       ///< A buffer has been committed since the last unmap
   bool configured;         ///< At least one xdg_surface.configure has been acked
   bool visible;            ///< puglShow() called, puglHide() not called since
   bool needsRedisplay;     ///< A redraw was requested while a frame callback was pending

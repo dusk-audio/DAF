@@ -18,6 +18,7 @@
 #define DGL_PUGL_HPP_INCLUDED
 
 #include "../Base.hpp"
+#include "../WaylandInput.hpp"
 
 // we will include all header files used in pugl.h in their C++ friendly form, then pugl stuff in custom namespace
 #include <cstddef>
@@ -59,6 +60,12 @@ START_NAMESPACE_DGL
 #include "pugl/pugl.h"
 
 // --------------------------------------------------------------------------------------------------------------------
+
+// A supplied seat selects host-managed input. The host keeps both proxies alive until world teardown.
+PuglWorld* puglNewWorldWithWaylandDisplay(PuglWorldType type, PuglWorldFlags flags, void* display,
+                                        void* inputSeat = nullptr);
+DGL_NAMESPACE::WaylandInput puglGetWaylandInput(PuglWorld* world);
+bool puglActivateWaylandSurface(PuglWorld* world, void* surface, const char* token);
 
 // DGL outgoing file drag, polled by Window outside its rendering callback.
 struct PuglFileDrag
@@ -231,6 +238,12 @@ PuglStatus puglWaylandUpdateWithoutExposures(PuglWorld* world);
 // This is the closest analogue to puglX11SetWindowType: Wayland has no window-type atoms, the
 // compositor keys window rules and icon matching off the app id instead.
 void puglWaylandSetAppId(PuglView* view, const char* appId);
+
+// Wayland specific, activate a shown view with a copied, single-use launcher token
+PuglStatus puglWaylandActivate(PuglView* view, const char* token);
+
+// The host commits the parent after changing a subsurface's logical rectangle.
+PuglStatus puglWaylandSetEmbeddedGeometry(PuglView* view, int x, int y, unsigned width, unsigned height);
 
 // Wayland specific, get this view's xdg-foreign handle, or null if it has none
 // The handle is asked for while realizing and arrives in a later event, so it is null until the

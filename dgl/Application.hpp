@@ -18,6 +18,9 @@
 #define DGL_APP_HPP_INCLUDED
 
 #include "Base.hpp"
+#include "WaylandInput.hpp"
+
+#include <cstddef>
 
 #ifdef DAF_NAMESPACE
 START_NAMESPACE_DAF
@@ -129,6 +132,37 @@ public:
     */
     Application(int argc, char* argv[], WindowSystem windowSystem = kWindowSystemAuto);
 
+    struct ExternalWaylandDisplay {
+        explicit ExternalWaylandDisplay(void* nativeDisplay, void* nativeInputSeat = nullptr)
+            : display(nativeDisplay), inputSeat(nativeInputSeat) {}
+
+        void* display; // wl_display*, owned by the host
+        void* inputSeat; // optional wl_seat*, owned by the host
+    };
+
+   /**
+      Construct a module application borrowing the host's Wayland connection.
+
+      Create one Application per borrowed connection and share it among its Windows. The host must
+      keep the display alive until those Windows and this Application are destroyed. Construction,
+      idle and window operations run on the display owner's thread with no prepared read outstanding.
+      The host reads the connection; idle dispatches only this application's pending events.
+      Initialization and synchronous clipboard requests may read the socket while dispatching only
+      this application's events.
+
+      Supplying inputSeat selects host-managed input and prevents DAF from creating another pointer
+      or keyboard stream. The seat must belong to this display and outlive this Application.
+      Forward host input through getWaylandInput().
+
+      A host using EGL must initialize it before creating DAF windows and keep it initialized until
+      all those windows are destroyed. DAF preserves existing EGL resources and current bindings;
+      if EGL is initially uninitialized, DAF owns its initialization until its last window is destroyed.
+
+      A null display, an unavailable Wayland backend or initialization failure opens no connection;
+      getWindowSystem() returns kWindowSystemAuto. There is no fallback to another backend.
+    */
+    explicit Application(ExternalWaylandDisplay display);
+
    /**
       Destructor.
     */
@@ -189,6 +223,42 @@ public:
     WindowSystem getWindowSystem() const noexcept;
 
    /**
+      Return callbacks for the host-managed input seat supplied at construction.
+      All fields are null for other applications and failed initialization.
+      See WaylandInput for forwarding, reset and lifetime requirements.
+   */
+    WaylandInput getWaylandInput() const noexcept;
+
+   /**
+      Submit an activation token for a live toplevel surface on this application's Wayland connection.
+
+      The host owns the mapped wl_surface and must call from the display-owner thread. Neither the
+      surface nor the token is retained. This does not read the environment, obtain a token, create
+      a window, or dispatch events. Consume the single-use token before calling, even on failure.
+      True means the request was submitted or queued, not that the compositor granted focus.
+      False means invalid arguments, an unavailable backend/protocol, or a broken connection.
+   */
+    bool activateWaylandSurface(void* surface, const char* token) noexcept;
+
+    struct ClipboardCallbacks {
+        void* context = nullptr;
+        const void* (*get)(void*, size_t&) = nullptr;
+        bool (*set)(void*, const char* mimeType, const void*, size_t) = nullptr;
+    };
+
+   /**
+      Route every window's clipboard operations through the host. Set or clear both callbacks together;
+      a partial pair is rejected without changing registration. Null/false callback results are final,
+      with no native fallback. An empty pair restores native clipboard handling.
+
+      The application copies the record but does not own context. Registration and callbacks run on
+      the event thread; callbacks must not pump events or recursively call DGL clipboard methods.
+      Returned storage stays valid until the next clipboard operation or removal. The setter must
+      copy supplied bytes before returning. A null MIME type is passed as "text/plain".
+    */
+    bool setClipboardCallbacks(const ClipboardCallbacks& callbacks) noexcept;
+
+   /**
       Add a callback function to be triggered on every idle cycle.
       You can add more than one, and remove them at anytime with removeIdleCallback().
       Idle callbacks trigger right after OS event handling and Window idle events (within the same cycle).
@@ -211,6 +281,7 @@ public:
       so it should be the same for every instance of the application, but different from other applications.
 
       Plugins created with DAF have their class name automatically set based on DGL_NAMESPACE and plugin name.
+      Returns null if no windowing system could be opened.
     */
     const char* getClassName() const noexcept;
 
