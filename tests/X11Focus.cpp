@@ -142,7 +142,7 @@ int main()
     DAF_ASSERT_EQUAL(focusOf(host), viewWindow, "the view has the focus again");
     puglHide(view);
     puglUpdate(world, 0.0);
-    DAF_ASSERT_NOT_EQUAL(focusOf(host), static_cast<::Window>(None), "hiding the view leaves a focus");
+    DAF_ASSERT_EQUAL(focusOf(host), hostWindow, "hiding a focused child returns the keyboard to its live host");
 
     // 4. a request of the view's that fails is never reported to the host: the hidden window
     //    cannot take the focus (BadMatch), and the next update reads the error
@@ -189,6 +189,27 @@ int main()
         DAF_ASSERT_EQUAL(caught, static_cast<unsigned char>(BadMatch), "an outstanding failing request is collected");
         DAF_ASSERT_EQUAL(hostErrorCount, 0, "and does not reach the host");
     }
+
+    PuglView* const closing = puglNewView(world);
+    puglSetMatchingBackendForCurrentBuild(closing);
+    puglSetEventFunc(closing, onEvent);
+    puglSetSizeHint(closing, PUGL_DEFAULT_SIZE, 100, 80);
+    puglSetParent(closing, static_cast<PuglNativeView>(hostWindow));
+    DAF_ASSERT_EQUAL(puglRealize(closing), PUGL_SUCCESS, "second embedded view realizes");
+    DAF_ASSERT_EQUAL(puglShow(closing, PUGL_SHOW_PASSIVE), PUGL_SUCCESS, "second embedded view shows");
+    DAF_ASSERT_EQUAL(waitViewable(world, display, puglGetNativeView(closing)), true, "second child is viewable");
+    XSetInputFocus(host, hostWindow, RevertToNone, CurrentTime);
+    DAF_ASSERT_EQUAL(focusOf(host), hostWindow, "host owns focus before the closing child");
+    DAF_ASSERT_EQUAL(puglGrabFocus(closing), PUGL_SUCCESS, "closing child acquires focus");
+    puglFreeView(closing);
+    DAF_ASSERT_EQUAL(focusOf(host), hostWindow, "destroying a focused child returns focus to its live host");
+
+    DAF_ASSERT_EQUAL(puglShow(view, PUGL_SHOW_PASSIVE), PUGL_SUCCESS, "unfocused child shows again");
+    DAF_ASSERT_EQUAL(waitViewable(world, display, viewWindow), true, "unfocused child is viewable");
+    XSetInputFocus(host, otherApp, RevertToNone, CurrentTime);
+    DAF_ASSERT_EQUAL(focusOf(host), otherApp, "another application owns focus before hide");
+    puglHide(view);
+    DAF_ASSERT_EQUAL(focusOf(host), otherApp, "hiding an unfocused child preserves another application's focus");
 
     // a host may destroy its window, and the view's with it, before letting the view go
     hostErrorCount = 0;
