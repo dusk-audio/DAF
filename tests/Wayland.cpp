@@ -722,9 +722,9 @@ static void testForeignSurface()
     assert(output);
     wl_output_set_user_data(output, &foreignData);
     puglWaylandSurfaceEnter(view, view->impl->wlSurface, output);
-    assert(view->impl->bufferScale == 1);
+    assert(view->impl->bufferScale == 1 && view->impl->numEnteredOutputs == 0);
     puglWaylandSurfaceEnter(view, view->impl->wlSurface, impl->outputs[0].output);
-    assert(view->impl->bufferScale == 2);
+    assert(view->impl->bufferScale == 2 && view->impl->numEnteredOutputs == 1);
     assert(wl_output_get_user_data(output) == &foreignData);
     wl_output_destroy(output);
     DGL_NAMESPACE::puglFreeView(view);

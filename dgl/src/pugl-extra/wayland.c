@@ -779,12 +779,23 @@ puglWaylandSurfaceEnter(void* const              data,
                         struct wl_surface* const PUGL_UNUSED(surface),
                         struct wl_output* const  output)
 {
-  PuglView* const      view = (PuglView*)data;
-  PuglInternals* const impl = view->impl;
+  PuglView* const                 view  = (PuglView*)data;
+  PuglInternals* const            impl  = view->impl;
+  const PuglWorldInternals* const wimpl = view->world->impl;
 
   /* libwayland passes NULL for an object that was destroyed before the event reached us, which is
      exactly what happens when an output is unplugged with an enter still in flight. */
   if (!output) {
+    return;
+  }
+
+  /* On a borrowed connection the compositor also names the host's own wl_output proxies. Their
+     leave can arrive as NULL once the host destroys them, so they are never tracked. */
+  bool known = false;
+  for (uint32_t i = 0; i < wimpl->numOutputs; ++i) {
+    known |= wimpl->outputs[i].output == output;
+  }
+  if (!known) {
     return;
   }
 
@@ -811,8 +822,8 @@ puglWaylandSurfaceEnter(void* const              data,
    Stop tracking an output on a view, and react to the scale change that may follow.
 
    Shared by wl_surface.leave and by wl_registry.global_remove: a removed output has to be dropped
-   from every view before its proxy is destroyed, or puglWaylandUpdateScale() will call
-   wl_output_get_user_data() on freed memory.
+   from every view before its proxy is destroyed, or a later proxy allocated at the same address
+   would be taken for an output the view is still on.
 */
 static void
 puglWaylandForgetOutput(PuglView* const view, struct wl_output* const output)
