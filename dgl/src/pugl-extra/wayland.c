@@ -8,7 +8,8 @@
   Scope, and why it is what it is:
 
   * Embedding requires a parent surface on the same connection. A borrowed connection accepts its
-    host's surface; an owned connection accepts only another view in the same world.
+    host's surface; an owned connection embeds only into another view in the same world and opens
+    a toplevel window for any other parent.
   * Sizes and input coordinates are *buffer pixels*. The compositor speaks *logical pixels*.
     The two differ by the view scale factor, which comes either from wp_fractional_scale_v1 (exact,
     in 120ths) or from the largest integer wl_output scale the surface overlaps.  Every conversion
@@ -69,6 +70,9 @@
 #define PUGL_WAYLAND_BTN_MIDDLE 0x112U
 #define PUGL_WAYLAND_BTN_SIDE 0x113U
 #define PUGL_WAYLAND_BTN_EXTRA 0x114U
+
+/// wl_keyboard v10 key state, spelled out for wayland headers that predate it
+#define PUGL_WAYLAND_KEY_STATE_REPEATED 2U
 
 /// Returned for button codes that have no Pugl button number, such events are ignored
 #define PUGL_WAYLAND_BTN_UNKNOWN UINT32_MAX
@@ -775,12 +779,23 @@ puglWaylandSurfaceEnter(void* const              data,
                         struct wl_surface* const PUGL_UNUSED(surface),
                         struct wl_output* const  output)
 {
-  PuglView* const      view = (PuglView*)data;
-  PuglInternals* const impl = view->impl;
+  PuglView* const                 view  = (PuglView*)data;
+  PuglInternals* const            impl  = view->impl;
+  const PuglWorldInternals* const wimpl = view->world->impl;
 
   /* libwayland passes NULL for an object that was destroyed before the event reached us, which is
      exactly what happens when an output is unplugged with an enter still in flight. */
   if (!output) {
+    return;
+  }
+
+  /* On a borrowed connection the compositor also names the host's own wl_output proxies. Their
+     leave can arrive as NULL once the host destroys them, so they are never tracked. */
+  bool known = false;
+  for (uint32_t i = 0; i < wimpl->numOutputs; ++i) {
+    known |= wimpl->outputs[i].output == output;
+  }
+  if (!known) {
     return;
   }
 
@@ -807,8 +822,8 @@ puglWaylandSurfaceEnter(void* const              data,
    Stop tracking an output on a view, and react to the scale change that may follow.
 
    Shared by wl_surface.leave and by wl_registry.global_remove: a removed output has to be dropped
-   from every view before its proxy is destroyed, or puglWaylandUpdateScale() will call
-   wl_output_get_user_data() on freed memory.
+   from every view before its proxy is destroyed, or a later proxy allocated at the same address
+   would be taken for an output the view is still on.
 */
 static void
 puglWaylandForgetOutput(PuglView* const view, struct wl_output* const output)
@@ -1738,7 +1753,10 @@ puglWaylandKeyboardEnter(void* const               data,
                          struct wl_array* const    keys)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
-  PuglView* const           view = puglWaylandViewForSurface(surface);
+  PuglView*                 view = puglWaylandViewForSurface(surface);
+  if (view && view->world->impl != impl) {
+    view = NULL;
+  }
 
   impl->lastSerial       = serial;
   impl->activationSource = view;
@@ -1757,7 +1775,7 @@ puglWaylandKeyboardEnter(void* const               data,
       }
     }
     impl->hostKeyboardSurface = surface;
-    if (view && view->world->impl == impl) {
+    if (view) {
       impl->selectedView = view;
     }
     puglWaylandUpdateHostFocus(impl);
@@ -1781,7 +1799,10 @@ puglWaylandKeyboardLeave(void* const               data,
                          struct wl_surface* const  surface)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
-  PuglView* const           view = puglWaylandViewForSurface(surface);
+  PuglView*                 view = puglWaylandViewForSurface(surface);
+  if (view && view->world->impl != impl) {
+    view = NULL;
+  }
 
   impl->lastSerial = serial;
   if (impl->hostManagedInput) {
@@ -1806,6 +1827,39 @@ puglWaylandKeyboardLeave(void* const               data,
   puglDispatchEvent(view, &event);
 }
 
+/* Compositor-side repeat of a key already down, only sent to a wl_keyboard bound at v10 or later,
+   which a host seat may be. It goes to the view the press went to, as another press, and never
+   changes who owns the key's release. */
+static void
+puglWaylandKeyboardRepeated(PuglWorldInternals* const impl,
+                            const uint32_t            serial,
+                            const uint32_t            time,
+                            const uint32_t            key)
+{
+  PuglView* view     = impl->keyboardFocus;
+  bool      consumed = false;
+  if (impl->hostManagedInput) {
+    PuglView* owner = NULL;
+    for (size_t i = 0; i < impl->heldKeys.count; ++i) {
+      if (impl->heldKeys.data[i].code == key) {
+        owner    = impl->heldKeys.data[i].view;
+        consumed = true;
+        break;
+      }
+    }
+    if (owner != view) {
+      view = NULL;
+    }
+  }
+
+  if (view && !view->hints[PUGL_IGNORE_KEY_REPEAT]) {
+    impl->activationSource = view;
+    impl->activationSerial = serial;
+    puglWaylandDispatchKey(impl, view, key, true, time / 1e3);
+  }
+  impl->lastEventConsumed = consumed;
+}
+
 static void
 puglWaylandKeyboardKey(void* const               data,
                        struct wl_keyboard* const PUGL_UNUSED(keyboard),
@@ -1818,6 +1872,11 @@ puglWaylandKeyboardKey(void* const               data,
   PuglView* view = impl->keyboardFocus;
 
   impl->lastSerial = serial;
+  if (state == PUGL_WAYLAND_KEY_STATE_REPEATED) {
+    puglWaylandKeyboardRepeated(impl, serial, time, key);
+    return;
+  }
+
   const bool pressed = state == WL_KEYBOARD_KEY_STATE_PRESSED;
   const bool consumed = impl->hostManagedInput &&
     puglWaylandRoutePress(&impl->heldKeys, key, pressed, &view);
@@ -3416,8 +3475,10 @@ puglWaylandInitWorldInternals(struct wl_display* const display,
     return NULL;
   }
 
-  // A second data device can divert clipboard selections from the host.
-  if (!impl->hostManagedInput && impl->dataDeviceManager && impl->seat) {
+  /* On a borrowed connection the host is the same client, so a transfer between it and DAF waits
+     in one queue for a reply only the other queue can produce, and a second data device can divert
+     its selections. The clipboard goes through the host there (Application::setClipboardCallbacks). */
+  if (ownsDisplay && impl->dataDeviceManager && impl->seat) {
     impl->dataDevice = wl_data_device_manager_get_data_device(
       impl->dataDeviceManager, impl->seat);
     wl_data_device_add_listener(
@@ -3663,10 +3724,17 @@ puglRealize(PuglView* const view)
     return st;
   }
 
-  if (view->parent &&
-      (!wimpl->subcompositor ||
-       (wimpl->ownsDisplay && !puglWaylandFindViewByNative(world, view->parent)))) {
-    return PUGL_UNSUPPORTED;
+  /* A parent that is not a surface of an owned connection, such as a plugin host's X11 window,
+     cannot be embedded into; the view opens as a toplevel window instead of failing. */
+  const bool embedded =
+    view->parent && wimpl->subcompositor &&
+    (!wimpl->ownsDisplay || puglWaylandFindViewByNative(world, view->parent));
+  if (view->parent && !embedded) {
+    if (!wimpl->ownsDisplay) {
+      return PUGL_UNSUPPORTED;
+    }
+    d_debug("pugl: cannot embed into %p, creating a toplevel window instead",
+            (void*)(uintptr_t)view->parent);
   }
 
   puglEnsureHint(view, PUGL_IGNORE_KEY_REPEAT, PUGL_FALSE);
@@ -3683,7 +3751,7 @@ puglRealize(PuglView* const view)
   wl_surface_add_listener(
     impl->wlSurface, &puglWaylandSurfaceEventListener, view);
 
-  if (view->parent) {
+  if (embedded) {
     impl->subsurface = wl_subcompositor_get_subsurface(
       wimpl->subcompositor, impl->wlSurface, (struct wl_surface*)(uintptr_t)view->parent);
     if (!impl->subsurface) {

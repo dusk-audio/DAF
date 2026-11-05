@@ -43,6 +43,14 @@ typedef struct {
   size_t                bindingCapacity;
 } PuglWaylandGlSurface;
 
+/* eglQueryAPI() reports EGL_NONE when no API was bound and OpenGL ES is unsupported. eglBindAPI()
+   rejects that value, and there is no earlier API to put back. */
+static bool
+puglWaylandGlRestoreApi(const EGLenum api)
+{
+  return api == EGL_NONE || eglBindAPI(api) == EGL_TRUE;
+}
+
 static bool
 puglWaylandGlSaveBinding(PuglWaylandGlBinding* const binding, const EGLenum api)
 {
@@ -68,7 +76,7 @@ puglWaylandGlRestoreBinding(const PuglWaylandGlBinding* const binding,
   const bool restored = selected &&
     eglMakeCurrent(binding->display != EGL_NO_DISPLAY ? binding->display : fallbackDisplay,
                    binding->draw, binding->read, binding->context) == EGL_TRUE;
-  const bool apiRestored = eglBindAPI(binding->api) == EGL_TRUE;
+  const bool apiRestored = puglWaylandGlRestoreApi(binding->api);
   return restored && apiRestored;
 }
 
@@ -396,10 +404,10 @@ puglWaylandGlDestroy(PuglView* const view)
         puglWaylandGlRestoreBinding(&surface->bindings[0], surface->display, surface->api);
       } else {
         eglMakeCurrent(surface->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-        eglBindAPI(api);
+        puglWaylandGlRestoreApi(api);
       }
     } else {
-      eglBindAPI(api);
+      puglWaylandGlRestoreApi(api);
     }
   }
 

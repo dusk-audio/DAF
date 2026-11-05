@@ -34,6 +34,8 @@ class UIExporter
     UI* ui;
     UI::PrivateData* uiData;
     bool quitRequested;
+    // A toplevel window starts closed, so with a host application only a close after it was shown ends the editor.
+    bool windowShown;
 
     // ----------------------------------------------------------------------------------------------------------------
 
@@ -60,7 +62,8 @@ public:
                DGL_NAMESPACE::Application* const hostApplication = nullptr)
         : ui(nullptr),
           uiData(new UI::PrivateData(appClassName, appType, appWindowSystem, hostApplication)),
-          quitRequested(false)
+          quitRequested(false),
+          windowShown(false)
     {
         uiData->sampleRate = sampleRate;
         uiData->bundlePath = bundlePath != nullptr ? strdup(bundlePath) : nullptr;
@@ -277,8 +280,13 @@ public:
 
         ui->uiIdle();
         if (uiData->ownedApp != nullptr)
+        {
             uiData->ownedApp->repaintIfNeeeded();
-        return uiData->ownedApp != nullptr ? ! uiData->app.isQuitting() : ! uiData->window->isClosed();
+            return ! uiData->app.isQuitting();
+        }
+        const bool closed = uiData->window->isClosed();
+        windowShown |= ! closed;
+        return ! (windowShown && closed);
     }
 
     void focus()
@@ -380,7 +388,10 @@ public:
     bool setWindowVisible(const bool yesNo)
     {
         if (yesNo)
+        {
             quitRequested = false;
+            windowShown = true;
+        }
         uiData->window->setVisible(yesNo);
 
         return ! quitRequested && (uiData->ownedApp != nullptr ? ! uiData->app.isQuitting()

@@ -141,6 +141,7 @@ int main()
     app.addIdleCallback(&idle);
     auto first = makeEditor(&app);
     auto second = makeEditor(&app);
+    DAF_ASSERT_EQUAL(first->plugin_idle(), true, "an editor not shown yet is open");
     first->setWindowVisible(true);
     second->setWindowVisible(true);
     DAF_ASSERT_EQUAL(std::strcmp(app.getClassName(), "static-host"), 0, "editor must preserve host class name");

@@ -406,6 +406,25 @@ static int checkOwnedSubsurface(PuglWorld* const world, PuglView* const parent)
     return 0;
 }
 
+// An EGL without OpenGL ES reports EGL_NONE as its API until one is bound, and EGL_NONE cannot be bound back.
+static int checkUnboundEglApi()
+{
+    const auto queryApi = dgl_pointer_eglQueryAPI;
+    dgl_pointer_eglQueryAPI = []() -> EGLenum { return EGL_NONE; };
+    PuglStatus status = PUGL_FAILURE;
+    WorldOwner world(puglNewWorldOn(kPuglWindowSystemWayland, PUGL_MODULE, 0), puglFreeWorld);
+    if (world)
+    {
+        ViewOwner view = makeGlView(world.get(), false);
+        if (view)
+            status = puglRealize(view.get());
+    }
+    dgl_pointer_eglQueryAPI = queryApi;
+    DAF_ASSERT_NOT_EQUAL(world.get(), nullptr, "the GL probe accepts an EGL with no API bound");
+    DAF_ASSERT_EQUAL(status, PUGL_SUCCESS, "a GL view realizes on an EGL with no API bound");
+    return 0;
+}
+
 static int checkBorrowedEgl()
 {
     HostEgl host;
@@ -609,10 +628,18 @@ static int checkSubsurfaceRendering()
 
     WorldOwner owned(puglNewWorldOn(kPuglWindowSystemWayland, PUGL_MODULE, 0), puglFreeWorld);
     DAF_ASSERT_NOT_EQUAL(owned.get(), nullptr, "an owned world has a separate connection");
-    ViewOwner rejected = makeGlView(owned.get(), false);
-    DAF_ASSERT_NOT_EQUAL(rejected.get(), nullptr, "a view can be allocated on the owned world");
-    puglSetParent(rejected.get(), reinterpret_cast<PuglNativeView>(host.nativeSurface));
-    DAF_ASSERT_EQUAL(puglRealize(rejected.get()), PUGL_UNSUPPORTED, "a parent from another connection is rejected");
+    for (const PuglNativeView foreignParent : {reinterpret_cast<PuglNativeView>(host.nativeSurface),
+                                               static_cast<PuglNativeView>(0x2a00007)})
+    {
+        ViewOwner floating = makeGlView(owned.get(), false);
+        DAF_ASSERT_NOT_EQUAL(floating.get(), nullptr, "a view can be allocated on the owned world");
+        puglSetParent(floating.get(), foreignParent);
+        DAF_ASSERT_EQUAL(puglRealize(floating.get()), PUGL_SUCCESS,
+                         "a parent from another connection or window system still realizes");
+        const auto* const native = static_cast<const pugl_wl::PuglView*>(floating.get());
+        DAF_ASSERT_EQUAL(native->impl->xdgToplevel != nullptr && native->impl->subsurface == nullptr, true,
+                         "an owned connection opens a toplevel window for a foreign parent");
+    }
     d_stdout("RuntimeBackend: borrowed subsurfaces render, resize, remap and preserve the foreign host");
     return 0;
 }
@@ -891,7 +918,8 @@ int main()
         puglFreeWorld(world);
     }
 
-    int status = expected == kWayland ? checkBorrowedEgl() : 0;
+    int status = expected == kWayland ? checkUnboundEglApi() : 0;
+    if (!status && expected == kWayland) status = checkBorrowedEgl();
     if (!status && expected == kWayland) status = checkSubsurfaceRendering();
     if (!status) status = checkFallbacks();
 

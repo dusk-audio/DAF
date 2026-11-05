@@ -214,7 +214,7 @@ static void testIndependentSeat()
     assert(!puglGetWaylandInput(world).data);
     wl::PuglWorldInternals* const impl = static_cast<wl::PuglWorld*>(world)->impl;
     assert(impl->seat && impl->pointer && impl->keyboard);
-    assert(impl->dataDeviceManager && impl->dataDevice);
+    assert(impl->dataDeviceManager && !impl->dataDevice);
     wl::puglWaylandSeatCapabilities(impl, impl->seat,
                                   WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
     DGL_NAMESPACE::puglFreeWorld(world);
@@ -227,6 +227,7 @@ static void testIndependentSeat()
         if (request.type == "wl_seat" && request.opcode == 3) ++seatReleases;
         if (request.type == "wl_pointer" && request.opcode == 1) ++pointerReleases;
         if (request.type == "wl_keyboard" && request.opcode == 0) ++keyboardReleases;
+        assert(!(request.type == "wl_data_device_manager" && request.opcode == 1));
     }
     assert(pointers == 1 && keyboards == 1);
     assert(pointerReleases == 1 && keyboardReleases == 1 && seatReleases == 1);
@@ -470,6 +471,24 @@ static void testHostFocus()
     assert(key(30, false) && button(false) && log.events.empty());
     assert(key(30, true) && key(30, false));
     assert(log.events.size() == 3 && log.events.back().second == PUGL_KEY_RELEASE);
+    const auto repeated = [&](uint32_t code) {
+        input.keyboard->key(input.data, nullptr, 200, 300, code, 2U); // WL_KEYBOARD_KEY_STATE_REPEATED, v10
+        return input.consumed(input.data);
+    };
+    log.events.clear();
+    assert(key(30, true) && repeated(30) && repeated(30) && key(30, false));
+    assert(log.events.size() == 7 && impl->heldKeys.count == 0);
+    for (size_t i = 0; i < 6; ++i)
+        assert(log.events[i].first == views[1] && log.events[i].second != PUGL_KEY_RELEASE);
+    assert(log.events[6].second == PUGL_KEY_RELEASE);
+    log.events.clear();
+    assert(!repeated(31) && log.events.empty() && impl->heldKeys.count == 0);
+    assert(key(30, true));
+    assert(wl::puglGrabFocus(views[0]) == PUGL_SUCCESS);
+    log.events.clear();
+    assert(repeated(30) && log.events.empty());
+    assert(key(30, false) && log.events.empty() && impl->heldKeys.count == 0);
+    assert(wl::puglGrabFocus(views[1]) == PUGL_SUCCESS);
     assert(input.hasKeyboardFocus(input.data) && key(30, true));
     input.releaseFocus(input.data);
     assert(!input.hasKeyboardFocus(input.data) && !impl->selectedView);
@@ -698,14 +717,35 @@ static void testForeignSurface()
         assert(wl_surface_get_user_data(surface) == foreign);
     }
 
+    DGL_NAMESPACE::PuglWorld* const otherWorld =
+        puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display);
+    assert(otherWorld);
+    wl::PuglView* const otherView = static_cast<wl::PuglView*>(DGL_NAMESPACE::puglNewView(otherWorld));
+    assert(otherView);
+    wl::puglSetMatchingBackendForCurrentBuild(otherView);
+    assert(wl::puglSetSizeHint(otherView, PUGL_DEFAULT_SIZE, 200, 100) == PUGL_SUCCESS);
+    static unsigned otherFocusEvents = 0;
+    assert(wl::puglSetEventFunc(otherView, [](DGL_NAMESPACE::PuglView*, const PuglEvent* event) {
+        if (event->type == PUGL_FOCUS_IN || event->type == PUGL_FOCUS_OUT)
+            ++otherFocusEvents;
+        return PUGL_SUCCESS;
+    }) == PUGL_SUCCESS);
+    assert(wl::puglRealize(otherView) == PUGL_SUCCESS);
+    puglWaylandKeyboardEnter(impl, nullptr, 5U, otherView->impl->wlSurface, nullptr);
+    assert(impl->keyboardFocus == nullptr && impl->activationSource == nullptr);
+    puglWaylandKeyboardLeave(impl, nullptr, 6U, otherView->impl->wlSurface);
+    assert(otherFocusEvents == 0);
+    DGL_NAMESPACE::puglFreeView(otherView);
+    DGL_NAMESPACE::puglFreeWorld(otherWorld);
+
     wl_output* const output = static_cast<wl_output*>(
         wl_registry_bind(registry, 3U, &wl_output_interface, 2));
     assert(output);
     wl_output_set_user_data(output, &foreignData);
     puglWaylandSurfaceEnter(view, view->impl->wlSurface, output);
-    assert(view->impl->bufferScale == 1);
+    assert(view->impl->bufferScale == 1 && view->impl->numEnteredOutputs == 0);
     puglWaylandSurfaceEnter(view, view->impl->wlSurface, impl->outputs[0].output);
-    assert(view->impl->bufferScale == 2);
+    assert(view->impl->bufferScale == 2 && view->impl->numEnteredOutputs == 1);
     assert(wl_output_get_user_data(output) == &foreignData);
     wl_output_destroy(output);
     DGL_NAMESPACE::puglFreeView(view);
