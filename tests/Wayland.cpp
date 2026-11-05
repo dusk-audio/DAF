@@ -470,6 +470,24 @@ static void testHostFocus()
     assert(key(30, false) && button(false) && log.events.empty());
     assert(key(30, true) && key(30, false));
     assert(log.events.size() == 3 && log.events.back().second == PUGL_KEY_RELEASE);
+    const auto repeated = [&](uint32_t code) {
+        input.keyboard->key(input.data, nullptr, 200, 300, code, 2U); // WL_KEYBOARD_KEY_STATE_REPEATED, v10
+        return input.consumed(input.data);
+    };
+    log.events.clear();
+    assert(key(30, true) && repeated(30) && repeated(30) && key(30, false));
+    assert(log.events.size() == 7 && impl->heldKeys.count == 0);
+    for (size_t i = 0; i < 6; ++i)
+        assert(log.events[i].first == views[1] && log.events[i].second != PUGL_KEY_RELEASE);
+    assert(log.events[6].second == PUGL_KEY_RELEASE);
+    log.events.clear();
+    assert(!repeated(31) && log.events.empty() && impl->heldKeys.count == 0);
+    assert(key(30, true));
+    assert(wl::puglGrabFocus(views[0]) == PUGL_SUCCESS);
+    log.events.clear();
+    assert(repeated(30) && log.events.empty());
+    assert(key(30, false) && log.events.empty() && impl->heldKeys.count == 0);
+    assert(wl::puglGrabFocus(views[1]) == PUGL_SUCCESS);
     assert(input.hasKeyboardFocus(input.data) && key(30, true));
     input.releaseFocus(input.data);
     assert(!input.hasKeyboardFocus(input.data) && !impl->selectedView);

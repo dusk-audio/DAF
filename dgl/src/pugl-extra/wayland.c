@@ -71,6 +71,9 @@
 #define PUGL_WAYLAND_BTN_SIDE 0x113U
 #define PUGL_WAYLAND_BTN_EXTRA 0x114U
 
+/// wl_keyboard v10 key state, spelled out for wayland headers that predate it
+#define PUGL_WAYLAND_KEY_STATE_REPEATED 2U
+
 /// Returned for button codes that have no Pugl button number, such events are ignored
 #define PUGL_WAYLAND_BTN_UNKNOWN UINT32_MAX
 
@@ -1807,6 +1810,39 @@ puglWaylandKeyboardLeave(void* const               data,
   puglDispatchEvent(view, &event);
 }
 
+/* Compositor-side repeat of a key already down, only sent to a wl_keyboard bound at v10 or later,
+   which a host seat may be. It goes to the view the press went to, as another press, and never
+   changes who owns the key's release. */
+static void
+puglWaylandKeyboardRepeated(PuglWorldInternals* const impl,
+                            const uint32_t            serial,
+                            const uint32_t            time,
+                            const uint32_t            key)
+{
+  PuglView* view     = impl->keyboardFocus;
+  bool      consumed = false;
+  if (impl->hostManagedInput) {
+    PuglView* owner = NULL;
+    for (size_t i = 0; i < impl->heldKeys.count; ++i) {
+      if (impl->heldKeys.data[i].code == key) {
+        owner    = impl->heldKeys.data[i].view;
+        consumed = true;
+        break;
+      }
+    }
+    if (owner != view) {
+      view = NULL;
+    }
+  }
+
+  if (view && !view->hints[PUGL_IGNORE_KEY_REPEAT]) {
+    impl->activationSource = view;
+    impl->activationSerial = serial;
+    puglWaylandDispatchKey(impl, view, key, true, time / 1e3);
+  }
+  impl->lastEventConsumed = consumed;
+}
+
 static void
 puglWaylandKeyboardKey(void* const               data,
                        struct wl_keyboard* const PUGL_UNUSED(keyboard),
@@ -1819,6 +1855,11 @@ puglWaylandKeyboardKey(void* const               data,
   PuglView* view = impl->keyboardFocus;
 
   impl->lastSerial = serial;
+  if (state == PUGL_WAYLAND_KEY_STATE_REPEATED) {
+    puglWaylandKeyboardRepeated(impl, serial, time, key);
+    return;
+  }
+
   const bool pressed = state == WL_KEYBOARD_KEY_STATE_PRESSED;
   const bool consumed = impl->hostManagedInput &&
     puglWaylandRoutePress(&impl->heldKeys, key, pressed, &view);
