@@ -259,6 +259,9 @@ public:
       setOffset methods intentionally ignore them. This explicit variant is
       for hosts that own both the parent and embedded child window.
 
+      On Wayland, offsets use parent surface coordinates, independent of the child's
+      buffer scale. The host must commit the parent after creating or moving a child.
+
       @return Whether the platform accepted the position change.
       @see isEmbed()
     */

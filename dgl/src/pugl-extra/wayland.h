@@ -249,6 +249,7 @@ struct PuglInternalsImpl {
   PuglArea size;                 ///< Current size in buffer pixels (what Pugl reports)
   PuglArea logicalSize;          ///< Current size in logical pixels (what the compositor uses)
   PuglArea requestedLogicalSize; ///< Size the compositor last asked for, zero if it does not care
+  PuglPoint parentPosition;      ///< Subsurface offset in the parent's surface coordinates
 
   double   scale;                    ///< Scale factor in effect, at least 1.0
   int32_t  bufferScale;              ///< wl_surface buffer scale, 1 when a viewport is used

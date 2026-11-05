@@ -103,9 +103,12 @@ primary selection, text-input, DnD, Vulkan, and the importer half of xdg-foreign
 Coordinates and scaling
 -----------------------
 
-Pugl talks in *buffer pixels* everywhere: configure sizes, expose regions, pointer positions. The
+Pugl uses *buffer pixels* for configure sizes, expose regions and pointer positions. The
 compositor talks in *logical pixels*. `puglWaylandLogicalToPixels()` / `puglWaylandPixelsToLogical()`
 are the only places the two meet, so the direction of a conversion is never ambiguous.
+
+Embedded offsets instead use the parent surface's coordinates. They are not divided by the
+child's scale: the host's coordinate transform need not match the child's buffer scale.
 
 The scale factor is, in order of preference:
 
@@ -173,13 +176,13 @@ Known limitations
   or a valid host-owned wl_surface on an explicitly borrowed connection. Cross-client handles are
   invalid; unrecognized parents on owned connections are rejected. The parent must outlive its children.
   Children use desynchronized wl_subsurface roles. The host must commit the parent after creating
-  a child; DAF never commits, destroys, or changes the listener or queue of a borrowed parent.
+  or moving a child; DAF never commits, destroys, or changes the listener or queue of a borrowed parent.
   A synchronized ancestor still synchronizes a desynchronized child. Embedded keyboard input needs
   host coordination: the compositor gives keyboard focus to the parent, never to a subsurface.
   Plugin formats still use their existing X11 embedding contract.
 
-* **No window positions.** puglSetWindowPosition() returns PUGL_UNSUPPORTED and configure events
-  always report 0,0. Wayland does not let a client place its own windows or learn where they are.
+* **No toplevel positions.** puglSetWindowPosition() returns PUGL_UNSUPPORTED for toplevels, whose
+  configure events report 0,0. Subsurfaces accept and report parent-relative positions.
   Root-relative pointer coordinates (xRoot/yRoot) are reported as the surface-relative ones.
 
 * **Transient parents only within one process.** puglSetTransientParent() maps to

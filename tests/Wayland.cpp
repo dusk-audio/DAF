@@ -272,6 +272,7 @@ static void testSubsurfaceLifetime()
             assert(view);
             wl::puglSetMatchingBackendForCurrentBuild(view);
             assert(wl::puglSetParent(view, reinterpret_cast<PuglNativeView>(parent)) == PUGL_SUCCESS);
+            assert(wl::puglSetPositionHint(view, PUGL_DEFAULT_POSITION, -7, 11) == PUGL_SUCCESS);
             assert(wl::puglSetSizeHint(view, PUGL_DEFAULT_SIZE, 200, 100) == PUGL_SUCCESS);
             assert(wl::puglSetEventFunc(view, [](DGL_NAMESPACE::PuglView*, const PuglEvent*) {
                 return PUGL_SUCCESS;
@@ -295,10 +296,23 @@ static void testSubsurfaceLifetime()
                 assert(view->impl->configured);
                 assert(wl::puglShow(view, PUGL_SHOW_PASSIVE) == PUGL_SUCCESS);
                 assert(DGL_NAMESPACE::puglUpdate(world, 0.0) == PUGL_SUCCESS);
+                assert(wl::puglGetPositionHint(view, PUGL_CURRENT_POSITION).x == -7);
+                assert(wl::puglGetPositionHint(view, PUGL_CURRENT_POSITION).y == 11);
+                for (const double scale : {1.0, 2.0, 1.5})
+                {
+                    view->impl->scale = scale;
+                    assert(wl::puglSetPositionHint(view, PUGL_CURRENT_POSITION, -17, 9) == PUGL_SUCCESS);
+                    assert(DGL_NAMESPACE::puglUpdate(world, 0.0) == PUGL_SUCCESS);
+                    const PuglPoint position = wl::puglGetPositionHint(view, PUGL_CURRENT_POSITION);
+                    assert(position.x == -17 && position.y == 9);
+                }
+                assert(wl::puglSetPositionHint(view, PUGL_CURRENT_POSITION, 0, 0) == PUGL_SUCCESS);
                 assert(wl::puglHide(view) == PUGL_SUCCESS);
                 assert(wl::puglShow(view, PUGL_SHOW_PASSIVE) == PUGL_SUCCESS);
                 assert(view->impl->configured);
                 assert(DGL_NAMESPACE::puglUpdate(world, 0.0) == PUGL_SUCCESS);
+                assert(wl::puglGetPositionHint(view, PUGL_CURRENT_POSITION).x == 0);
+                assert(wl::puglGetPositionHint(view, PUGL_CURRENT_POSITION).y == 0);
             }
             DGL_NAMESPACE::puglFreeView(view);
             assert(wl_surface_get_user_data(parent) == &hostData);
@@ -309,6 +323,7 @@ static void testSubsurfaceLifetime()
 
         uint32_t parentId = 0;
         unsigned created = 0, destroyed = 0, desynchronized = 0;
+        unsigned initialPositions = 0, movedPositions = 0, zeroPositions = 0;
         const auto requests = server.requests();
         for (const auto& request : requests)
         {
@@ -321,12 +336,22 @@ static void testSubsurfaceLifetime()
             }
             if (request.type == "wl_subsurface" && request.opcode == 0) ++destroyed;
             if (request.type == "wl_subsurface" && request.opcode == 5) ++desynchronized;
+            if (request.type == "wl_subsurface" && request.opcode == 1)
+            {
+                if (request.words[0] == uint32_t(-7) && request.words[1] == 11U) ++initialPositions;
+                else if (request.words[0] == uint32_t(-17) && request.words[1] == 9U) ++movedPositions;
+                else if (request.words[0] == 0U && request.words[1] == 0U) ++zeroPositions;
+                else assert(false);
+            }
             assert(!(request.type == "xdg_wm_base" && request.opcode == 2));
             assert(!(request.type == "wl_surface" && request.object == parentId &&
                      (request.opcode == 0 || request.opcode == 6)));
         }
         assert(parentId && created == (supported ? 3U : 0U));
         assert(destroyed == created && desynchronized == created);
+        assert(initialPositions == created);
+        assert(movedPositions == (supported ? 6U : 0U));
+        assert(zeroPositions == (supported ? 2U : 0U));
         wl_surface_destroy(parent);
         wl_compositor_destroy(compositor);
         wl_registry_destroy(registry);

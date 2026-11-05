@@ -9,13 +9,13 @@
 
   * Embedding requires a parent surface on the same connection. A borrowed connection accepts its
     host's surface; an owned connection accepts only another view in the same world.
-  * All coordinates Pugl deals in are *buffer pixels*.  The compositor speaks *logical pixels*.
+  * Sizes and input coordinates are *buffer pixels*. The compositor speaks *logical pixels*.
     The two differ by the view scale factor, which comes either from wp_fractional_scale_v1 (exact,
     in 120ths) or from the largest integer wl_output scale the surface overlaps.  Every conversion
     goes through puglWaylandLogicalToPixels()/puglWaylandPixelsToLogical() so the direction is never
     in doubt.
-  * There is no such thing as a window position on Wayland, so configure events always report 0,0
-    and puglSetWindowPosition() is a no-op that reports PUGL_UNSUPPORTED.
+  * Toplevel positions are unknown. Subsurface offsets use the parent's surface coordinates,
+    independently of the child's buffer scale, and take effect on the next parent commit.
 
   This file is compiled as C++, as part of the dgl/src/pugl.cpp unity build, so it avoids C-only
   constructs and casts explicitly from void*.
@@ -280,10 +280,9 @@ puglWaylandQueueConfigure(PuglView* const view)
 {
   PuglInternals* const impl = view->impl;
 
-  // Wayland never tells a client where its window is, so the position is always reported as 0,0
   PuglEvent event        = {{PUGL_CONFIGURE, 0U}};
-  event.configure.x      = 0;
-  event.configure.y      = 0;
+  event.configure.x      = impl->subsurface ? impl->parentPosition.x : 0;
+  event.configure.y      = impl->subsurface ? impl->parentPosition.y : 0;
   event.configure.width  = impl->size.width;
   event.configure.height = impl->size.height;
   event.configure.style  = puglWaylandViewStyle(view);
@@ -3471,6 +3470,11 @@ puglRealize(PuglView* const view)
       return PUGL_REALIZE_FAILED;
     }
     wl_subsurface_set_desync(impl->subsurface);
+    const PuglPoint position = view->positionHints[PUGL_DEFAULT_POSITION];
+    if (puglIsValidPosition(position.x, position.y)) {
+      impl->parentPosition = position;
+    }
+    wl_subsurface_set_position(impl->subsurface, impl->parentPosition.x, impl->parentPosition.y);
     impl->configured = true;
   } else {
     impl->xdgSurface = xdg_wm_base_get_xdg_surface(wimpl->wmBase, impl->wlSurface);
@@ -4167,13 +4171,19 @@ puglGetScaleFactor(const PuglView* const view)
 }
 
 PuglStatus
-puglSetWindowPosition(PuglView* const PUGL_UNUSED(view),
-                      const int       PUGL_UNUSED(x),
-                      const int       PUGL_UNUSED(y))
+puglSetWindowPosition(PuglView* const view, const int x, const int y)
 {
-  /* Wayland deliberately does not let a client place its own windows, and does not tell it where
-     they ended up.  Reporting this rather than silently succeeding keeps callers honest. */
-  return PUGL_UNSUPPORTED;
+  PuglInternals* const impl = view->impl;
+  if (!impl->subsurface) {
+    return PUGL_UNSUPPORTED;
+  }
+
+  impl->parentPosition.x = (PuglCoord)x;
+  impl->parentPosition.y = (PuglCoord)y;
+  wl_subsurface_set_position(impl->subsurface, x, y);
+  puglWaylandQueueConfigure(view);
+  wl_display_flush(view->world->impl->display);
+  return PUGL_SUCCESS;
 }
 
 PuglStatus
