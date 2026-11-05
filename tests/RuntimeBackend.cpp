@@ -312,6 +312,16 @@ struct HostEgl
                          pixel[2] > 180 && pixel[2] < 205, true, "the foreign host still renders");
         return 0;
     }
+
+    int checkBinding(const EGLenum api = EGL_OPENGL_ES_API)
+    {
+        DAF_ASSERT_EQUAL(eglQueryAPI(), api, "the host's selected client API is preserved");
+        DAF_ASSERT_EQUAL(eglGetCurrentDisplay(), display, "the host's current display is preserved");
+        DAF_ASSERT_EQUAL(eglGetCurrentContext(), context, "the host's current context is preserved");
+        DAF_ASSERT_EQUAL(eglGetCurrentSurface(EGL_DRAW), surface, "the host's draw surface is preserved");
+        DAF_ASSERT_EQUAL(eglGetCurrentSurface(EGL_READ), surface, "the host's read surface is preserved");
+        return 0;
+    }
 };
 
 using WorldOwner = std::unique_ptr<PuglWorld, decltype(&puglFreeWorld)>;
@@ -332,6 +342,7 @@ static int checkBorrowedEgl()
 {
     HostEgl host;
     if (host.connect() || host.initialize()) return 1;
+    DAF_ASSERT_EQUAL(eglBindAPI(EGL_OPENGL_ES_API), EGL_TRUE, "the host selects a different client API");
     WorldOwner world(puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, host.connection), puglFreeWorld);
     DAF_ASSERT_NOT_EQUAL(world.get(), nullptr, "the DAF world borrows the host connection");
     {
@@ -339,15 +350,52 @@ static int checkBorrowedEgl()
         DAF_ASSERT_NOT_EQUAL(failed.get(), nullptr, "a view exists before failed realization");
         DAF_ASSERT_NOT_EQUAL(puglRealize(failed.get()), PUGL_SUCCESS, "an impossible GL version fails");
     }
+    if (host.checkBinding()) return 1;
     if (host.drawAfterRebind()) return 1;
+    DAF_ASSERT_EQUAL(eglBindAPI(EGL_OPENGL_ES_API), EGL_TRUE, "the host restores its selected API");
     ViewOwner first = borrowedGlView(world.get(), false);
     ViewOwner second = borrowedGlView(world.get(), false);
     DAF_ASSERT_NOT_EQUAL(first.get(), nullptr, "the first DAF child exists");
     DAF_ASSERT_NOT_EQUAL(second.get(), nullptr, "the second DAF child exists");
     DAF_ASSERT_EQUAL(puglRealize(first.get()), PUGL_SUCCESS, "the first DAF child realizes");
     DAF_ASSERT_EQUAL(puglRealize(second.get()), PUGL_SUCCESS, "the second DAF child realizes");
+    if (host.checkBinding()) return 1;
     if (host.drawAfterRebind()) return 1;
+    DAF_ASSERT_EQUAL(eglBindAPI(EGL_OPENGL_ES_API), EGL_TRUE, "the host selects its API before rendering");
+    DAF_ASSERT_EQUAL(puglBackendEnter(first.get()), true, "the first child context can be entered");
+    DAF_ASSERT_EQUAL(puglBackendEnter(second.get()), true, "a sibling context can be nested");
+    DAF_ASSERT_EQUAL(puglBackendEnter(first.get()), true, "the outer child can be re-entered through a sibling");
+    DAF_ASSERT_EQUAL(puglBackendEnter(first.get()), true, "the same current child can be entered again");
+    DAF_ASSERT_EQUAL(puglBackendLeave(first.get()), true, "the same-child nested entry can be left");
+    DAF_ASSERT_EQUAL(puglBackendIsCurrent(first.get(), false), true, "the repeated child remains current");
+    DAF_ASSERT_EQUAL(puglBackendLeave(first.get()), true, "the re-entered outer child can be left");
+    DAF_ASSERT_EQUAL(puglBackendIsCurrent(second.get(), false), true, "the sibling context is restored");
+    DAF_ASSERT_EQUAL(puglBackendLeave(second.get()), true, "the nested sibling context can be left");
+    DAF_ASSERT_EQUAL(puglBackendIsCurrent(first.get(), false), true, "the outer child context is restored");
+    auto* const firstGl = static_cast<pugl_wl::PuglWaylandGlSurface*>(
+        static_cast<pugl_wl::PuglView*>(first.get())->impl->surface);
+    const EGLDisplay savedDisplay = firstGl->display;
+    firstGl->display = EGL_NO_DISPLAY;
+    const bool failedEntry = puglBackendEnter(first.get());
+    firstGl->display = savedDisplay;
+    DAF_ASSERT_EQUAL(failedEntry, false, "an invalid EGL display fails context entry");
+    DAF_ASSERT_EQUAL(puglBackendIsCurrent(first.get(), false), true, "failed entry preserves the outer context");
+    DAF_ASSERT_EQUAL(puglBackendLeave(first.get()), true, "the outer child context can be left");
+    if (host.checkBinding()) return 1;
+    DAF_ASSERT_EQUAL(puglBackendLeave(first.get()), false, "an unmatched leave is rejected");
+    if (host.checkBinding()) return 1;
+    DAF_ASSERT_EQUAL(puglBackendEnter(first.get()), true, "the first view is current during sibling creation");
+    {
+        ViewOwner temporary = borrowedGlView(world.get(), false);
+        DAF_ASSERT_NOT_EQUAL(temporary.get(), nullptr, "a temporary sibling exists");
+        DAF_ASSERT_EQUAL(puglRealize(temporary.get()), PUGL_SUCCESS, "a sibling realizes inside another context");
+        DAF_ASSERT_EQUAL(puglBackendIsCurrent(first.get(), false), true, "sibling creation preserves the current view");
+    }
+    DAF_ASSERT_EQUAL(puglBackendIsCurrent(first.get(), false), true, "sibling destruction preserves the current view");
+    DAF_ASSERT_EQUAL(puglBackendLeave(first.get()), true, "the first view can leave after sibling destruction");
+    if (host.checkBinding()) return 1;
     first.reset();
+    if (host.checkBinding()) return 1;
     DAF_ASSERT_EQUAL(puglBackendEnter(second.get()), true, "the sibling context survives");
     glClearColor(0.75f, 0.25f, 0.5f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -355,10 +403,15 @@ static int checkBorrowedEgl()
     glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
     DAF_ASSERT_EQUAL(pixel[0] > 180 && pixel[0] < 205, true, "the sibling still renders");
     DAF_ASSERT_EQUAL(puglBackendLeave(second.get()), true, "the sibling context can be left");
+    if (host.checkBinding()) return 1;
     second.reset();
+    if (host.checkBinding()) return 1;
     if (host.drawAfterRebind()) return 1;
     world.reset();
     if (host.drawAfterRebind()) return 1;
+    DAF_ASSERT_EQUAL(eglMakeCurrent(host.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT), EGL_TRUE,
+                     "the host can also leave no context current");
+    DAF_ASSERT_EQUAL(eglBindAPI(EGL_OPENGL_ES_API), EGL_TRUE, "the unbound host selects its client API");
 
     HostEgl softwareHost;
     if (softwareHost.connect()) return 1;
@@ -369,7 +422,9 @@ static int checkBorrowedEgl()
         ViewOwner view = borrowedGlView(softwareWorld.get(), fail != 0);
         DAF_ASSERT_NOT_EQUAL(view.get(), nullptr, "a DAF GL view can be allocated for a software host");
         DAF_ASSERT_EQUAL(puglRealize(view.get()) == PUGL_SUCCESS, fail == 0, "the requested GL version determines success");
+        DAF_ASSERT_EQUAL(eglGetCurrentContext(), EGL_NO_CONTEXT, "creation restores an unbound host");
         view.reset();
+        DAF_ASSERT_EQUAL(eglQueryAPI(), EGL_OPENGL_ES_API, "teardown preserves an unbound host's selected API");
         DAF_ASSERT_EQUAL(eglQueryString(softwareHost.display, EGL_VERSION), nullptr,
                          "DAF releases the EGL initialization it owns");
         DAF_ASSERT_EQUAL(eglGetError(), EGL_NOT_INITIALIZED, "the software host's EGL display is uninitialized");

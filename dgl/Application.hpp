@@ -143,6 +143,10 @@ public:
       Initialization and synchronous clipboard requests may read the socket while dispatching only
       this application's events.
 
+      A host using EGL must initialize it before creating DAF windows and keep it initialized until
+      all those windows are destroyed. DAF preserves existing EGL resources and current bindings;
+      if EGL is initially uninitialized, DAF owns its initialization until its last window is destroyed.
+
       A null display, an unavailable Wayland backend or initialization failure opens no connection;
       getWindowSystem() returns kWindowSystemAuto. There is no fallback to another backend.
     */

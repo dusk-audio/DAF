@@ -93,12 +93,15 @@
     X(eglDestroySurface) \
     X(eglGetConfigAttrib) \
     X(eglGetCurrentContext) \
+    X(eglGetCurrentDisplay) \
+    X(eglGetCurrentSurface) \
     X(eglGetDisplay) \
     X(eglGetError) \
     X(eglGetPlatformDisplay) \
     X(eglGetProcAddress) \
     X(eglInitialize) \
     X(eglMakeCurrent) \
+    X(eglQueryAPI) \
     X(eglQueryString) \
     X(eglSwapBuffers) \
     X(eglSwapInterval) \
