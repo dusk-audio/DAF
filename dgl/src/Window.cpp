@@ -255,6 +255,19 @@ bool Window::setEmbeddedOffset(const int x, const int y)
     return puglSetPositionHint(pData->view, PUGL_CURRENT_POSITION, x, y) == PUGL_SUCCESS;
 }
 
+bool Window::setEmbeddedVisible(const bool visible)
+{
+    if (!pData->isEmbed || pData->view == nullptr)
+        return false;
+    if (pData->isVisible == visible)
+        return true;
+    const PuglStatus status = visible ? puglShow(pData->view, PUGL_SHOW_PASSIVE) : puglHide(pData->view);
+    if (status != PUGL_SUCCESS)
+        return false;
+    pData->isVisible = visible;
+    return true;
+}
+
 bool Window::setEmbeddedSurfaceGeometry(const int x, const int y, const uint width, const uint height,
                                        const double userScale)
 {

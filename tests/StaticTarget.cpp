@@ -203,8 +203,27 @@ int main()
     DAF_ASSERT_EQUAL(pumpUntil(app, host, [&] {
         return embedded->getCompletedDisplayCount() > 0;
     }), true, "embedded editor must draw through the host pump");
+    const uintptr_t childHandle = embedded->getNativeWindowHandle();
+    const uint64_t childDraws = embedded->getCompletedDisplayCount();
+    DAF_ASSERT_EQUAL(embedded->setWindowEmbeddedVisible(false), true, "host can hide an embedded editor");
+    DAF_ASSERT_EQUAL(embedded->isVisible(), false, "hidden embedded editor reports its state");
+    for (int i = 0; i < 5; ++i)
+    {
+        embedded->repaint();
+        app.idle();
+        DAF_NAMESPACE::d_msleep(5);
+    }
+    DAF_ASSERT_EQUAL(embedded->getCompletedDisplayCount(), childDraws, "hidden editor must not draw");
+    DAF_ASSERT_EQUAL(embedded->setWindowEmbeddedVisible(true), true, "host can remap the embedded editor");
+    DAF_ASSERT_EQUAL(embedded->getNativeWindowHandle(), childHandle, "remapping preserves the editor and its surface");
+    DAF_ASSERT_EQUAL(pumpUntil(app, host, [&] {
+        return embedded->getCompletedDisplayCount() > childDraws;
+    }), true, "remapped editor resumes drawing");
+    DAF_ASSERT_EQUAL(second->setWindowEmbeddedVisible(false), false, "embedded visibility refuses a toplevel");
+    DAF_ASSERT_EQUAL(second->isVisible(), true, "refused operation leaves the toplevel visible");
     embedded->quit();
     DAF_ASSERT_EQUAL(embedded->plugin_idle(), false, "quit must stop the embedded editor");
+    DAF_ASSERT_EQUAL(embedded->isVisible(), false, "shared editor quit hides its child immediately");
     embedded.reset();
     second->parameterChanged(0, 0.0f);
     DAF_ASSERT_EQUAL(second->plugin_idle(), false, "window close must stop only its editor");

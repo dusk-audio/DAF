@@ -268,6 +268,13 @@ public:
     bool setEmbeddedOffset(int x, int y);
 
    /**
+      Show or hide a host-owned embedded child without destroying its resources or closing its
+      application registration. Returns false for a toplevel or failed native operation.
+      On Wayland the host must commit the parent after showing the child.
+    */
+    bool setEmbeddedVisible(bool visible);
+
+   /**
       Set a Wayland child's rectangle in integer parent-surface coordinates.
 
       Buffer dimensions follow the native scale; getScaleFactor() follows native scale

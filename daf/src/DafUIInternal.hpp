@@ -292,6 +292,8 @@ public:
         uiData->window->close();
         if (uiData->ownedApp != nullptr)
             uiData->ownedApp->quit();
+        else if (uiData->window->isEmbed())
+            uiData->window->setEmbeddedVisible(false);
     }
 
     void repaint()
@@ -344,6 +346,11 @@ public:
     bool setWindowEmbeddedOffset(const int x, const int y)
     {
         return uiData->window->setEmbeddedOffset(x, y);
+    }
+
+    bool setWindowEmbeddedVisible(const bool visible)
+    {
+        return uiData->window->setEmbeddedVisible(visible);
     }
 
     bool setWindowEmbeddedSurfaceGeometry(const int x, const int y, const uint width, const uint height,
