@@ -112,16 +112,32 @@ jobs:
         make -C tests ../build/tests/FileDrop ../build/tests/FileDropCocoa USE_WEB_VIEW=false -j5
         ./build/tests/FileDrop
         ./build/tests/FileDropCocoa
-    - name: AU wrapper, sidechain-on-mono-main and latency-notification regressions
+    - name: AU wrapper, sidechain-on-mono-main, latency-notification and reconfiguration-while-rendering regressions
       if: ${{ runner.os == 'macOS' }}
       env:
         CFLAGS: -Werror
         CXXFLAGS: -Werror
       run: |
-        make -C tests ../build/tests/AUWrapper ../build/tests/AUSidechainLayout ../build/tests/AULatency USE_WEB_VIEW=false -j5
+        make -C tests ../build/tests/AUWrapper ../build/tests/AUSidechainLayout ../build/tests/AULatency ../build/tests/AULatencyWatch ../build/tests/AUIoRender ../build/tests/AUMidiSilent ../build/tests/AUMidiOnly USE_WEB_VIEW=false -j5
         ./build/tests/AUWrapper
         ./build/tests/AUSidechainLayout
         ./build/tests/AULatency
+        ./build/tests/AULatencyWatch
+        ./build/tests/AUIoRender
+        ./build/tests/AUMidiSilent
+        ./build/tests/AUMidiOnly
+    # A latency watch that reads a disposed unit passes the tests above and is a use after free here.
+    - name: AU latency watch under AddressSanitizer
+      if: ${{ runner.os == 'macOS' }}
+      env:
+        CFLAGS: -Werror -fsanitize=address -fno-omit-frame-pointer
+        CXXFLAGS: -Werror -fsanitize=address -fno-omit-frame-pointer
+        LDFLAGS: -fsanitize=address
+      run: |
+        rm -f build/tests/AULatency build/tests/AULatency.cpp.o build/tests/AULatencyWatch build/tests/AULatencyWatch.cpp.o
+        make -C tests ../build/tests/AULatency ../build/tests/AULatencyWatch USE_WEB_VIEW=false -j5
+        ./build/tests/AULatency
+        ./build/tests/AULatencyWatch
     # gnu++98 dropped: this fork's C++ floor is C++11 (std::atomic in the CLAP wrapper)
     - name: As C++11 mode
       env:

@@ -205,7 +205,10 @@ struct Plugin::PrivateData {
 #endif
 
 #if DAF_PLUGIN_WANT_LATENCY
-    uint32_t latency;
+    // Written by setLatency() from wherever the plugin calls it (run() included) and read by wrappers on the main
+    // thread (the AU wrapper's latency watch, a host reading the latency it was told of) as well as the audio
+    // thread: relaxed atomics, as for tail below.
+    std::atomic<uint32_t> latency;
 #endif
 
 #if DAF_PLUGIN_WANT_TAIL
@@ -611,7 +614,7 @@ public:
     {
         DAF_SAFE_ASSERT_RETURN(fData != nullptr, 0);
 
-        return fData->latency;
+        return fData->latency.load(std::memory_order_relaxed);
     }
 #endif
 

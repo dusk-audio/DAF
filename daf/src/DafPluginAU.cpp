@@ -27,6 +27,8 @@
 
 #include <AudioUnit/AudioUnit.h>
 #include <AudioToolbox/AudioUnitUtilities.h>
+#include <pthread.h>
+#include <sched.h>
 
 #include "DafPluginAUBufferList.hpp"
 
@@ -35,6 +37,7 @@
 #include <vector>
 
 #if DAF_PLUGIN_WANT_LATENCY
+# include <condition_variable>
 # include <mutex>
 #endif
 
@@ -383,12 +386,16 @@ public:
           fRenderedLatency(0),
           fNotifiedLatency(0),
         #endif
+          fRenderGuard(0),
+          fNotificationQueueOwner(0),
+          fQueuedNotificationCount(0),
           fParameterCount(fPlugin.getParameterCount()),
           fLastParameterValues(nullptr),
           fBypassParameterIndex(UINT32_MAX),
           fResetParameterIndex(UINT32_MAX)
        #if DAF_PLUGIN_WANT_MIDI_INPUT
         , fMidiEventCount(0)
+        , fMidiInputResetRequested(false)
        #endif
        #if DAF_PLUGIN_WANT_MIDI_OUTPUT
         , fMidiOutputDataOffset(0)
@@ -491,7 +498,7 @@ public:
     ~PluginAU()
     {
        #if DAF_PLUGIN_WANT_LATENCY
-        unwatchLatency();
+        unwatchLatency(true);
        #endif
         delete[] fLastParameterValues;
         CFRelease(fUserPresetData.presetName);
@@ -548,7 +555,7 @@ public:
     OSStatus auUninitialize()
     {
        #if DAF_PLUGIN_WANT_LATENCY
-        unwatchLatency();
+        unwatchLatency(false);
        #endif
         fPlugin.deactivateIfNeeded();
 
@@ -1342,6 +1349,49 @@ public:
                            const void* const inData,
                            const UInt32 inDataSize)
     {
+        // The properties that reconfigure what render runs (fRenderGuard): an element's format, sample rate,
+        // connection or render callback, which may deactivate and activate the plugin and, with
+        // DAF_PLUGIN_EXTRA_IO, change its I/O (updatePluginAudioPortIO()). The host's listeners hear of the change
+        // once the reconfiguration is over (QueuedNotification), never inside it: a listener may reconfigure this
+        // unit or another, initialize one, or wait for a thread that does.
+        if (inProp == kAudioUnitProperty_StreamFormat
+            || inProp == kAudioUnitProperty_SampleRate
+            || inProp == kAudioUnitProperty_MakeConnection
+            || inProp == kAudioUnitProperty_SetRenderCallback)
+        {
+            const bool queueing = fNotificationQueueOwner.load(std::memory_order_relaxed) != currentThreadId();
+            QueuedNotification told[kMaxQueuedNotifications];
+            uint32_t toldCount = 0;
+            OSStatus status;
+            {
+                const ScopedReconfiguration reconfiguration(fRenderGuard);
+                if (queueing)
+                {
+                    fQueuedNotificationCount = 0;
+                    fNotificationQueueOwner.store(currentThreadId(), std::memory_order_relaxed);
+                }
+                status = applyProperty(inProp, inScope, inElement, inData, inDataSize);
+                if (queueing)
+                {
+                    fNotificationQueueOwner.store(0, std::memory_order_relaxed);
+                    toldCount = fQueuedNotificationCount;
+                    std::copy(fQueuedNotifications, fQueuedNotifications + toldCount, told);
+                }
+            }
+            for (uint32_t i = 0; i < toldCount; ++i)
+                notifyPropertyListeners(told[i].prop, told[i].scope, told[i].element);
+            return status;
+        }
+        return applyProperty(inProp, inScope, inElement, inData, inDataSize);
+    }
+
+private:
+    OSStatus applyProperty(const AudioUnitPropertyID inProp,
+                           const AudioUnitScope inScope,
+                           const AudioUnitElement inElement,
+                           const void* const inData,
+                           const UInt32 inDataSize)
+    {
         switch (inProp)
         {
         case kAudioUnitProperty_ClassInfo:
@@ -1917,13 +1967,14 @@ public:
         return kAudioUnitErr_InvalidProperty;
     }
 
+public:
     OSStatus auAddPropertyListener(const AudioUnitPropertyID prop,
                                    const AudioUnitPropertyListenerProc proc,
                                    void* const userData)
     {
        #if DAF_PLUGIN_WANT_LATENCY
-        // Serialised with the watch's walk over the listeners (notifyLatencyIfChanged).
-        const std::lock_guard<std::recursive_mutex> guard(latencyWatch().lock);
+        // Serialised with the latency watch's copy of the listeners (tellLatencyListeners).
+        const std::lock_guard<std::mutex> guard(latencyWatch().lock);
        #endif
         const PropertyListener pl = {
             prop, proc, userData
@@ -1935,20 +1986,15 @@ public:
 
     OSStatus auRemovePropertyListener(const AudioUnitPropertyID prop, const AudioUnitPropertyListenerProc proc)
     {
+        const auto removed = [prop, proc](const PropertyListener& pl) { return pl.prop == prop && pl.proc == proc; };
        #if DAF_PLUGIN_WANT_LATENCY
-        const std::lock_guard<std::recursive_mutex> guard(latencyWatch().lock);
+        std::unique_lock<std::mutex> guard(latencyWatch().lock);
        #endif
-        for (PropertyListeners::iterator it = fPropertyListeners.begin(); it != fPropertyListeners.end(); ++it)
-        {
-            const PropertyListener& pl(*it);
-
-            if (pl.prop == prop && pl.proc == proc)
-            {
-                fPropertyListeners.erase(it);
-                return auRemovePropertyListener(prop, proc);
-            }
-        }
-
+        fPropertyListeners.erase(std::remove_if(fPropertyListeners.begin(), fPropertyListeners.end(), removed),
+                                 fPropertyListeners.end());
+       #if DAF_PLUGIN_WANT_LATENCY
+        waitForRemovedLatencyListener(guard, removed);
+       #endif
         return noErr;
     }
 
@@ -1956,20 +2002,17 @@ public:
                                                   const AudioUnitPropertyListenerProc proc,
                                                   void* const userData)
     {
+        const auto removed = [prop, proc, userData](const PropertyListener& pl) {
+            return pl.prop == prop && pl.proc == proc && pl.userData == userData;
+        };
        #if DAF_PLUGIN_WANT_LATENCY
-        const std::lock_guard<std::recursive_mutex> guard(latencyWatch().lock);
+        std::unique_lock<std::mutex> guard(latencyWatch().lock);
        #endif
-        for (PropertyListeners::iterator it = fPropertyListeners.begin(); it != fPropertyListeners.end(); ++it)
-        {
-            const PropertyListener& pl(*it);
-
-            if (pl.prop == prop && pl.proc == proc && pl.userData == userData)
-            {
-                fPropertyListeners.erase(it);
-                return auRemovePropertyListenerWithUserData(prop, proc, userData);
-            }
-        }
-
+        fPropertyListeners.erase(std::remove_if(fPropertyListeners.begin(), fPropertyListeners.end(), removed),
+                                 fPropertyListeners.end());
+       #if DAF_PLUGIN_WANT_LATENCY
+        waitForRemovedLatencyListener(guard, removed);
+       #endif
         return noErr;
     }
 
@@ -2081,6 +2124,10 @@ public:
             DAF_SAFE_ASSERT_UINT_RETURN(elem == 0, elem, kAudioUnitErr_InvalidElement);
         }
 
+        // A reset deactivates and activates the plugin and clears render's MIDI and time state: a reconfiguration
+        // (fRenderGuard), which a host may make while the unit renders.
+        const ScopedReconfiguration reconfiguration(fRenderGuard);
+
         if (fResetParameterIndex != UINT32_MAX)
         {
             fPlugin.setParameterValue(fResetParameterIndex, 1.f);
@@ -2093,7 +2140,9 @@ public:
         }
 
        #if DAF_PLUGIN_WANT_MIDI_INPUT
-        fMidiEventCount = 0;
+        // The MIDI input queue belongs to the thread that fills it (auMIDIEvent): it empties the queue before it next
+        // touches it.
+        fMidiInputResetRequested.store(true, std::memory_order_release);
        #endif
        #if DAF_PLUGIN_WANT_MIDI_OUTPUT
         fMidiOutputDataOffset = 0;
@@ -2106,12 +2155,75 @@ public:
         return noErr;
     }
 
+    // The block render plays while a reconfiguration holds fRenderGuard: silence in every buffer the host gave, and
+    // in the unit's own for a buffer it left for the unit to provide (allocated at Initialize; a reconfiguration
+    // leaves them alone). Too many frames for those is an error whatever the render flags say. The host's render
+    // listeners hear of the block as of any other. Its MIDI events wait for the next block that runs.
+    OSStatus renderSilence(const AudioUnitRenderActionFlags actionFlags,
+                           const AudioTimeStamp* const inTimeStamp,
+                           const UInt32 inBusNumber,
+                           const UInt32 frames,
+                           AudioBufferList* const ioData)
+    {
+        if (frames > fPlugin.getBufferSize())
+            return kAudioUnitErr_TooManyFramesToProcess;
+        for (UInt32 i = 0; i < ioData->mNumberBuffers; ++i)
+        {
+            AudioBuffer& buffer(ioData->mBuffers[i]);
+            if (buffer.mData != nullptr)
+            {
+                std::memset(buffer.mData, 0, std::min<size_t>(buffer.mDataByteSize, sizeof(float) * frames));
+                continue;
+            }
+           #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS != 0
+            if (i < static_cast<UInt32>(fAudioBufferList.getNumBuffers()))
+                buffer.mData = fAudioBufferList.getChannelBuffer(i);
+           #endif
+            if (buffer.mData == nullptr)
+                return kAudio_ParamError;
+            std::memset(buffer.mData, 0, sizeof(float) * frames);
+        }
+        if (fUsingRenderListeners)
+        {
+            AudioUnitRenderActionFlags flags = actionFlags | kAudioUnitRenderAction_PreRender;
+            notifyRenderListeners(&flags, inTimeStamp, inBusNumber, frames, ioData);
+        }
+       #if DAF_PLUGIN_WANT_MIDI_INPUT
+        // Where a block that runs consumes the queue, between its render notifications: the events this block would
+        // have run open the next block that runs, in their order (dropped, a note-off would hang its note), since
+        // their frames counted from this block's start. Events sent from the post-render notification are already the
+        // next block's, and keep their frames. Render thread, as the queue is (takeMidiInputReset: a reset asked for
+        // meanwhile drops them first).
+        takeMidiInputReset();
+        for (uint32_t i = 0; i < fMidiEventCount; ++i)
+            fMidiEvents[i].frame = 0;
+       #endif
+        if (fUsingRenderListeners)
+        {
+            AudioUnitRenderActionFlags flags = actionFlags | kAudioUnitRenderAction_PostRender
+                | kAudioUnitRenderAction_OutputIsSilence;
+            notifyRenderListeners(&flags, inTimeStamp, inBusNumber, frames, ioData);
+        }
+        return noErr;
+    }
+
     OSStatus auRender(const AudioUnitRenderActionFlags actionFlags,
                       const AudioTimeStamp* const inTimeStamp,
                       const UInt32 inBusNumber,
                       const UInt32 inFramesToProcess,
                       AudioBufferList* const ioData)
     {
+        // A reconfiguration holds fRenderGuard: this block plays silence rather than run against a plugin in
+        // mid-change. Render holds it in turn while it runs, so a reconfiguration waits out the block in flight.
+        uintptr_t idle = 0;
+        if (! fRenderGuard.compare_exchange_strong(idle, currentThreadId(), std::memory_order_acquire,
+                                                   std::memory_order_relaxed))
+            return renderSilence(actionFlags, inTimeStamp, inBusNumber, inFramesToProcess, ioData);
+        struct RenderGuardRelease
+        {
+            std::atomic<uintptr_t>& guard;
+            ~RenderGuardRelease() noexcept { guard.store(0, std::memory_order_release); }
+        } const renderGuardRelease = { fRenderGuard };
        #if defined(DAF_PLUGIN_EXTRA_IO) && DAF_PLUGIN_NUM_INPUTS != 0 && DAF_PLUGIN_NUM_OUTPUTS != 0
         // Do not use a safe-assert macro here: this can persist and must not log from the audio thread.
         if (! isReportedPortIOValid(static_cast<uint16_t>(fNumInputs), static_cast<uint16_t>(fNumOutputs)))
@@ -2301,6 +2413,7 @@ public:
                          const UInt32 inData2,
                          const UInt32 inOffsetSampleFrame)
     {
+        takeMidiInputReset();
         if (fMidiEventCount >= kMaxMidiEvents)
             return noErr;
 
@@ -2359,14 +2472,29 @@ public:
 
        #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS == 0
         // handle case of plugin having no working audio, simulate audio-side processing
-        run(nullptr, nullptr, std::max(1u, inOffsetSampleFrame), nullptr);
+        runWithoutAudio(std::max(1u, inOffsetSampleFrame));
        #endif
 
         return noErr;
     }
 
+   #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS == 0
+    // A plugin without audio runs from its MIDI input, outside render, and so not inside a reconfiguration either
+    // (fRenderGuard): the events stay queued for its next run.
+    void runWithoutAudio(const uint32_t frames)
+    {
+        uintptr_t idle = 0;
+        if (! fRenderGuard.compare_exchange_strong(idle, currentThreadId(), std::memory_order_acquire,
+                                                   std::memory_order_relaxed))
+            return;
+        run(nullptr, nullptr, frames, nullptr);
+        fRenderGuard.store(0, std::memory_order_release);
+    }
+   #endif
+
     OSStatus auSysEx(const UInt8* const inData, const UInt32 inLength)
     {
+        takeMidiInputReset();
         if (fMidiEventCount >= kMaxMidiEvents)
             return noErr;
 
@@ -2387,7 +2515,7 @@ public:
 
        #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS == 0
         // handle case of plugin having no working audio, simulate audio-side processing
-        run(nullptr, nullptr, 1, nullptr);
+        runWithoutAudio(1);
        #endif
 
         return noErr;
@@ -2437,6 +2565,65 @@ private:
     uint32_t fNotifiedLatency;
    #endif
 
+    // A host may reconfigure an initialized unit while it renders: connect, disconnect or reformat an input (choosing
+    // a sidechain source during playback), change the sample rate, or reset it. The plugin is then deactivated and
+    // activated again on the host's thread, and with DAF_PLUGIN_EXTRA_IO the layout render reads changes as well.
+    // The two exclude each other through the thread that holds fRenderGuard (0: none): render try-locks it and plays
+    // silence for a block that would otherwise run against a plugin in mid-change, and a reconfiguration waits out
+    // the block in flight. The holder may re-enter: a property listener that sets a format from inside the
+    // notification of another, on the thread making the change, must not wait for itself.
+    std::atomic<uintptr_t> fRenderGuard;
+
+    static uintptr_t currentThreadId() noexcept
+    {
+        return reinterpret_cast<uintptr_t>(pthread_self());
+    }
+
+    class ScopedReconfiguration
+    {
+    public:
+        explicit ScopedReconfiguration(std::atomic<uintptr_t>& guard) noexcept
+            : fGuard(guard),
+              fNested(guard.load(std::memory_order_relaxed) == currentThreadId())
+        {
+            if (fNested)
+                return;
+            uintptr_t idle = 0;
+            while (! fGuard.compare_exchange_weak(idle, currentThreadId(), std::memory_order_acquire,
+                                                   std::memory_order_relaxed))
+            {
+                idle = 0;
+                sched_yield();
+            }
+        }
+
+        ~ScopedReconfiguration() noexcept
+        {
+            if (! fNested)
+                fGuard.store(0, std::memory_order_release);
+        }
+
+    private:
+        std::atomic<uintptr_t>& fGuard;
+        const bool fNested;
+
+        DAF_DECLARE_NON_COPYABLE(ScopedReconfiguration)
+    };
+
+    // The notifications a guarded property set makes (notifyPropertyListeners), told to the host's listeners once
+    // its reconfiguration is over (auSetProperty). Only the thread in fNotificationQueueOwner (0: none) queues, and
+    // only while it holds fRenderGuard. A set makes a handful at most.
+    struct QueuedNotification
+    {
+        AudioUnitPropertyID prop;
+        AudioUnitScope scope;
+        AudioUnitElement element;
+    };
+    static constexpr uint32_t kMaxQueuedNotifications = 16;
+    std::atomic<uintptr_t> fNotificationQueueOwner;
+    QueuedNotification fQueuedNotifications[kMaxQueuedNotifications];
+    uint32_t fQueuedNotificationCount;
+
     // Caching
     const uint32_t fParameterCount;
     float* fLastParameterValues;
@@ -2447,6 +2634,15 @@ private:
     uint32_t fMidiEventCount;
     MidiEvent fMidiEvents[kMaxMidiEvents];
     SmallStackRingBuffer fNotesRingBuffer;
+    // Set by a reset on its thread; the queue's own thread empties the queue (takeMidiInputReset).
+    std::atomic<bool> fMidiInputResetRequested;
+
+    void takeMidiInputReset() noexcept
+    {
+        if (fMidiInputResetRequested.load(std::memory_order_relaxed)
+            && fMidiInputResetRequested.exchange(false, std::memory_order_acquire))
+            fMidiEventCount = 0;
+    }
    #endif
 
    #if DAF_PLUGIN_WANT_MIDI_OUTPUT
@@ -2726,17 +2922,23 @@ private:
 
    #if DAF_PLUGIN_WANT_LATENCY
     // Every initialized unit in the process shares one timer on the main run loop: a unit joins the watch at
-    // Initialize and leaves it at Uninitialize and in its destructor. The watch's lock is held while a unit's
-    // listeners are told, so a unit uninitialized or disposed on another thread waits for that to finish; a listener
-    // that does either from inside its callback, on the main thread, re-enters the lock (recursive). The latency
-    // listeners are copied out before any is called, so nothing reads the unit once a listener has run.
+    // Initialize and leaves it at Uninitialize and in its destructor. The watch's lock guards the list of units and
+    // every unit's property listeners, and is never held while a host listener runs: a listener may wait for another
+    // thread that initializes, uninitializes or disposes a unit, or adds a listener. Each tick makes one pass over the
+    // units watched when it began. For a unit still watched whose latency moved, it copies the latency listeners out
+    // under the lock and calls them without it. A unit disposed on another thread meanwhile waits for its own
+    // listeners to return (`notifying`); on the main thread, from inside one of them, it does not wait for itself, and
+    // the watch reads nothing of it once its listeners have run.
     struct LatencyWatch
     {
-        std::recursive_mutex lock;
+        std::mutex lock;
+        std::condition_variable told;   // `notifying` was cleared
         std::vector<PluginAU*> units;
+        PluginAU* notifying;            // the unit whose latency listener the main thread is calling,
+        PropertyListener calling;       // and that listener
         CFRunLoopTimerRef timer;
 
-        LatencyWatch() : lock(), units(), timer(nullptr) {}
+        LatencyWatch() : lock(), told(), units(), notifying(nullptr), calling(), timer(nullptr) {}
     };
 
     // Never destroyed: the main run loop can fire the timer while the process tears its statics down.
@@ -2749,7 +2951,7 @@ private:
     void watchLatency()
     {
         LatencyWatch& watch(latencyWatch());
-        const std::lock_guard<std::recursive_mutex> guard(watch.lock);
+        const std::lock_guard<std::mutex> guard(watch.lock);
         if (std::find(watch.units.begin(), watch.units.end(), this) == watch.units.end())
             watch.units.push_back(this);
         if (watch.timer != nullptr)
@@ -2764,10 +2966,12 @@ private:
         CFRunLoopAddTimer(CFRunLoopGetMain(), watch.timer, kCFRunLoopCommonModes);
     }
 
-    void unwatchLatency()
+    // `disposing`: the unit is going away, so it waits for its listeners to return if the main thread is calling
+    // them, unless this is the main thread.
+    void unwatchLatency(const bool disposing)
     {
         LatencyWatch& watch(latencyWatch());
-        const std::lock_guard<std::recursive_mutex> guard(watch.lock);
+        std::unique_lock<std::mutex> guard(watch.lock);
         watch.units.erase(std::remove(watch.units.begin(), watch.units.end(), this), watch.units.end());
         if (watch.units.empty() && watch.timer != nullptr)
         {
@@ -2775,48 +2979,114 @@ private:
             CFRelease(watch.timer);
             watch.timer = nullptr;
         }
+        if (disposing && pthread_main_np() == 0)
+            watch.told.wait(guard, [&watch, this] { return watch.notifying != this; });
     }
 
-    // Main thread. A listener may uninitialize or dispose any unit, this one included, so the walk starts over
-    // after every unit whose listeners were told.
+    // Under the watch's lock: a latency listener removed off the main thread may be the one the main thread is calling
+    // right now, and the host may free what it reads once the removal returns. Wait for that call to end (on the main
+    // thread it is the listener's own call, removing itself). The watch calls no listener that is not registered.
+    template <class Removed>
+    void waitForRemovedLatencyListener(std::unique_lock<std::mutex>& guard, const Removed& removed)
+    {
+        if (pthread_main_np() != 0)
+            return;
+        LatencyWatch& watch(latencyWatch());
+        watch.told.wait(guard, [&watch, &removed, this] {
+            return watch.notifying != this || ! removed(watch.calling);
+        });
+    }
+
+    // Main thread: one pass over the units watched now, each told at most once, so a latency that moves on every
+    // block cannot hold the main run loop.
     static void latencyTimerCallback(CFRunLoopTimerRef, void*)
     {
         LatencyWatch& watch(latencyWatch());
-        const std::lock_guard<std::recursive_mutex> guard(watch.lock);
-        for (size_t i = 0; i < watch.units.size();)
-            i = watch.units[i]->notifyLatencyIfChanged() ? 0 : i + 1;
+        std::vector<PluginAU*> pass;
+        {
+            const std::lock_guard<std::mutex> guard(watch.lock);
+            pass = watch.units;
+        }
+        for (PluginAU* const unit : pass)
+            tellLatencyListeners(watch, unit);
     }
 
-    // Under the watch's lock, on the main thread: tells the latency listeners if the plugin's latency has moved
-    // since they last heard. True when any listener was called.
-    bool notifyLatencyIfChanged()
+    // Main thread: tells `unit`'s latency listeners, if it is still watched and its latency moved since they last
+    // heard. `unit` is not read unless it is still watched (it may have been disposed since the pass began).
+    static void tellLatencyListeners(LatencyWatch& watch, PluginAU* const unit)
     {
-        const uint32_t latency = fRenderedLatency.load(std::memory_order_relaxed);
-        if (latency == fNotifiedLatency)
-            return false;
-        fNotifiedLatency = latency;
         static constexpr size_t kMaxListeners = 16;
         PropertyListener listeners[kMaxListeners];
         size_t count = 0;
-        for (size_t i = 0; i < fPropertyListeners.size() && count < kMaxListeners; ++i)
-            if (fPropertyListeners[i].prop == kAudioUnitProperty_Latency)
-                listeners[count++] = fPropertyListeners[i];
-        const AudioUnit component = fComponent;
+        {
+            const std::lock_guard<std::mutex> guard(watch.lock);
+            if (std::find(watch.units.begin(), watch.units.end(), unit) == watch.units.end())
+                return;
+            const uint32_t latency = unit->fRenderedLatency.load(std::memory_order_relaxed);
+            if (latency == unit->fNotifiedLatency)
+                return;
+            unit->fNotifiedLatency = latency;
+            for (size_t i = 0; i < unit->fPropertyListeners.size() && count < kMaxListeners; ++i)
+                if (unit->fPropertyListeners[i].prop == kAudioUnitProperty_Latency)
+                    listeners[count++] = unit->fPropertyListeners[i];
+        }
         for (size_t i = 0; i < count; ++i)
-            listeners[i].proc(listeners[i].userData, component, kAudioUnitProperty_Latency, kAudioUnitScope_Global, 0);
-        return count != 0;
+        {
+            const PropertyListener& listener(listeners[i]);
+            AudioUnit component;
+            {
+                // Each call checks again, under the lock, that the unit is watched and the listener registered: an
+                // earlier listener may have disposed the unit or removed this one, and a host thread may have
+                // removed it, and then freed what it reads, since the copy was taken.
+                const std::lock_guard<std::mutex> guard(watch.lock);
+                if (std::find(watch.units.begin(), watch.units.end(), unit) == watch.units.end())
+                    return;
+                bool registered = false;
+                for (size_t j = 0; j < unit->fPropertyListeners.size() && ! registered; ++j)
+                    registered = unit->fPropertyListeners[j].prop == listener.prop
+                        && unit->fPropertyListeners[j].proc == listener.proc
+                        && unit->fPropertyListeners[j].userData == listener.userData;
+                if (! registered)
+                    continue;
+                component = unit->fComponent;
+                watch.notifying = unit;
+                watch.calling = listener;
+            }
+            listener.proc(listener.userData, component, kAudioUnitProperty_Latency, kAudioUnitScope_Global, 0);
+            {
+                const std::lock_guard<std::mutex> guard(watch.lock);
+                watch.notifying = nullptr;
+            }
+            watch.told.notify_all();
+        }
     }
    #endif
 
     void notifyPropertyListeners(const AudioUnitPropertyID prop, const AudioUnitScope scope, const AudioUnitElement elem)
     {
-        for (PropertyListeners::iterator it = fPropertyListeners.begin(); it != fPropertyListeners.end(); ++it)
+        // Inside a guarded property set, on its thread: queued, and told once its reconfiguration is over.
+        if (fNotificationQueueOwner.load(std::memory_order_relaxed) == currentThreadId())
         {
-            const PropertyListener& pl(*it);
-
-            if (pl.prop == prop)
-                pl.proc(pl.userData, fComponent, prop, scope, elem);
+            for (uint32_t i = 0; i < fQueuedNotificationCount; ++i)
+                if (fQueuedNotifications[i].prop == prop && fQueuedNotifications[i].scope == scope
+                    && fQueuedNotifications[i].element == elem)
+                    return;
+            DAF_SAFE_ASSERT_RETURN(fQueuedNotificationCount < kMaxQueuedNotifications,);
+            const QueuedNotification notification = { prop, scope, elem };
+            fQueuedNotifications[fQueuedNotificationCount++] = notification;
+            return;
         }
+
+        // The listeners to tell are copied out first: one may add or remove a listener, or dispose the unit.
+        static constexpr size_t kMaxListeners = 64;
+        PropertyListener listeners[kMaxListeners];
+        size_t count = 0;
+        for (size_t i = 0; i < fPropertyListeners.size() && count < kMaxListeners; ++i)
+            if (fPropertyListeners[i].prop == prop)
+                listeners[count++] = fPropertyListeners[i];
+        const AudioUnit component = fComponent;
+        for (size_t i = 0; i < count; ++i)
+            listeners[i].proc(listeners[i].userData, component, prop, scope, elem);
     }
 
     void notifyRenderListeners(AudioUnitRenderActionFlags* const ioActionFlags,
@@ -2838,6 +3108,7 @@ private:
     void run(const float** inputs, float** outputs, const uint32_t frames, const AudioTimeStamp* const inTimeStamp)
     {
        #if DAF_PLUGIN_WANT_MIDI_INPUT
+        takeMidiInputReset();
         if (fMidiEventCount != kMaxMidiEvents && fNotesRingBuffer.isDataAvailableForReading())
         {
             uint8_t midiData[3];

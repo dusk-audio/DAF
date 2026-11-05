@@ -127,7 +127,7 @@ const TimePosition& Plugin::getTimePosition() const noexcept
 #if DAF_PLUGIN_WANT_LATENCY
 void Plugin::setLatency(const uint32_t frames) noexcept
 {
-    pData->latency = frames;
+    pData->latency.store(frames, std::memory_order_relaxed);
 }
 #endif
 

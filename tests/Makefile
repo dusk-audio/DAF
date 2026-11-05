@@ -62,6 +62,21 @@ WRAPPER_TESTS += AUSidechainLayout
 WRAPPER_TESTS += AULatency
 ../build/tests/AULatency.cpp.o: BUILD_CXX_FLAGS += -Iau-latency -I../daf
 ../build/tests/AULatency$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
+# the AU wrapper's latency watch against what host listeners do, on the same latency plugin (see au-latency/)
+WRAPPER_TESTS += AULatencyWatch
+../build/tests/AULatencyWatch.cpp.o: BUILD_CXX_FLAGS += -Iau-latency -I../daf
+../build/tests/AULatencyWatch$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
+# MIDI against the AU wrapper's reconfigurations: a block that plays silence (see au-midi/), and a plugin without
+# audio, which runs from its MIDI input (see au-midi-only/)
+WRAPPER_TESTS += AUMidiSilent AUMidiOnly
+../build/tests/AUMidiSilent.cpp.o: BUILD_CXX_FLAGS += -Iau-midi -I../daf
+../build/tests/AUMidiSilent$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
+../build/tests/AUMidiOnly.cpp.o: BUILD_CXX_FLAGS += -Iau-midi-only -I../daf
+../build/tests/AUMidiOnly$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
+# the AU wrapper's reconfigurations against render, on the same sidechain layout (see au-sidechain/)
+WRAPPER_TESTS += AUIoRender
+../build/tests/AUIoRender.cpp.o: BUILD_CXX_FLAGS += -Iau-sidechain -I../daf
+../build/tests/AUIoRender$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
 endif
 ../build/tests/%Wrapper.cpp.o: BUILD_CXX_FLAGS += -Iplugin-wrappers -I../daf
 ifeq ($(LINUX),true)
