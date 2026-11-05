@@ -94,10 +94,12 @@
     X(eglGetConfigAttrib) \
     X(eglGetCurrentContext) \
     X(eglGetDisplay) \
+    X(eglGetError) \
     X(eglGetPlatformDisplay) \
     X(eglGetProcAddress) \
     X(eglInitialize) \
     X(eglMakeCurrent) \
+    X(eglQueryString) \
     X(eglSwapBuffers) \
     X(eglSwapInterval) \
     X(eglTerminate)

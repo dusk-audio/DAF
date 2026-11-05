@@ -163,6 +163,7 @@ struct PuglWorldInternalsImpl {
      as void* so that this header stays usable in builds with no OpenGL. */
   void*    eglDisplay;
   unsigned eglRefCount;
+  bool     eglInitializedByUs;
 
   // Keyboard
   PuglWaylandXkb       xkb;

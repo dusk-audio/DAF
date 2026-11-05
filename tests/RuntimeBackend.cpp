@@ -43,6 +43,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -220,6 +221,162 @@ static int redrawAndSignal(PuglWorld* const world, PuglView* const view, State& 
     DAF_ASSERT_EQUAL(puglSendEvent(view, &client), PUGL_SUCCESS, "an event can be sent to the window");
     DAF_ASSERT_EQUAL(pumpUntil(world, [&] { return state.gotClient; }), true, "the window receives the event");
 
+    return 0;
+}
+
+struct HostEgl
+{
+    wl_display* connection = nullptr;
+    wl_registry* registry = nullptr;
+    wl_compositor* compositor = nullptr;
+    wl_surface* nativeSurface = nullptr;
+    wl_egl_window* window = nullptr;
+    EGLDisplay display = EGL_NO_DISPLAY;
+    EGLContext context = EGL_NO_CONTEXT;
+    EGLSurface surface = EGL_NO_SURFACE;
+
+    ~HostEgl()
+    {
+        if (display != EGL_NO_DISPLAY)
+        {
+            eglBindAPI(EGL_OPENGL_API);
+            eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+            if (surface != EGL_NO_SURFACE) eglDestroySurface(display, surface);
+            if (context != EGL_NO_CONTEXT) eglDestroyContext(display, context);
+            eglTerminate(display);
+        }
+        if (window) wl_egl_window_destroy(window);
+        if (nativeSurface) wl_surface_destroy(nativeSurface);
+        if (compositor) wl_compositor_destroy(compositor);
+        if (registry) wl_registry_destroy(registry);
+        if (connection) wl_display_disconnect(connection);
+    }
+
+    int connect()
+    {
+        connection = wl_display_connect(nullptr);
+        DAF_ASSERT_NOT_EQUAL(connection, nullptr, "the foreign host connects to Wayland");
+        registry = wl_display_get_registry(connection);
+        DAF_ASSERT_NOT_EQUAL(registry, nullptr, "the foreign host has a registry");
+        static const wl_registry_listener listener = {
+            [](void* data, wl_registry* registry, uint32_t name, const char* interface, uint32_t) {
+                if (std::strcmp(interface, "wl_compositor") == 0)
+                    static_cast<HostEgl*>(data)->compositor = static_cast<wl_compositor*>(
+                        wl_registry_bind(registry, name, &wl_compositor_interface, 1));
+            },
+            [](void*, wl_registry*, uint32_t) {}
+        };
+        DAF_ASSERT_EQUAL(wl_registry_add_listener(registry, &listener, this), 0, "host registry listener attaches");
+        DAF_ASSERT_NOT_EQUAL(wl_display_roundtrip(connection), -1, "the host receives globals");
+        DAF_ASSERT_NOT_EQUAL(compositor, nullptr, "the host finds the compositor");
+        display = eglGetPlatformDisplay(EGL_PLATFORM_WAYLAND_KHR, connection, nullptr);
+        DAF_ASSERT_NOT_EQUAL(display, EGL_NO_DISPLAY, "the host gets its EGL display");
+        return 0;
+    }
+
+    int initialize()
+    {
+        DAF_ASSERT_EQUAL(eglInitialize(display, nullptr, nullptr), EGL_TRUE, "the host initializes EGL");
+        DAF_ASSERT_EQUAL(eglBindAPI(EGL_OPENGL_API), EGL_TRUE, "the host selects OpenGL");
+        const EGLint attrs[] = {EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+                               EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_NONE};
+        EGLConfig config = nullptr;
+        EGLint count = 0;
+        DAF_ASSERT_EQUAL(eglChooseConfig(display, attrs, &config, 1, &count), EGL_TRUE, "host EGL config lookup succeeds");
+        DAF_ASSERT_EQUAL(count, 1, "the host has a rendering config");
+        const EGLint contextAttrs[] = {EGL_CONTEXT_MAJOR_VERSION, 2, EGL_NONE};
+        context = eglCreateContext(display, config, EGL_NO_CONTEXT, contextAttrs);
+        DAF_ASSERT_NOT_EQUAL(context, EGL_NO_CONTEXT, "the host has its own context");
+        nativeSurface = wl_compositor_create_surface(compositor);
+        DAF_ASSERT_NOT_EQUAL(nativeSurface, nullptr, "the host has its own surface");
+        window = wl_egl_window_create(nativeSurface, 32, 32);
+        DAF_ASSERT_NOT_EQUAL(window, nullptr, "the host has its own EGL window");
+        surface = eglCreateWindowSurface(display, config, reinterpret_cast<EGLNativeWindowType>(window), nullptr);
+        DAF_ASSERT_NOT_EQUAL(surface, EGL_NO_SURFACE, "the host has its own EGL surface");
+        return drawAfterRebind();
+    }
+
+    int drawAfterRebind()
+    {
+        // A context marked for deletion can remain current, so a handle comparison is insufficient.
+        DAF_ASSERT_EQUAL(eglBindAPI(EGL_OPENGL_API), EGL_TRUE, "the host selects its API again");
+        DAF_ASSERT_EQUAL(eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT), EGL_TRUE,
+                         "the host unbinds its context");
+        DAF_ASSERT_EQUAL(eglMakeCurrent(display, surface, surface, context), EGL_TRUE,
+                         "the same host context and surface can be rebound");
+        glClearColor(0.25f, 0.5f, 0.75f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        GLubyte pixel[4] = {};
+        glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+        DAF_ASSERT_EQUAL(pixel[0] > 50 && pixel[0] < 80 && pixel[1] > 115 && pixel[1] < 140 &&
+                         pixel[2] > 180 && pixel[2] < 205, true, "the foreign host still renders");
+        return 0;
+    }
+};
+
+using WorldOwner = std::unique_ptr<PuglWorld, decltype(&puglFreeWorld)>;
+using ViewOwner = std::unique_ptr<PuglView, decltype(&puglFreeView)>;
+
+static ViewOwner borrowedGlView(PuglWorld* const world, const bool fail)
+{
+    ViewOwner view(puglNewView(world), puglFreeView);
+    if (!view) return view;
+    puglSetMatchingBackendForCurrentBuild(view.get());
+    puglSetSizeHint(view.get(), PUGL_DEFAULT_SIZE, 32, 32);
+    puglSetEventFunc(view.get(), [](PuglView*, const PuglEvent*) { return PUGL_SUCCESS; });
+    if (fail) puglSetViewHint(view.get(), PUGL_CONTEXT_VERSION_MAJOR, 99);
+    return view;
+}
+
+static int checkBorrowedEgl()
+{
+    HostEgl host;
+    if (host.connect() || host.initialize()) return 1;
+    WorldOwner world(puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, host.connection), puglFreeWorld);
+    DAF_ASSERT_NOT_EQUAL(world.get(), nullptr, "the DAF world borrows the host connection");
+    {
+        ViewOwner failed = borrowedGlView(world.get(), true);
+        DAF_ASSERT_NOT_EQUAL(failed.get(), nullptr, "a view exists before failed realization");
+        DAF_ASSERT_NOT_EQUAL(puglRealize(failed.get()), PUGL_SUCCESS, "an impossible GL version fails");
+    }
+    if (host.drawAfterRebind()) return 1;
+    ViewOwner first = borrowedGlView(world.get(), false);
+    ViewOwner second = borrowedGlView(world.get(), false);
+    DAF_ASSERT_NOT_EQUAL(first.get(), nullptr, "the first DAF child exists");
+    DAF_ASSERT_NOT_EQUAL(second.get(), nullptr, "the second DAF child exists");
+    DAF_ASSERT_EQUAL(puglRealize(first.get()), PUGL_SUCCESS, "the first DAF child realizes");
+    DAF_ASSERT_EQUAL(puglRealize(second.get()), PUGL_SUCCESS, "the second DAF child realizes");
+    if (host.drawAfterRebind()) return 1;
+    first.reset();
+    DAF_ASSERT_EQUAL(puglBackendEnter(second.get()), true, "the sibling context survives");
+    glClearColor(0.75f, 0.25f, 0.5f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    GLubyte pixel[4] = {};
+    glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+    DAF_ASSERT_EQUAL(pixel[0] > 180 && pixel[0] < 205, true, "the sibling still renders");
+    DAF_ASSERT_EQUAL(puglBackendLeave(second.get()), true, "the sibling context can be left");
+    second.reset();
+    if (host.drawAfterRebind()) return 1;
+    world.reset();
+    if (host.drawAfterRebind()) return 1;
+
+    HostEgl softwareHost;
+    if (softwareHost.connect()) return 1;
+    WorldOwner softwareWorld(puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, softwareHost.connection), puglFreeWorld);
+    DAF_ASSERT_NOT_EQUAL(softwareWorld.get(), nullptr, "a software host also permits borrowing");
+    for (unsigned fail = 0; fail < 2; ++fail)
+    {
+        ViewOwner view = borrowedGlView(softwareWorld.get(), fail != 0);
+        DAF_ASSERT_NOT_EQUAL(view.get(), nullptr, "a DAF GL view can be allocated for a software host");
+        DAF_ASSERT_EQUAL(puglRealize(view.get()) == PUGL_SUCCESS, fail == 0, "the requested GL version determines success");
+        view.reset();
+        DAF_ASSERT_EQUAL(eglQueryString(softwareHost.display, EGL_VERSION), nullptr,
+                         "DAF releases the EGL initialization it owns");
+        DAF_ASSERT_EQUAL(eglGetError(), EGL_NOT_INITIALIZED, "the software host's EGL display is uninitialized");
+    }
+    softwareWorld.reset();
+    DAF_ASSERT_NOT_EQUAL(wl_display_roundtrip(softwareHost.connection), -1, "the software host connection survives");
+    d_stdout("RuntimeBackend: borrowed EGL preserves host resources and releases DAF-owned initialization");
     return 0;
 }
 
@@ -496,7 +653,8 @@ int main()
         puglFreeWorld(world);
     }
 
-    const int status = checkFallbacks();
+    int status = expected == kWayland ? checkBorrowedEgl() : 0;
+    if (!status) status = checkFallbacks();
 
     if (moduleWorld != nullptr)
         puglFreeWorld(moduleWorld);

@@ -92,6 +92,8 @@ puglWaylandGlOpenDisplay(struct wl_display* const wlDisplay)
    There is exactly one EGLDisplay per wl_display no matter how many windows exist, so it is
    reference counted in the world rather than owned by a view: eglTerminate() destroys every context
    and surface belonging to the display, which would break sibling views.
+   An already-initialized display belongs to the host: eglInitialize() is not reference counted,
+   so only the party that first initializes it may terminate it.
 */
 static EGLDisplay
 puglWaylandGlAcquireDisplay(PuglWorldInternals* const wimpl)
@@ -106,14 +108,17 @@ puglWaylandGlAcquireDisplay(PuglWorldInternals* const wimpl)
     return EGL_NO_DISPLAY;
   }
 
-  EGLint major = 0;
-  EGLint minor = 0;
-  if (eglInitialize(display, &major, &minor) != EGL_TRUE) {
-    return EGL_NO_DISPLAY;
+  const bool initialized = eglQueryString(display, EGL_VERSION) != NULL;
+  if (!initialized) {
+    if (eglGetError() != EGL_NOT_INITIALIZED ||
+        eglInitialize(display, NULL, NULL) != EGL_TRUE) {
+      return EGL_NO_DISPLAY;
+    }
   }
 
   wimpl->eglDisplay  = display;
   wimpl->eglRefCount = 1U;
+  wimpl->eglInitializedByUs = !initialized;
   return display;
 }
 
@@ -125,8 +130,11 @@ puglWaylandGlReleaseDisplay(PuglWorldInternals* const wimpl)
   }
 
   if (--wimpl->eglRefCount == 0U) {
-    eglTerminate((EGLDisplay)wimpl->eglDisplay);
+    if (wimpl->eglInitializedByUs) {
+      eglTerminate((EGLDisplay)wimpl->eglDisplay);
+    }
     wimpl->eglDisplay = NULL;
+    wimpl->eglInitializedByUs = false;
   }
 }
 
