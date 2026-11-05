@@ -80,6 +80,7 @@ struct Window::PrivateData : IdleCallback {
     /** Whether the reported scale factor should follow the backing Pugl view.
         Cleared once the host sets the scale factor explicitly through setScaleFactor. */
     bool followsPuglScaleFactor;
+    double nativeScaleMultiplier = 1.0;
 
     /** Whether to schedule repaints on the next idle call, used for AU */
     const bool usesScheduledRepaints;

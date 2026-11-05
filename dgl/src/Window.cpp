@@ -255,6 +255,28 @@ bool Window::setEmbeddedOffset(const int x, const int y)
     return puglSetPositionHint(pData->view, PUGL_CURRENT_POSITION, x, y) == PUGL_SUCCESS;
 }
 
+bool Window::setEmbeddedSurfaceGeometry(const int x, const int y, const uint width, const uint height,
+                                       const double userScale)
+{
+   #ifdef DGL_USING_WAYLAND
+    if (!pData->isEmbed || pData->view == nullptr || width <= 1 || height <= 1
+        || !d_isFinite(userScale) || userScale <= 0.0)
+        return false;
+    if (puglWaylandSetEmbeddedGeometry(pData->view, x, y, width, height) != PUGL_SUCCESS)
+        return false;
+    pData->nativeScaleMultiplier = userScale;
+    pData->followsPuglScaleFactor = true;
+    return true;
+   #else
+    (void)x;
+    (void)y;
+    (void)width;
+    (void)height;
+    (void)userScale;
+    return false;
+   #endif
+}
+
 uint Window::getWidth() const noexcept
 {
     DAF_SAFE_ASSERT_RETURN(pData->view != nullptr, 0);

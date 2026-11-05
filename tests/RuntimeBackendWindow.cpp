@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <string>
 
 #define DAF_TEST_POINT_CPP
@@ -108,6 +109,29 @@ public:
         : Window(app, 0, 240, 180, 0.0, true),
           reshaped(false) {}
 
+    PluginWindow(DGL_NAMESPACE::Application& app, const uintptr_t parent)
+        : Window(app, parent, 240, 180, 3.0, false),
+          reshaped(false) {}
+
+    void* nativeDisplay() const
+    {
+        return DGL_NAMESPACE::puglGetNativeWorld(DGL_NAMESPACE::puglGetWorld(pData->view));
+    }
+
+    bool hasPresentedFrameForTest() const
+    {
+        return static_cast<const DGL_NAMESPACE::pugl_wl::PuglView*>(pData->view)->impl->frameCallbackWorks;
+    }
+
+    bool setNativeScaleForTest(const uint32_t scale)
+    {
+        auto* const view = static_cast<DGL_NAMESPACE::pugl_wl::PuglView*>(pData->view);
+        if (!view->impl->viewport || !view->impl->fractionalScale)
+            return false;
+        DGL_NAMESPACE::pugl_wl::puglWaylandPreferredScale(view, view->impl->fractionalScale, scale);
+        return true;
+    }
+
     bool isX11() const
     {
         return DGL_NAMESPACE::puglViewIsX11(pData->view);
@@ -157,6 +181,84 @@ protected:
 };
 
 END_NAMESPACE_DAF
+
+static int checkEmbeddedGeometry(DGL_NAMESPACE::Application& hostApp, DAF_NAMESPACE::PluginWindow& host)
+{
+    DAF_ASSERT_EQUAL(host.setEmbeddedSurfaceGeometry(0, 0, 100, 80, 1.25), false,
+                     "a toplevel never accepts embedded geometry");
+    if (host.isX11())
+    {
+        DAF_NAMESPACE::PluginWindow child(hostApp, host.getNativeWindowHandle());
+        DAF_ASSERT_EQUAL(child.setEmbeddedSurfaceGeometry(0, 0, 100, 80, 1.25), false,
+                         "an X11 child rejects Wayland geometry");
+        DAF_ASSERT_SAFE_EQUAL(child.getScaleFactor(), 3.0, "the rejected operation preserves X11 drawing scale");
+        return 0;
+    }
+
+    DGL_NAMESPACE::Application app(DGL_NAMESPACE::Application::ExternalWaylandDisplay{host.nativeDisplay()});
+    DAF_NAMESPACE::PluginWindow child(app, host.getNativeWindowHandle());
+    const uintptr_t childHandle = child.getNativeWindowHandle();
+    DAF_ASSERT_NOT_EQUAL(childHandle, uintptr_t(0), "the borrowed child realizes");
+    DAF_ASSERT_EQUAL(child.setEmbeddedSurfaceGeometry(16, 8, 125, 50, 1.25), true,
+                     "the host opts into logical sizing and native scale following");
+    wl_surface_commit(reinterpret_cast<wl_surface*>(host.getNativeWindowHandle()));
+    const auto pump = [&] {
+        child.reshaped = false;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!child.reshaped && std::chrono::steady_clock::now() < deadline)
+        {
+            hostApp.idle();
+            app.idle();
+        }
+        return child.reshaped;
+    };
+    DAF_ASSERT_EQUAL(pump(), true, "logical geometry configures the DGL child");
+    const auto frameDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!child.hasPresentedFrameForTest() && std::chrono::steady_clock::now() < frameDeadline)
+    {
+        hostApp.idle();
+        app.idle();
+    }
+    DAF_ASSERT_EQUAL(child.hasPresentedFrameForTest(), true, "initial compositor scale arrives before synthetic updates");
+    DAF_ASSERT_EQUAL(child.followsPuglScaleFactor(), true, "logical geometry replaces an explicit pixel scale");
+    DAF_ASSERT_SAFE_EQUAL(child.getScaleFactor(), child.puglScaleFactor() * 1.25,
+                         "drawing scale combines the native scale and user multiplier");
+    if (child.setNativeScaleForTest(120))
+    {
+        for (const uint32_t scale : {180u, 240u, 120u})
+        {
+            DAF_ASSERT_EQUAL(child.setNativeScaleForTest(scale), true, "a native scale event reaches the child");
+            DAF_ASSERT_EQUAL(pump(), true, "native scale configures the existing child");
+            DAF_ASSERT_SAFE_EQUAL(child.getScaleFactor(), scale / 120.0 * 1.25,
+                                 "DGL retains the user multiplier across native scale changes");
+            DAF_ASSERT_SAFE_EQUAL(child.lastScaleFactor, child.getScaleFactor(), "scale callbacks report the product");
+            DAF_ASSERT_EQUAL(child.getWidth(), uint(std::lround(125.0 * scale / 120.0)), "DGL reports buffer width");
+            DAF_ASSERT_EQUAL(child.getHeight(), uint(std::lround(50.0 * scale / 120.0)), "DGL reports buffer height");
+            DAF_ASSERT_EQUAL(child.getNativeWindowHandle(), childHandle, "native scale never recreates the window");
+        }
+    }
+    else
+    {
+        d_stdout("RuntimeBackendWindow: SKIP fractional geometry events (compositor lacks fractional scale/viewport)");
+    }
+    const uint width = child.getWidth();
+    const uint height = child.getHeight();
+    const uint changes = child.scaleFactorChanges;
+    DAF_ASSERT_EQUAL(child.setEmbeddedSurfaceGeometry(16, 8, 125, 50, 1.5), true,
+                     "the drawing multiplier can change without changing geometry");
+    DAF_ASSERT_EQUAL(pump(), true, "a multiplier-only change reaches the configure path");
+    DAF_ASSERT_SAFE_EQUAL(child.getScaleFactor(), child.puglScaleFactor() * 1.5, "the multiplier-only change takes effect");
+    DAF_ASSERT_EQUAL(child.scaleFactorChanges, changes + 1, "a multiplier-only change notifies once");
+    DAF_ASSERT_EQUAL(child.getWidth(), width, "the drawing multiplier never changes buffer width");
+    DAF_ASSERT_EQUAL(child.getHeight(), height, "the drawing multiplier never changes buffer height");
+    for (const double scale : {0.0, -1.0, std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::quiet_NaN()})
+        DAF_ASSERT_EQUAL(child.setEmbeddedSurfaceGeometry(16, 8, 125, 50, scale), false, "invalid scale is rejected");
+    DAF_ASSERT_EQUAL(child.setEmbeddedSurfaceGeometry(16, 8, 0, 50, 2.0), false, "invalid geometry rejects its multiplier");
+    DAF_ASSERT_SAFE_EQUAL(child.getScaleFactor(), child.puglScaleFactor() * 1.5, "rejected geometry preserves drawing scale");
+    DAF_ASSERT_EQUAL(child.getNativeWindowHandle(), childHandle, "all geometry changes preserve native identity");
+    return 0;
+}
 
 #ifdef HAVE_DBUS
 // --------------------------------------------------------------------------------------------------------------------
@@ -536,6 +638,8 @@ int main()
         }
     }
     DAF_ASSERT_SAFE_EQUAL(win.getScaleFactor(), win.puglScaleFactor(), "the window has pugl's scale factor");
+
+    if (checkEmbeddedGeometry(app, win)) return 1;
 
     // a portal is handed the window in its own backend's form, never an X11 id for a Wayland window
     const char* const parentHandle = win.getPortalParentHandle();

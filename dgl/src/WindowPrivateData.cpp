@@ -156,6 +156,7 @@ Window::PrivateData::PrivateData(Application& a, Window* const s, PrivateData* c
       isVisible(false),
       isEmbed(false),
       followsPuglScaleFactor(ppData->followsPuglScaleFactor),
+      nativeScaleMultiplier(ppData->nativeScaleMultiplier),
       usesScheduledRepaints(false),
       usesSizeRequest(false),
       grabsFocusOnClick(false),
@@ -849,7 +850,7 @@ void Window::PrivateData::onPuglConfigure(const uint width, const uint height)
    #ifdef DGL_USING_WAYLAND
     if (DGL_VIEW_IS_WAYLAND(view) && followsPuglScaleFactor)
     {
-        const double nextScaleFactor = DGL_NAMESPACE::getScaleFactor(view);
+        const double nextScaleFactor = DGL_NAMESPACE::getScaleFactor(view) * nativeScaleMultiplier;
 
         if (d_isNotEqual(scaleFactor, nextScaleFactor))
         {

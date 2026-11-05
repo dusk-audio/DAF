@@ -268,6 +268,19 @@ public:
     bool setEmbeddedOffset(int x, int y);
 
    /**
+      Set a Wayland child's rectangle in integer parent-surface coordinates.
+
+      Buffer dimensions follow the native scale; getScaleFactor() follows native scale
+      multiplied by userScale. Fixed pixel size hints do not constrain this rectangle.
+      Changes arrive through the next configure event without recreating the window.
+      The host must commit the parent after creating or moving a child.
+      Calling setSize() returns to pixel sizing; explicitly setting the scale stops native following.
+
+      Returns false for other backends, non-embedded windows, or invalid geometry/scale.
+    */
+    bool setEmbeddedSurfaceGeometry(int x, int y, uint width, uint height, double userScale);
+
+   /**
       Get width.
     */
     uint getWidth() const noexcept;
