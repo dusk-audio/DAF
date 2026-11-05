@@ -553,7 +553,7 @@ function(daf__build_jack NAME HAS_UI FORCE_NATIVE_AUDIO_FALLBACK SKIP_NATIVE_AUD
       # a library pkg-config now resolves differently.
       unset(DAF_SDL2_LIBRARY_FILE CACHE)
       find_library(DAF_SDL2_LIBRARY_FILE NAMES SDL2
-        HINTS ${SDL2_STATIC_LIBRARY_DIRS} ${SDL2_LIBRARY_DIRS}
+        HINTS ${SDL2_STATIC_LIBRARY_DIRS} ${SDL2_LIBRARY_DIRS} ${SDL2_LIBDIR}
         NO_DEFAULT_PATH)
       if(NOT DAF_SDL2_LIBRARY_FILE)
         message(STATUS "SDL2 reported by pkg-config but its library was not found; building the standalone without SDL2")
