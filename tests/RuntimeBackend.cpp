@@ -229,6 +229,10 @@ struct HostEgl
     wl_display* connection = nullptr;
     wl_registry* registry = nullptr;
     wl_compositor* compositor = nullptr;
+    xdg_wm_base* shell = nullptr;
+    xdg_surface* shellSurface = nullptr;
+    xdg_toplevel* toplevel = nullptr;
+    bool configured = false;
     wl_surface* nativeSurface = nullptr;
     wl_egl_window* window = nullptr;
     EGLDisplay display = EGL_NO_DISPLAY;
@@ -246,7 +250,10 @@ struct HostEgl
             eglTerminate(display);
         }
         if (window) wl_egl_window_destroy(window);
+        if (toplevel) xdg_toplevel_destroy(toplevel);
+        if (shellSurface) xdg_surface_destroy(shellSurface);
         if (nativeSurface) wl_surface_destroy(nativeSurface);
+        if (shell) xdg_wm_base_destroy(shell);
         if (compositor) wl_compositor_destroy(compositor);
         if (registry) wl_registry_destroy(registry);
         if (connection) wl_display_disconnect(connection);
@@ -263,6 +270,15 @@ struct HostEgl
                 if (std::strcmp(interface, "wl_compositor") == 0)
                     static_cast<HostEgl*>(data)->compositor = static_cast<wl_compositor*>(
                         wl_registry_bind(registry, name, &wl_compositor_interface, 1));
+                else if (std::strcmp(interface, "xdg_wm_base") == 0)
+                {
+                    auto* const host = static_cast<HostEgl*>(data);
+                    host->shell = static_cast<xdg_wm_base*>(wl_registry_bind(registry, name, &xdg_wm_base_interface, 1));
+                    static const xdg_wm_base_listener shellListener = {
+                        [](void*, xdg_wm_base* shell, uint32_t serial) { xdg_wm_base_pong(shell, serial); }
+                    };
+                    xdg_wm_base_add_listener(host->shell, &shellListener, nullptr);
+                }
             },
             [](void*, wl_registry*, uint32_t) {}
         };
@@ -322,12 +338,45 @@ struct HostEgl
         DAF_ASSERT_EQUAL(eglGetCurrentSurface(EGL_READ), surface, "the host's read surface is preserved");
         return 0;
     }
+
+    int map()
+    {
+        DAF_ASSERT_NOT_EQUAL(shell, nullptr, "the host has xdg-shell support");
+        shellSurface = xdg_wm_base_get_xdg_surface(shell, nativeSurface);
+        DAF_ASSERT_NOT_EQUAL(shellSurface, nullptr, "the host gets a shell surface");
+        static const xdg_surface_listener surfaceListener = {
+            [](void* data, xdg_surface* surface, uint32_t serial) {
+                xdg_surface_ack_configure(surface, serial);
+                static_cast<HostEgl*>(data)->configured = true;
+            }
+        };
+        DAF_ASSERT_EQUAL(xdg_surface_add_listener(shellSurface, &surfaceListener, this), 0, "host configure listener attaches");
+        toplevel = xdg_surface_get_toplevel(shellSurface);
+        DAF_ASSERT_NOT_EQUAL(toplevel, nullptr, "the host gets a toplevel");
+        static const xdg_toplevel_listener toplevelListener = {
+            [](void*, xdg_toplevel*, int32_t, int32_t, wl_array*) {}, [](void*, xdg_toplevel*) {}, nullptr, nullptr
+        };
+        DAF_ASSERT_EQUAL(xdg_toplevel_add_listener(toplevel, &toplevelListener, nullptr), 0, "host toplevel listener attaches");
+        xdg_toplevel_set_title(toplevel, "DAF foreign host");
+        wl_surface_commit(nativeSurface);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!configured)
+        {
+            DAF_ASSERT_EQUAL(std::chrono::steady_clock::now() < deadline, true, "the host is configured in time");
+            DAF_ASSERT_NOT_EQUAL(wl_display_roundtrip(connection), -1, "the host reads its configure");
+        }
+        wl_egl_window_resize(window, 256, 192, 0, 0);
+        if (drawAfterRebind()) return 1;
+        DAF_ASSERT_EQUAL(eglSwapBuffers(display, surface), EGL_TRUE, "the host maps with an attached buffer");
+        DAF_ASSERT_NOT_EQUAL(wl_display_roundtrip(connection), -1, "the compositor receives the host buffer");
+        return 0;
+    }
 };
 
 using WorldOwner = std::unique_ptr<PuglWorld, decltype(&puglFreeWorld)>;
 using ViewOwner = std::unique_ptr<PuglView, decltype(&puglFreeView)>;
 
-static ViewOwner borrowedGlView(PuglWorld* const world, const bool fail)
+static ViewOwner makeGlView(PuglWorld* const world, const bool fail)
 {
     ViewOwner view(puglNewView(world), puglFreeView);
     if (!view) return view;
@@ -336,6 +385,25 @@ static ViewOwner borrowedGlView(PuglWorld* const world, const bool fail)
     puglSetEventFunc(view.get(), [](PuglView*, const PuglEvent*) { return PUGL_SUCCESS; });
     if (fail) puglSetViewHint(view.get(), PUGL_CONTEXT_VERSION_MAJOR, 99);
     return view;
+}
+
+static int checkOwnedSubsurface(PuglWorld* const world, PuglView* const parent)
+{
+    State state;
+    ViewOwner child = makeGlView(world, false);
+    DAF_ASSERT_NOT_EQUAL(child.get(), nullptr, "a child can be allocated in an owned world");
+    puglSetHandle(child.get(), &state);
+    puglSetEventFunc(child.get(), onEvent);
+    DAF_ASSERT_EQUAL(puglSetParent(child.get(), puglGetNativeView(parent)), PUGL_SUCCESS,
+                     "another DAF view can be the parent");
+    DAF_ASSERT_EQUAL(puglRealize(child.get()), PUGL_SUCCESS, "the owned-world child realizes");
+    DAF_ASSERT_EQUAL(puglShow(child.get(), PUGL_SHOW_PASSIVE), PUGL_SUCCESS, "the owned-world child shows");
+    DAF_ASSERT_EQUAL(puglObscureView(parent), PUGL_SUCCESS, "the parent renderer commits the child relationship");
+    const auto* const native = static_cast<const pugl_wl::PuglView*>(child.get());
+    DAF_ASSERT_EQUAL(pumpUntil(world, [&] { return state.exposed && native->impl->frameCallbackWorks; }), true,
+                     "the child of a DAF-owned parent is presented");
+    DAF_ASSERT_EQUAL(state.contextCurrent && state.drewColour, true, "the owned-world child draws its pixels");
+    return 0;
 }
 
 static int checkBorrowedEgl()
@@ -351,15 +419,15 @@ static int checkBorrowedEgl()
     WorldOwner world(puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, host.connection), puglFreeWorld);
     DAF_ASSERT_NOT_EQUAL(world.get(), nullptr, "the DAF world borrows the host connection");
     {
-        ViewOwner failed = borrowedGlView(world.get(), true);
+        ViewOwner failed = makeGlView(world.get(), true);
         DAF_ASSERT_NOT_EQUAL(failed.get(), nullptr, "a view exists before failed realization");
         DAF_ASSERT_NOT_EQUAL(puglRealize(failed.get()), PUGL_SUCCESS, "an impossible GL version fails");
     }
     if (host.checkBinding()) return 1;
     if (host.drawAfterRebind()) return 1;
     DAF_ASSERT_EQUAL(eglBindAPI(EGL_OPENGL_ES_API), EGL_TRUE, "the host restores its selected API");
-    ViewOwner first = borrowedGlView(world.get(), false);
-    ViewOwner second = borrowedGlView(world.get(), false);
+    ViewOwner first = makeGlView(world.get(), false);
+    ViewOwner second = makeGlView(world.get(), false);
     DAF_ASSERT_NOT_EQUAL(first.get(), nullptr, "the first DAF child exists");
     DAF_ASSERT_NOT_EQUAL(second.get(), nullptr, "the second DAF child exists");
     DAF_ASSERT_EQUAL(puglRealize(first.get()), PUGL_SUCCESS, "the first DAF child realizes");
@@ -391,7 +459,7 @@ static int checkBorrowedEgl()
     if (host.checkBinding()) return 1;
     DAF_ASSERT_EQUAL(puglBackendEnter(first.get()), true, "the first view is current during sibling creation");
     {
-        ViewOwner temporary = borrowedGlView(world.get(), false);
+        ViewOwner temporary = makeGlView(world.get(), false);
         DAF_ASSERT_NOT_EQUAL(temporary.get(), nullptr, "a temporary sibling exists");
         DAF_ASSERT_EQUAL(puglRealize(temporary.get()), PUGL_SUCCESS, "a sibling realizes inside another context");
         DAF_ASSERT_EQUAL(puglBackendIsCurrent(first.get(), false), true, "sibling creation preserves the current view");
@@ -424,7 +492,7 @@ static int checkBorrowedEgl()
     DAF_ASSERT_NOT_EQUAL(softwareWorld.get(), nullptr, "a software host also permits borrowing");
     for (unsigned fail = 0; fail < 2; ++fail)
     {
-        ViewOwner view = borrowedGlView(softwareWorld.get(), fail != 0);
+        ViewOwner view = makeGlView(softwareWorld.get(), fail != 0);
         DAF_ASSERT_NOT_EQUAL(view.get(), nullptr, "a DAF GL view can be allocated for a software host");
         DAF_ASSERT_EQUAL(puglRealize(view.get()) == PUGL_SUCCESS, fail == 0, "the requested GL version determines success");
         DAF_ASSERT_EQUAL(eglGetCurrentContext(), EGL_NO_CONTEXT, "creation restores an unbound host");
@@ -437,6 +505,77 @@ static int checkBorrowedEgl()
     softwareWorld.reset();
     DAF_ASSERT_NOT_EQUAL(wl_display_roundtrip(softwareHost.connection), -1, "the software host connection survives");
     d_stdout("RuntimeBackend: borrowed EGL preserves host resources and releases DAF-owned initialization");
+    return 0;
+}
+
+static int checkSubsurfaceRendering()
+{
+    HostEgl host;
+    if (host.connect() || host.initialize() || host.map()) return 1;
+    WorldOwner world(puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, host.connection), puglFreeWorld);
+    DAF_ASSERT_NOT_EQUAL(world.get(), nullptr, "the embedded renderer borrows the host display");
+    State states[2];
+    ViewOwner views[] = {makeGlView(world.get(), false), makeGlView(world.get(), false)};
+    const auto presented = [&](const unsigned index) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        const auto* const view = static_cast<const pugl_wl::PuglView*>(views[index].get());
+        while (!states[index].exposed || !view->impl->frameCallbackWorks)
+        {
+            if (std::chrono::steady_clock::now() >= deadline || wl_display_roundtrip(host.connection) < 0)
+                return false;
+            if (puglUpdate(world.get(), 0.0) != PUGL_SUCCESS) return false;
+        }
+        return states[index].contextCurrent && states[index].drewColour;
+    };
+    for (unsigned i = 0; i < 2; ++i)
+    {
+        DAF_ASSERT_NOT_EQUAL(views[i].get(), nullptr, "an embedded view is allocated");
+        puglSetHandle(views[i].get(), &states[i]);
+        puglSetEventFunc(views[i].get(), onEvent);
+        DAF_ASSERT_EQUAL(puglSetParent(views[i].get(), reinterpret_cast<PuglNativeView>(host.nativeSurface)), PUGL_SUCCESS,
+                         "the child uses the foreign parent surface");
+        puglSetSizeHint(views[i].get(), PUGL_DEFAULT_SIZE, 64, 48);
+        DAF_ASSERT_EQUAL(puglRealize(views[i].get()), PUGL_SUCCESS, "the embedded view realizes");
+        DAF_ASSERT_EQUAL(puglSetPositionHint(views[i].get(), PUGL_CURRENT_POSITION, 16 + int(i) * 100, 24), PUGL_SUCCESS,
+                         "the embedded view is positioned in its parent");
+        DAF_ASSERT_EQUAL(puglShow(views[i].get(), PUGL_SHOW_PASSIVE), PUGL_SUCCESS, "the embedded view shows");
+        wl_surface_commit(host.nativeSurface);
+        DAF_ASSERT_EQUAL(presented(i), true, "the compositor presents the embedded child's pixels");
+        if (const char* const scale = std::getenv("DAF_TEST_WAYLAND_SCALE"))
+            DAF_ASSERT_SAFE_EQUAL(puglGetScaleFactor(views[i].get()), std::atof(scale),
+                                  "the embedded child follows the compositor's scale");
+        if (host.checkBinding(EGL_OPENGL_API)) return 1;
+    }
+    auto* const first = static_cast<pugl_wl::PuglView*>(views[0].get());
+    states[0].exposed = false;
+    first->impl->frameCallbackWorks = false;
+    DAF_ASSERT_EQUAL(puglSetSizeHint(views[0].get(), PUGL_CURRENT_SIZE, 96, 60), PUGL_SUCCESS, "the child resizes");
+    DAF_ASSERT_EQUAL(presented(0), true, "the resized child presents another frame");
+    DAF_ASSERT_EQUAL(states[0].configuredWidth, 96u, "the resized child reports its pixel width");
+    DAF_ASSERT_EQUAL(states[0].configuredHeight, 60u, "the resized child reports its pixel height");
+    DAF_ASSERT_EQUAL(puglHide(views[0].get()), PUGL_SUCCESS, "the child hides");
+    states[0].exposed = false;
+    first->impl->frameCallbackWorks = false;
+    DAF_ASSERT_EQUAL(puglShow(views[0].get(), PUGL_SHOW_PASSIVE), PUGL_SUCCESS, "the child remaps without xdg negotiation");
+    DAF_ASSERT_EQUAL(presented(0), true, "the remapped child presents a new frame");
+    views[0].reset();
+    states[1].exposed = false;
+    static_cast<pugl_wl::PuglView*>(views[1].get())->impl->frameCallbackWorks = false;
+    DAF_ASSERT_EQUAL(puglObscureView(views[1].get()), PUGL_SUCCESS, "the surviving sibling can redraw");
+    DAF_ASSERT_EQUAL(presented(1), true, "the sibling still presents after another child is destroyed");
+    views[1].reset();
+    world.reset();
+    if (host.drawAfterRebind()) return 1;
+    DAF_ASSERT_EQUAL(eglSwapBuffers(host.display, host.surface), EGL_TRUE, "the host presents after all children are gone");
+    DAF_ASSERT_NOT_EQUAL(wl_display_roundtrip(host.connection), -1, "the host remains connected after child teardown");
+
+    WorldOwner owned(puglNewWorldOn(kPuglWindowSystemWayland, PUGL_MODULE, 0), puglFreeWorld);
+    DAF_ASSERT_NOT_EQUAL(owned.get(), nullptr, "an owned world has a separate connection");
+    ViewOwner rejected = makeGlView(owned.get(), false);
+    DAF_ASSERT_NOT_EQUAL(rejected.get(), nullptr, "a view can be allocated on the owned world");
+    puglSetParent(rejected.get(), reinterpret_cast<PuglNativeView>(host.nativeSurface));
+    DAF_ASSERT_EQUAL(puglRealize(rejected.get()), PUGL_UNSUPPORTED, "a parent from another connection is rejected");
+    d_stdout("RuntimeBackend: borrowed subsurfaces render, resize, remap and preserve the foreign host");
     return 0;
 }
 
@@ -696,7 +835,7 @@ int main()
             PuglView* moduleView = nullptr;
             if (openWindow(moduleWorld, moduleExpected, moduleState, "DAF runtime backend test, module", moduleView) != 0)
                 return 1;
-            if (resize(moduleWorld, moduleView, moduleState, 260, 190) != 0)
+            if (resize(moduleWorld, moduleView, moduleState, 264, 192) != 0)
                 return 1;
             if (redrawAndSignal(moduleWorld, moduleView, moduleState) != 0 || redrawAndSignal(world, view, state) != 0)
                 return 1;
@@ -708,12 +847,14 @@ int main()
                      backendName(moduleExpected));
         }
 
+        if (expected == kWayland && checkOwnedSubsurface(world, view)) return 1;
         puglHide(view);
         puglFreeView(view);
         puglFreeWorld(world);
     }
 
     int status = expected == kWayland ? checkBorrowedEgl() : 0;
+    if (!status && expected == kWayland) status = checkSubsurfaceRendering();
     if (!status) status = checkFallbacks();
 
     if (moduleWorld != nullptr)
