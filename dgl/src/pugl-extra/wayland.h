@@ -137,6 +137,7 @@ struct PuglWorldInternalsImpl {
   bool                  ownsDisplay;
   struct wl_registry*   registry;
   struct wl_compositor* compositor;
+  struct wl_subcompositor* subcompositor;
   struct wl_shm*        shm;
   struct wl_seat*       seat;
   struct wl_pointer*    pointer;
@@ -220,8 +221,9 @@ struct PuglWorldInternalsImpl {
 };
 
 struct PuglInternalsImpl {
-  // Surface and its xdg-shell role
+  // Surface and its mutually exclusive shell or subsurface role
   struct wl_surface*                  wlSurface;
+  struct wl_subsurface*               subsurface;
   struct xdg_surface*                 xdgSurface;
   struct xdg_toplevel*                xdgToplevel;
   struct zxdg_toplevel_decoration_v1* decoration;

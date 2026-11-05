@@ -244,6 +244,97 @@ static void testForeignSurface()
     wl_display_disconnect(display);
 }
 
+static void testSubsurfaceLifetime()
+{
+    for (unsigned supported = 0; supported < 2; ++supported)
+    {
+        ConnectionServer server(true, supported != 0);
+        wl_display* const display = server.connect();
+        wl_registry* const registry = wl_display_get_registry(display);
+        wl_compositor* compositor = nullptr;
+        const wl_registry_listener listener = {hostGlobal, hostGlobalRemove};
+        assert(wl_registry_add_listener(registry, &listener, &compositor) == 0);
+        assert(wl_display_roundtrip(display) >= 0);
+        assert(compositor);
+        wl_surface* const parent = wl_compositor_create_surface(compositor);
+        assert(parent);
+        char hostData = 0;
+        const char* const hostTag[] = {"host surface"};
+        wl_surface_set_user_data(parent, &hostData);
+        wl_proxy_set_tag(reinterpret_cast<wl_proxy*>(parent), hostTag);
+
+        DGL_NAMESPACE::PuglWorld* const world =
+            puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display);
+        assert(world);
+        for (unsigned cycle = 0; cycle < 2; ++cycle)
+        {
+            auto* const view = static_cast<wl::PuglView*>(DGL_NAMESPACE::puglNewView(world));
+            assert(view);
+            wl::puglSetMatchingBackendForCurrentBuild(view);
+            assert(wl::puglSetParent(view, reinterpret_cast<PuglNativeView>(parent)) == PUGL_SUCCESS);
+            assert(wl::puglSetSizeHint(view, PUGL_DEFAULT_SIZE, 200, 100) == PUGL_SUCCESS);
+            assert(wl::puglSetEventFunc(view, [](DGL_NAMESPACE::PuglView*, const PuglEvent*) {
+                return PUGL_SUCCESS;
+            }) == PUGL_SUCCESS);
+            if (supported && cycle == 0)
+            {
+                const wl::PuglBackend* const backend = view->backend;
+                wl::PuglBackend failing = *backend;
+                failing.create = [](wl::PuglView*) { return PUGL_CREATE_CONTEXT_FAILED; };
+                view->backend = &failing;
+                assert(wl::puglRealize(view) == PUGL_CREATE_CONTEXT_FAILED);
+                assert(!view->impl->wlSurface && !view->impl->subsurface);
+                view->backend = backend;
+            }
+            const PuglStatus status = wl::puglRealize(view);
+            assert(status == (supported ? PUGL_SUCCESS : PUGL_UNSUPPORTED));
+            if (supported)
+            {
+                assert(view->impl->wlSurface && view->impl->wlSurface != parent);
+                assert(!view->impl->xdgSurface && !view->impl->xdgToplevel);
+                assert(view->impl->configured);
+                assert(wl::puglShow(view, PUGL_SHOW_PASSIVE) == PUGL_SUCCESS);
+                assert(DGL_NAMESPACE::puglUpdate(world, 0.0) == PUGL_SUCCESS);
+                assert(wl::puglHide(view) == PUGL_SUCCESS);
+                assert(wl::puglShow(view, PUGL_SHOW_PASSIVE) == PUGL_SUCCESS);
+                assert(view->impl->configured);
+                assert(DGL_NAMESPACE::puglUpdate(world, 0.0) == PUGL_SUCCESS);
+            }
+            DGL_NAMESPACE::puglFreeView(view);
+            assert(wl_surface_get_user_data(parent) == &hostData);
+            assert(wl_proxy_get_tag(reinterpret_cast<wl_proxy*>(parent)) == hostTag);
+        }
+        DGL_NAMESPACE::puglFreeWorld(world);
+        assert(wl_display_roundtrip(display) >= 0);
+
+        uint32_t parentId = 0;
+        unsigned created = 0, destroyed = 0, desynchronized = 0;
+        const auto requests = server.requests();
+        for (const auto& request : requests)
+        {
+            if (request.type == "wl_compositor" && request.opcode == 0 && !parentId)
+                parentId = request.words[0];
+            if (request.type == "wl_subcompositor" && request.opcode == 1)
+            {
+                ++created;
+                assert(request.words[1] != parentId && request.words[2] == parentId);
+            }
+            if (request.type == "wl_subsurface" && request.opcode == 0) ++destroyed;
+            if (request.type == "wl_subsurface" && request.opcode == 5) ++desynchronized;
+            assert(!(request.type == "xdg_wm_base" && request.opcode == 2));
+            assert(!(request.type == "wl_surface" && request.object == parentId &&
+                     (request.opcode == 0 || request.opcode == 6)));
+        }
+        assert(parentId && created == (supported ? 3U : 0U));
+        assert(destroyed == created && desynchronized == created);
+        wl_surface_destroy(parent);
+        wl_compositor_destroy(compositor);
+        wl_registry_destroy(registry);
+        assert(wl_display_roundtrip(display) >= 0);
+        wl_display_disconnect(display);
+    }
+}
+
 } // namespace
 
 int main()
@@ -379,6 +470,7 @@ int main()
     testBorrowedConnection();
     testConnectionOwnership();
     testForeignSurface();
+    testSubsurfaceLifetime();
     alarm(0);
 
     return 0;

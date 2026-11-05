@@ -7,10 +7,8 @@
 
   Scope, and why it is what it is:
 
-  * Top level (floating) windows only.  Wayland has no cross-client window embedding, so
-    puglSetParent() cannot be honoured; a "parent" that happens to be another view of this same
-    process is turned into an xdg_toplevel transient parent instead, and anything else is ignored
-    with a debug message.  See README.wayland.
+  * Embedding requires a parent surface on the same connection. A borrowed connection accepts its
+    host's surface; an owned connection accepts only another view in the same world.
   * All coordinates Pugl deals in are *buffer pixels*.  The compositor speaks *logical pixels*.
     The two differ by the view scale factor, which comes either from wp_fractional_scale_v1 (exact,
     in 120ths) or from the largest integer wl_output scale the surface overlaps.  Every conversion
@@ -2767,7 +2765,7 @@ puglWaylandActivate(PuglView* const view, const char* const token)
   if (!token || !*token) {
     return PUGL_BAD_PARAMETER;
   }
-  if (!wimpl->activation) {
+  if (!wimpl->activation || impl->subsurface) {
     return PUGL_UNSUPPORTED;
   }
   if (!impl->wlSurface || !impl->visible) {
@@ -2790,7 +2788,7 @@ puglWaylandRequestActivation(PuglView* const view)
 {
   PuglInternals* const impl = view->impl;
   PuglWorldInternals* const wimpl = view->world->impl;
-  if (!wimpl->activation) {
+  if (!wimpl->activation || impl->subsurface) {
     return PUGL_UNSUPPORTED;
   }
   if (!impl->wlSurface || !impl->visible) {
@@ -2857,6 +2855,10 @@ puglWaylandRegistryGlobal(void* const               data,
       name,
       &wl_compositor_interface,
       MIN(version, PUGL_WAYLAND_COMPOSITOR_VERSION));
+
+  } else if (!strcmp(interface, wl_subcompositor_interface.name)) {
+    impl->subcompositor = (struct wl_subcompositor*)wl_registry_bind(
+      registry, name, &wl_subcompositor_interface, 1U);
 
   } else if (!strcmp(interface, wl_shm_interface.name)) {
     impl->shm =
@@ -3101,6 +3103,9 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
   }
   if (impl->shm) {
     wl_shm_destroy(impl->shm);
+  }
+  if (impl->subcompositor) {
+    wl_subcompositor_destroy(impl->subcompositor);
   }
   if (impl->compositor) {
     wl_compositor_destroy(impl->compositor);
@@ -3404,6 +3409,10 @@ puglWaylandDestroyViewSurface(PuglInternals* const impl)
     xdg_surface_destroy(impl->xdgSurface);
     impl->xdgSurface = NULL;
   }
+  if (impl->subsurface) {
+    wl_subsurface_destroy(impl->subsurface);
+    impl->subsurface = NULL;
+  }
   if (impl->wlSurface) {
     wl_surface_destroy(impl->wlSurface);
     impl->wlSurface = NULL;
@@ -3434,13 +3443,10 @@ puglRealize(PuglView* const view)
     return st;
   }
 
-  if (view->parent) {
-    /* Wayland has no cross-client embedding: there is no protocol by which a host can hand out a
-       surface for a plugin to draw into.  Rather than fail (which would leave the UI with no window
-       at all), fall back to a top level window and say so once. */
-    d_debug("pugl: Wayland has no window embedding, ignoring parent %p and "
-            "creating a top level window instead",
-            (void*)(uintptr_t)view->parent);
+  if (view->parent &&
+      (!wimpl->subcompositor ||
+       (wimpl->ownsDisplay && !puglWaylandFindViewByNative(world, view->parent)))) {
+    return PUGL_UNSUPPORTED;
   }
 
   puglEnsureHint(view, PUGL_IGNORE_KEY_REPEAT, PUGL_FALSE);
@@ -3457,19 +3463,31 @@ puglRealize(PuglView* const view)
   wl_surface_add_listener(
     impl->wlSurface, &puglWaylandSurfaceEventListener, view);
 
-  impl->xdgSurface =
-    xdg_wm_base_get_xdg_surface(wimpl->wmBase, impl->wlSurface);
-  if (!impl->xdgSurface) {
-    puglWaylandDestroyViewSurface(impl);
-    return PUGL_REALIZE_FAILED;
+  if (view->parent) {
+    impl->subsurface = wl_subcompositor_get_subsurface(
+      wimpl->subcompositor, impl->wlSurface, (struct wl_surface*)(uintptr_t)view->parent);
+    if (!impl->subsurface) {
+      puglWaylandDestroyViewSurface(impl);
+      return PUGL_REALIZE_FAILED;
+    }
+    wl_subsurface_set_desync(impl->subsurface);
+    impl->configured = true;
+  } else {
+    impl->xdgSurface = xdg_wm_base_get_xdg_surface(wimpl->wmBase, impl->wlSurface);
+    if (!impl->xdgSurface) {
+      puglWaylandDestroyViewSurface(impl);
+      return PUGL_REALIZE_FAILED;
+    }
+
+    xdg_surface_add_listener(impl->xdgSurface, &puglWaylandSurfaceListener, view);
+
+    impl->xdgToplevel = xdg_surface_get_toplevel(impl->xdgSurface);
+    if (!impl->xdgToplevel) {
+      puglWaylandDestroyViewSurface(impl);
+      return PUGL_REALIZE_FAILED;
+    }
+    xdg_toplevel_add_listener(impl->xdgToplevel, &puglWaylandToplevelListener, view);
   }
-
-  xdg_surface_add_listener(
-    impl->xdgSurface, &puglWaylandSurfaceListener, view);
-
-  impl->xdgToplevel = xdg_surface_get_toplevel(impl->xdgSurface);
-  xdg_toplevel_add_listener(
-    impl->xdgToplevel, &puglWaylandToplevelListener, view);
 
   // Fractional scaling needs a viewport to scale the buffer down into the logical size
   if (wimpl->viewporter) {
@@ -3484,7 +3502,7 @@ puglRealize(PuglView* const view)
       impl->fractionalScale, &puglWaylandFractionalScaleListener, view);
   }
 
-  if (wimpl->decorationManager) {
+  if (wimpl->decorationManager && impl->xdgToplevel) {
     impl->decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(
       wimpl->decorationManager, impl->xdgToplevel);
     zxdg_toplevel_decoration_v1_add_listener(
@@ -3495,7 +3513,7 @@ puglRealize(PuglView* const view)
 
   /* Exported eagerly rather than on demand: the handle comes back in a later event, and the point
      where an application wants it (opening a portal dialog) is too late to start waiting. */
-  if (wimpl->exporter) {
+  if (wimpl->exporter && impl->xdgToplevel) {
     impl->exported =
       zxdg_exporter_v2_export_toplevel(wimpl->exporter, impl->wlSurface);
 
@@ -3519,9 +3537,10 @@ puglRealize(PuglView* const view)
     return st;
   }
 
-  /* An initial commit with no buffer is how a client asks xdg-shell for its first configure.  The
-     window does not appear until a buffer is attached, which happens on the first expose. */
-  wl_surface_commit(impl->wlSurface);
+  // xdg-shell requires a bufferless commit before its initial configure.
+  if (impl->xdgSurface) {
+    wl_surface_commit(impl->wlSurface);
+  }
   wl_display_flush(wimpl->display);
 
   return puglDispatchSimpleEvent(view, PUGL_REALIZE);
@@ -3584,17 +3603,21 @@ puglShow(PuglView* const view, const PuglShowCommand command)
     puglWaylandRequestActivation(view);
   }
 
-  /* puglHide() unmapped the surface, and xdg-shell treats an unmapped surface like a new one: it
+  /* xdg-shell treats an unmapped surface like a new one: it
      needs another bufferless commit and a fresh configure before a buffer may be attached.  Without
      this the next expose attaches straight away, which mutter calls a buggy client ("committed
      initial non-empty content without acknowledging configuration") and stricter compositors may
      refuse.  The expose queued below waits for the configure, as it does after realize. */
   if (impl->unmapped) {
     impl->unmapped = false;
-    puglWaylandApplyToplevelAttributes(view);
-    puglUpdateSizeHints(view);
-    wl_surface_commit(impl->wlSurface);
-    wl_display_flush(view->world->impl->display);
+    if (impl->subsurface) {
+      impl->configured = true;
+    } else {
+      puglWaylandApplyToplevelAttributes(view);
+      puglUpdateSizeHints(view);
+      wl_surface_commit(impl->wlSurface);
+      wl_display_flush(view->world->impl->display);
+    }
   }
 
   puglWaylandQueueConfigure(view);

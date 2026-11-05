@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -33,8 +34,15 @@ namespace dafTestWayland {
 class ConnectionServer
 {
 public:
-    explicit ConnectionServer(const bool advertiseCompositor = true)
-        : advertiseCompositor(advertiseCompositor)
+    struct Request {
+        uint32_t object;
+        std::string type;
+        uint16_t opcode;
+        std::vector<uint32_t> words;
+    };
+
+    explicit ConnectionServer(const bool advertiseCompositor = true, const bool advertiseSubcompositor = true)
+        : advertiseCompositor(advertiseCompositor), advertiseSubcompositor(advertiseSubcompositor)
     {
         int fds[2];
         assert(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) == 0);
@@ -51,6 +59,12 @@ public:
         close(serverFd);
         if (clientFd >= 0)
             close(clientFd);
+    }
+
+    std::vector<Request> requests() const
+    {
+        const std::lock_guard<std::mutex> lock(requestMutex);
+        return recordedRequests;
     }
 
     wl_display* connect()
@@ -129,6 +143,10 @@ private:
                 return;
             const uint16_t opcode = uint16_t(header[1]);
             const std::string type = objects[header[0]];
+            {
+                const std::lock_guard<std::mutex> lock(requestMutex);
+                recordedRequests.push_back({header[0], type, opcode, words});
+            }
             if (type == "wl_display" && opcode == 0)
             {
                 post(words[0], 0, {1U});
@@ -141,6 +159,8 @@ private:
                     global(words[0], 1, "wl_compositor", 4);
                 global(words[0], 2, "xdg_wm_base", 1);
                 global(words[0], 3, "wl_output", 2);
+                if (advertiseSubcompositor)
+                    global(words[0], 4, "wl_subcompositor", 1);
             }
             else if (type == "wl_registry" && opcode == 0)
             {
@@ -151,14 +171,25 @@ private:
                     post(words.back(), 2, {});
                 }
             }
+            else if (type == "wl_compositor" && opcode == 0)
+                objects[words[0]] = "wl_surface";
+            else if (type == "wl_subcompositor" && opcode == 1)
+                objects[words[0]] = "wl_subsurface";
+            else if (type == "xdg_wm_base" && opcode == 2)
+                objects[words[0]] = "xdg_surface";
+            else if (type == "xdg_surface" && opcode == 1)
+                objects[words[0]] = "xdg_toplevel";
         }
     }
 
     const bool advertiseCompositor;
+    const bool advertiseSubcompositor;
     int serverFd;
     int clientFd;
     std::thread thread;
     std::map<uint32_t, std::string> objects;
+    mutable std::mutex requestMutex;
+    std::vector<Request> recordedRequests;
 };
 
 inline void syncDone(void* const data, wl_callback* const callback, uint32_t)

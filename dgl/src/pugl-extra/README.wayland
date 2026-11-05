@@ -87,6 +87,7 @@ Required; the backend refuses to start without them:
 Used when advertised, degraded gracefully when not:
 
   wl_seat              wl_pointer and wl_keyboard
+  wl_subcompositor     same-connection embedded surfaces
   wl_output            integer scale, via wl_surface.enter/leave
   wl_shm               cursor themes, and the Cairo backend's buffers
   wl_data_device_manager    clipboard get and set
@@ -168,11 +169,14 @@ empty string and the caller opens an unparented dialog, which is what happens to
 Known limitations
 -----------------
 
-* **No embedding.** Wayland has no cross-client window embedding; there is no protocol by which a
-  host hands out a surface for a plugin to draw into. puglSetParent() is accepted and ignored with a
-  debug message, and the view becomes a top level window instead. This is the big one: it means a
-  plugin UI in a Wayland-native host appears as a separate floating window. Plugin embedding on
-  Linux remains an X11 (or XWayland) affair.
+* **Embedding is same-connection only.** A parent must be another view in the same Pugl world,
+  or a valid host-owned wl_surface on an explicitly borrowed connection. Cross-client handles are
+  invalid; unrecognized parents on owned connections are rejected. The parent must outlive its children.
+  Children use desynchronized wl_subsurface roles. The host must commit the parent after creating
+  a child; DAF never commits, destroys, or changes the listener or queue of a borrowed parent.
+  A synchronized ancestor still synchronizes a desynchronized child. Embedded keyboard input needs
+  host coordination: the compositor gives keyboard focus to the parent, never to a subsurface.
+  Plugin formats still use their existing X11 embedding contract.
 
 * **No window positions.** puglSetWindowPosition() returns PUGL_UNSUPPORTED and configure events
   always report 0,0. Wayland does not let a client place its own windows or learn where they are.
