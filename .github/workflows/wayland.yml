@@ -372,9 +372,10 @@ jobs:
           shift 3
           local vars=("DAF_TEST_EXPECT_BACKEND=$program" "$@")
           [ -z "$override" ] || vars+=("DAF_WINDOW_BACKEND=$override")
+          # DGL reports why it left Wayland on stderr, which not every xvfb-run folds into stdout
           for test in RuntimeBackend RuntimeBackendWindow; do
             env "${vars[@]}" xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" \
-              tests/headless-wayland.sh "./build/tests/$test" | tee "$test.log"
+              tests/headless-wayland.sh "./build/tests/$test" 2>&1 | tee "$test.log"
           done
           if ! grep -q "RuntimeBackend: module world on $module" RuntimeBackend.log \
              || ! grep -q "RuntimeBackend: program world on $program" RuntimeBackend.log \
@@ -551,10 +552,10 @@ jobs:
         WAYLAND_DISPLAY: daf-ci-no-compositor
       run: |
         set -o pipefail
-        DAF_TEST_EXPECT_BACKEND=x11 xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" ./build/tests/RuntimeBackend \
+        DAF_TEST_EXPECT_BACKEND=x11 xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" ./build/tests/RuntimeBackend 2>&1 \
           | tee automatic.log
         DAF_TEST_EXPECT_BACKEND=none DAF_WINDOW_BACKEND=wayland xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" \
-          ./build/tests/RuntimeBackend | tee forced.log
+          ./build/tests/RuntimeBackend 2>&1 | tee forced.log
         for log in automatic.log forced.log; do
           grep -q 'DGL: cannot use Wayland, libwayland-client.so.0: cannot open shared object file' "$log" \
             || { echo "::error::RuntimeBackend did not report the missing libwayland-client ($log)"; exit 1; }
