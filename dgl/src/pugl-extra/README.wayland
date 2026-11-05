@@ -148,6 +148,12 @@ PUGL_FOCUS_IN and PUGL_FOCUS_OUT arrive only when the seat advertises a keyboard
 has a seat with no capabilities at all, so a window there is never told it has the focus, and an
 application that hangs state off focus has to cope with that.
 
+With host-managed input, puglGrabFocus() selects a visible embedded child without requesting
+activation. It receives keyboard focus only while its parent has the host's keyboard focus.
+A primary-button press selects the child before dispatching the button event. Parent focus loss,
+hiding, or destroying the child sends focus-out and cancels repeat and compose state. Returning
+to the parent restores its selected child; showing a hidden child requires selecting it again.
+
 PUGL_CURSOR_NONE hides the pointer with wl_pointer.set_cursor and a null surface, which needs
 neither a cursor theme nor wl_shm. Like every other cursor it applies to the pointer that is
 currently over the view: setting one while the pointer is elsewhere is remembered and applied on the
@@ -189,8 +195,10 @@ Known limitations
   xdg_toplevel.set_parent when the handle belongs to another view of this process, and is ignored
   otherwise (again, no cross-client handles exist).
 
-* **No raise, no focus grab.** puglRaiseWindow() does nothing and puglGrabFocus() returns
-  PUGL_UNSUPPORTED. Stacking and focus are compositor policy.
+* **Toplevel activation is compositor policy.** puglRaiseWindow() does nothing. Focus requests use
+  xdg-activation when available, with a launcher token or a token requested from input. Success
+  means the request was submitted, not that the compositor granted focus. Selecting a child in
+  host-managed input mode changes logical focus within its parent without activating a toplevel.
 
 * **puglSetViewStyle is partial.** Fullscreen, maximise and minimise map onto xdg_toplevel;
   MODAL / ABOVE / BELOW / DEMANDING have no equivalent and are ignored.

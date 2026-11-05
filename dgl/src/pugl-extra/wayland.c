@@ -1183,6 +1183,13 @@ puglWaylandPointerButton(void* const              data,
     return;
   }
 
+  if (impl->hostManagedInput && number == 0U && state == WL_POINTER_BUTTON_STATE_PRESSED) {
+    puglGrabFocus(view);
+    if (impl->pointerFocus != view) {
+      return;
+    }
+  }
+
   PuglEvent event     = {{PUGL_NOTHING, 0U}};
   event.button.type   = (state == WL_POINTER_BUTTON_STATE_PRESSED)
                           ? PUGL_BUTTON_PRESS
@@ -1400,6 +1407,58 @@ puglWaylandStopRepeat(PuglWorldInternals* const impl)
 }
 
 static void
+puglWaylandUpdateHostFocus(PuglWorldInternals* const impl)
+{
+  struct wl_surface* const hostSurface = impl->hostKeyboardSurface;
+  PuglView* next = impl->selectedView;
+  if (next && (!next->impl->visible || !impl->hostKeyboardSurface ||
+               (next->impl->wlSurface != impl->hostKeyboardSurface &&
+                next->parent != (PuglNativeView)(uintptr_t)impl->hostKeyboardSurface))) {
+    next = NULL;
+  }
+  if (next == impl->keyboardFocus) {
+    return;
+  }
+
+  const uint64_t generation = ++impl->focusGeneration;
+  PuglView* const previous = impl->keyboardFocus;
+  impl->keyboardFocus = NULL;
+  puglWaylandStopRepeat(impl);
+  if (impl->xkb.composeState) {
+    xkb_compose_state_reset(impl->xkb.composeState);
+  }
+  if (previous) {
+    PuglEvent event = {{PUGL_FOCUS_OUT, 0U}};
+    event.focus.mode = PUGL_CROSSING_NORMAL;
+    puglDispatchEvent(previous, &event);
+  }
+
+  // Focus-out callbacks can change host focus, select, or destroy the proposed recipient.
+  if (generation != impl->focusGeneration || next != impl->selectedView ||
+      hostSurface != impl->hostKeyboardSurface) {
+    return;
+  }
+  impl->keyboardFocus = next;
+  if (next) {
+    PuglEvent event = {{PUGL_FOCUS_IN, 0U}};
+    event.focus.mode = PUGL_CROSSING_NORMAL;
+    puglDispatchEvent(next, &event);
+  }
+}
+
+static void
+puglWaylandForgetHostFocus(PuglView* const view)
+{
+  PuglWorldInternals* const impl = view->world->impl;
+  if (impl->hostManagedInput) {
+    if (impl->selectedView == view) {
+      impl->selectedView = NULL;
+    }
+    puglWaylandUpdateHostFocus(impl);
+  }
+}
+
+static void
 puglWaylandStartRepeat(PuglWorldInternals* const impl,
                        PuglView* const           view,
                        const uint32_t            key,
@@ -1467,9 +1526,10 @@ puglWaylandDispatchKey(PuglWorldInternals* const impl,
     event.key.key = puglWaylandUnshiftedCodepoint(xkb, keycode);
   }
 
+  const uint64_t focusGeneration = impl->focusGeneration;
   puglDispatchEvent(view, &event);
 
-  if (!pressed) {
+  if (!pressed || impl->keyboardFocus != view || impl->focusGeneration != focusGeneration) {
     return;
   }
 
@@ -1598,9 +1658,18 @@ puglWaylandKeyboardEnter(void* const               data,
   PuglView* const           view = puglWaylandViewForSurface(surface);
 
   impl->lastSerial       = serial;
-  impl->keyboardFocus    = view;
   impl->activationSource = view;
   impl->activationSerial = serial;
+
+  if (impl->hostManagedInput) {
+    impl->hostKeyboardSurface = surface;
+    if (view && view->world->impl == impl) {
+      impl->selectedView = view;
+    }
+    puglWaylandUpdateHostFocus(impl);
+    return;
+  }
+  impl->keyboardFocus = view;
 
   if (!view) {
     return;
@@ -1621,6 +1690,13 @@ puglWaylandKeyboardLeave(void* const               data,
   PuglView* const           view = puglWaylandViewForSurface(surface);
 
   impl->lastSerial = serial;
+  if (impl->hostManagedInput) {
+    if (impl->hostKeyboardSurface == surface) {
+      impl->hostKeyboardSurface = NULL;
+      puglWaylandUpdateHostFocus(impl);
+    }
+    return;
+  }
   puglWaylandStopRepeat(impl);
 
   if (impl->keyboardFocus == view) {
@@ -1662,9 +1738,11 @@ puglWaylandKeyboardKey(void* const               data,
     puglWaylandStopRepeat(impl);
   }
 
+  const uint64_t focusGeneration = impl->focusGeneration;
   puglWaylandDispatchKey(impl, view, key, pressed, time / 1e3);
 
-  if (pressed && !view->hints[PUGL_IGNORE_KEY_REPEAT] && impl->xkb.keymap &&
+  if (pressed && impl->keyboardFocus == view && impl->focusGeneration == focusGeneration &&
+      !view->hints[PUGL_IGNORE_KEY_REPEAT] && impl->xkb.keymap &&
       xkb_keymap_key_repeats(impl->xkb.keymap, key + 8U)) {
     puglWaylandStartRepeat(impl, view, key, time / 1e3);
   }
@@ -1771,7 +1849,12 @@ puglWaylandHandleRepeat(PuglWorldInternals* const impl)
     expirations = 8;
   }
 
+  const uint64_t focusGeneration = impl->focusGeneration;
   for (uint64_t i = 0; i < expirations; ++i) {
+    if (impl->repeat.view != view || impl->repeat.key != key ||
+        impl->focusGeneration != focusGeneration) {
+      break;
+    }
     puglWaylandDispatchKey(impl, view, key, true, puglWaylandTime(view->world));
   }
 #else
@@ -3567,6 +3650,8 @@ puglUnrealize(PuglView* const view)
   }
 
   puglWaylandCancelActivation(impl);
+  impl->visible = false;
+  puglWaylandForgetHostFocus(view);
   puglDispatchSimpleEvent(view, PUGL_UNREALIZE);
 
   PuglWorldInternals* const wimpl = view->world->impl;
@@ -3652,6 +3737,8 @@ puglHide(PuglView* const view)
 
   puglWaylandCancelActivation(impl);
   impl->hasPresented = false;
+  impl->visible = false;
+  puglWaylandForgetHostFocus(view);
   if (view->world->impl->activationSource == view) {
     view->world->impl->activationSource = NULL;
   }
@@ -3665,7 +3752,6 @@ puglHide(PuglView* const view)
      until puglShow() has asked for a new one.  A frame callback still pending was for a buffer that
      is gone and may never come back; drop it so it does not hold up the first frame after showing
      again. */
-  impl->visible    = false;
   impl->configured = false;
   impl->unmapped   = true;
 
@@ -4280,6 +4366,15 @@ puglSetViewStyle(PuglView* const view, const PuglViewStyleFlags flags)
 PuglStatus
 puglGrabFocus(PuglView* const view)
 {
+  PuglWorldInternals* const impl = view->world->impl;
+  if (impl->hostManagedInput && view->impl->subsurface) {
+    if (!view->impl->visible) {
+      return PUGL_BAD_CALL;
+    }
+    impl->selectedView = view;
+    puglWaylandUpdateHostFocus(impl);
+    return PUGL_SUCCESS;
+  }
   return puglWaylandRequestActivation(view);
 }
 

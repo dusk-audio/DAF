@@ -272,6 +272,148 @@ static void testHostSeat()
     }
 }
 
+static void testHostFocus()
+{
+    ConnectionServer server(true, true, true);
+    wl_display* const display = server.connect();
+    wl_registry* const registry = wl_display_get_registry(display);
+    wl_compositor* compositor = nullptr;
+    const wl_registry_listener registryListener = {hostGlobal, hostGlobalRemove};
+    assert(wl_registry_add_listener(registry, &registryListener, &compositor) == 0);
+    assert(wl_display_roundtrip(display) >= 0);
+    wl_seat* const seat = static_cast<wl_seat*>(wl_registry_bind(registry, 5, &wl_seat_interface, 5));
+    const wl_seat_listener seatListener = {
+        [](void*, wl_seat*, uint32_t) {}, [](void*, wl_seat*, const char*) {}
+    };
+    assert(wl_seat_add_listener(seat, &seatListener, nullptr) == 0);
+    wl_surface* const parent = wl_compositor_create_surface(compositor);
+    wl_surface* const otherParent = wl_compositor_create_surface(compositor);
+    DGL_NAMESPACE::PuglWorld* const world = puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display, seat);
+    assert(world);
+    auto* const impl = static_cast<wl::PuglWorld*>(world)->impl;
+    struct FocusLog {
+        std::vector<std::pair<DGL_NAMESPACE::PuglView*, PuglEventType>> events;
+        wl::PuglView* redirect = nullptr;
+        wl_surface* leaveParent = nullptr;
+        bool hideOnKey = false;
+    } log;
+    wl::PuglView* views[2];
+    for (auto& view : views)
+    {
+        view = static_cast<wl::PuglView*>(DGL_NAMESPACE::puglNewView(world));
+        assert(view);
+        wl::puglSetMatchingBackendForCurrentBuild(view);
+        wl::puglSetParent(view, reinterpret_cast<PuglNativeView>(parent));
+        wl::puglSetSizeHint(view, PUGL_DEFAULT_SIZE, 200, 100);
+        wl::puglSetHandle(view, &log);
+        wl::puglSetEventFunc(view, [](DGL_NAMESPACE::PuglView* view, const PuglEvent* event) {
+            auto* const log = static_cast<FocusLog*>(DGL_NAMESPACE::puglGetHandle(view));
+            if (event->type == PUGL_FOCUS_IN || event->type == PUGL_FOCUS_OUT || event->type == PUGL_BUTTON_PRESS ||
+                event->type == PUGL_KEY_PRESS || event->type == PUGL_TEXT)
+                log->events.emplace_back(view, event->type);
+            if (event->type == PUGL_KEY_PRESS && log->hideOnKey)
+                assert(DGL_NAMESPACE::puglHide(view) == PUGL_SUCCESS);
+            if (event->type == PUGL_FOCUS_OUT && log->leaveParent)
+            {
+                wl::puglWaylandKeyboardLeave(static_cast<wl::PuglView*>(view)->world->impl,
+                                             nullptr, 99, log->leaveParent);
+                log->leaveParent = nullptr;
+            }
+            if (event->type == PUGL_FOCUS_OUT && log->redirect)
+            {
+                auto* const redirect = log->redirect;
+                log->redirect = nullptr;
+                assert(wl::puglGrabFocus(redirect) == PUGL_SUCCESS);
+            }
+            return PUGL_SUCCESS;
+        });
+        assert(wl::puglShow(view, PUGL_SHOW_PASSIVE) == PUGL_SUCCESS);
+    }
+    assert(wl::puglGrabFocus(views[0]) == PUGL_SUCCESS);
+    assert(!wl::puglHasFocus(views[0]) && log.events.empty());
+    wl::puglWaylandKeyboardEnter(impl, nullptr, 1, parent, nullptr);
+    assert(wl::puglHasFocus(views[0]));
+    assert(log.events.size() == 1 && log.events.back().second == PUGL_FOCUS_IN);
+    wl::puglWaylandStartRepeat(impl, views[0], 30, 0.0);
+    assert(impl->repeat.view == views[0]);
+    wl::puglWaylandKeyboardLeave(impl, nullptr, 2, otherParent);
+    assert(wl::puglHasFocus(views[0]));
+    wl::puglWaylandKeyboardEnter(impl, nullptr, 3, otherParent, nullptr);
+    assert(!wl::puglHasFocus(views[0]) && !impl->repeat.view);
+    wl::puglWaylandKeyboardEnter(impl, nullptr, 4, parent, nullptr);
+    assert(wl::puglHasFocus(views[0]));
+    log.redirect = views[0];
+    assert(wl::puglGrabFocus(views[1]) == PUGL_SUCCESS);
+    assert(wl::puglHasFocus(views[0]) && !wl::puglHasFocus(views[1]));
+    log.leaveParent = parent;
+    assert(wl::puglGrabFocus(views[1]) == PUGL_SUCCESS);
+    assert(!wl::puglHasFocus(views[0]) && !wl::puglHasFocus(views[1]));
+    wl::puglWaylandKeyboardEnter(impl, nullptr, 100, parent, nullptr);
+    assert(wl::puglHasFocus(views[1]));
+    assert(wl::puglGrabFocus(views[0]) == PUGL_SUCCESS);
+    log.events.clear();
+    wl::puglWaylandPointerEnter(impl, nullptr, 5, views[1]->impl->wlSurface, 0, 0);
+    wl::puglWaylandPointerButton(impl, nullptr, 6, 100, PUGL_WAYLAND_BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+    assert(log.events.size() == 3);
+    assert(log.events[0].first == views[0] && log.events[0].second == PUGL_FOCUS_OUT);
+    assert(log.events[1].first == views[1] && log.events[1].second == PUGL_FOCUS_IN);
+    assert(log.events[2].first == views[1] && log.events[2].second == PUGL_BUTTON_PRESS);
+    assert(wl::puglHide(views[1]) == PUGL_SUCCESS);
+    assert(!wl::puglHasFocus(views[1]) && log.events.back().second == PUGL_FOCUS_OUT);
+    assert(wl::puglGrabFocus(views[1]) == PUGL_BAD_CALL);
+    assert(wl::puglShow(views[1], PUGL_SHOW_PASSIVE) == PUGL_SUCCESS);
+    assert(!wl::puglHasFocus(views[1]));
+    assert(wl::puglGrabFocus(views[1]) == PUGL_SUCCESS);
+
+    const char* const keymap =
+        "xkb_keymap { xkb_keycodes { minimum=8; maximum=255; <AC01>=38; };"
+        "xkb_types { type \"ONE_LEVEL\" { modifiers=None; map[None]=Level1; }; };"
+        "xkb_compatibility {}; xkb_symbols { key <AC01> { [ a ] }; }; };";
+    impl->xkb.keymap = xkb_keymap_new_from_string(impl->xkb.context, keymap,
+                                                XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    assert(impl->xkb.keymap);
+    impl->xkb.state = xkb_state_new(impl->xkb.keymap);
+    assert(impl->xkb.state);
+    log.hideOnKey = true;
+    log.events.clear();
+    wl::puglWaylandKeyboardKey(impl, nullptr, 7, 200, 30, WL_KEYBOARD_KEY_STATE_PRESSED);
+    assert(log.events.size() == 2);
+    assert(log.events[0].second == PUGL_KEY_PRESS && log.events[1].second == PUGL_FOCUS_OUT);
+    assert(!impl->repeat.view);
+    assert(wl::puglShow(views[1], PUGL_SHOW_PASSIVE) == PUGL_SUCCESS);
+    assert(wl::puglGrabFocus(views[1]) == PUGL_SUCCESS);
+    log.events.clear();
+    int repeatPipe[2];
+    assert(pipe(repeatPipe) == 0);
+    const uint64_t expirations = 3;
+    assert(write(repeatPipe[1], &expirations, sizeof(expirations)) == sizeof(expirations));
+    const int repeatFd = impl->repeat.fd;
+    impl->repeat.fd = repeatPipe[0];
+    impl->repeat.view = views[1];
+    impl->repeat.key = 30;
+    wl::puglWaylandHandleRepeat(impl);
+    impl->repeat.fd = repeatFd;
+    close(repeatPipe[0]);
+    close(repeatPipe[1]);
+    assert(log.events.size() == 2 && !impl->repeat.view);
+    log.hideOnKey = false;
+    assert(wl::puglShow(views[1], PUGL_SHOW_PASSIVE) == PUGL_SUCCESS);
+    assert(wl::puglGrabFocus(views[1]) == PUGL_SUCCESS);
+    DGL_NAMESPACE::puglFreeView(views[0]);
+    assert(wl::puglHasFocus(views[1]));
+    DGL_NAMESPACE::puglFreeView(views[1]);
+    assert(!impl->keyboardFocus && !impl->repeat.view);
+    assert(log.events.back().second == PUGL_FOCUS_OUT);
+    DGL_NAMESPACE::puglFreeWorld(world);
+    wl_surface_destroy(otherParent);
+    wl_surface_destroy(parent);
+    wl_seat_release(seat);
+    wl_compositor_destroy(compositor);
+    wl_registry_destroy(registry);
+    assert(wl_display_roundtrip(display) >= 0);
+    wl_display_disconnect(display);
+}
+
 static void testForeignSurface()
 {
     using namespace DGL_NAMESPACE;
@@ -589,6 +731,7 @@ int main()
     testConnectionOwnership();
     testIndependentSeat();
     testHostSeat();
+    testHostFocus();
     testForeignSurface();
     testSubsurfaceLifetime();
     alarm(0);

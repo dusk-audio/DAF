@@ -182,6 +182,9 @@ struct PuglWorldInternalsImpl {
   // Keyboard focus and the most recent input serial, needed by set_selection etc.
   PuglView* keyboardFocus;
   uint32_t  lastSerial;
+  struct wl_surface* hostKeyboardSurface;
+  PuglView* selectedView;
+  uint64_t focusGeneration;
 
   // Activation serials must retain their originating surface, unlike clipboard serials.
   PuglView* activationSource;
