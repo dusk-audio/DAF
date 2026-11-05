@@ -406,6 +406,25 @@ static int checkOwnedSubsurface(PuglWorld* const world, PuglView* const parent)
     return 0;
 }
 
+// An EGL without OpenGL ES reports EGL_NONE as its API until one is bound, and EGL_NONE cannot be bound back.
+static int checkUnboundEglApi()
+{
+    const auto queryApi = dgl_pointer_eglQueryAPI;
+    dgl_pointer_eglQueryAPI = []() -> EGLenum { return EGL_NONE; };
+    PuglStatus status = PUGL_FAILURE;
+    WorldOwner world(puglNewWorldOn(kPuglWindowSystemWayland, PUGL_MODULE, 0), puglFreeWorld);
+    if (world)
+    {
+        ViewOwner view = makeGlView(world.get(), false);
+        if (view)
+            status = puglRealize(view.get());
+    }
+    dgl_pointer_eglQueryAPI = queryApi;
+    DAF_ASSERT_NOT_EQUAL(world.get(), nullptr, "the GL probe accepts an EGL with no API bound");
+    DAF_ASSERT_EQUAL(status, PUGL_SUCCESS, "a GL view realizes on an EGL with no API bound");
+    return 0;
+}
+
 static int checkBorrowedEgl()
 {
     HostEgl host;
@@ -899,7 +918,8 @@ int main()
         puglFreeWorld(world);
     }
 
-    int status = expected == kWayland ? checkBorrowedEgl() : 0;
+    int status = expected == kWayland ? checkUnboundEglApi() : 0;
+    if (!status && expected == kWayland) status = checkBorrowedEgl();
     if (!status && expected == kWayland) status = checkSubsurfaceRendering();
     if (!status) status = checkFallbacks();
 
