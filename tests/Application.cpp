@@ -70,6 +70,8 @@ int main()
         DAF_ASSERT_EQUAL(app.isStandalone(), false, "a borrowed display belongs to a module");
         DAF_ASSERT_EQUAL(app.getClassName(), nullptr, "a failed application has no class name");
         DAF_ASSERT_EQUAL(app.getWaylandInput().data, nullptr, "a failed application exposes no input callbacks");
+        DAF_ASSERT_EQUAL(app.activateWaylandSurface(&app, "unused-token"), false,
+                         "failed initialization cannot activate a foreign surface");
         app.idle();
         app.setClassName("unavailable");
         app.quit();
@@ -185,6 +187,63 @@ int main()
             assert(wl_display_roundtrip(hostDisplay) >= 0);
             wl_display_disconnect(hostDisplay);
         }
+        for (const bool advertised : {false, true})
+        {
+            dafTestWayland::ConnectionServer activationServer(true, true, false, advertised);
+            wl_display* const hostDisplay = activationServer.connect();
+            wl_registry* const registry = wl_display_get_registry(hostDisplay);
+            const wl_registry_listener registryListener = {
+                [](void*, wl_registry*, uint32_t, const char*, uint32_t) {},
+                [](void*, wl_registry*, uint32_t) {}
+            };
+            assert(wl_registry_add_listener(registry, &registryListener, nullptr) == 0);
+            assert(wl_display_roundtrip(hostDisplay) >= 0);
+            wl_compositor* const compositor = static_cast<wl_compositor*>(
+                wl_registry_bind(registry, 1, &wl_compositor_interface, 4));
+            wl_surface* const parent = wl_compositor_create_surface(compositor);
+            assert(wl_display_roundtrip(hostDisplay) >= 0);
+            uint32_t parentId = 0;
+            for (const auto& request : activationServer.requests())
+                if (request.type == "wl_compositor" && request.opcode == 0)
+                    parentId = request.words[0];
+            DAF_ASSERT_NOT_EQUAL(parentId, 0u, "the host creates the activation target");
+            {
+                Application app(Application::ExternalWaylandDisplay{hostDisplay});
+                DAF_ASSERT_EQUAL(app.activateWaylandSurface(nullptr, "unused-token"), false,
+                                 "activation requires a parent surface");
+                DAF_ASSERT_EQUAL(app.activateWaylandSurface(parent, nullptr), false,
+                                 "activation requires a token");
+                DAF_ASSERT_EQUAL(app.activateWaylandSurface(parent, ""), false,
+                                 "an empty token cannot activate a surface");
+                unsigned hostCalls = 0;
+                dafTestWayland::queueSync(hostDisplay, nullptr, &listener, &hostCalls);
+                dafTestWayland::readReplies(hostDisplay);
+                DAF_ASSERT_EQUAL(app.activateWaylandSurface(parent, "parent-launch-token"), advertised,
+                                 "foreign activation depends on compositor support");
+                DAF_ASSERT_EQUAL(hostCalls, 0u, "activation never dispatches the host queue");
+                assert(wl_display_roundtrip(hostDisplay) >= 0);
+                DAF_ASSERT_EQUAL(hostCalls, 1u, "the host retains its queued callbacks");
+                unsigned activations = 0;
+                for (const auto& request : activationServer.requests())
+                {
+                    DAF_ASSERT_NOT_EQUAL(request.type, std::string("xdg_surface"),
+                                         "activation never creates a new toplevel");
+                    if (request.type != "xdg_activation_v1") continue;
+                    DAF_ASSERT_EQUAL(request.opcode, uint16_t(2), "only explicit token submission is requested");
+                    DAF_ASSERT_EQUAL(request.words[0], 20u, "the supplied token length is preserved");
+                    DAF_ASSERT_EQUAL(std::strcmp(reinterpret_cast<const char*>(request.words.data() + 1),
+                                                 "parent-launch-token"), 0, "the supplied token reaches the wire");
+                    DAF_ASSERT_EQUAL(request.words.back(), parentId, "activation targets the host's original surface");
+                    ++activations;
+                }
+                DAF_ASSERT_EQUAL(activations, unsigned(advertised), "one supported request produces one activation");
+            }
+            wl_surface_destroy(parent);
+            wl_compositor_destroy(compositor);
+            wl_registry_destroy(registry);
+            assert(wl_display_roundtrip(hostDisplay) >= 0);
+            wl_display_disconnect(hostDisplay);
+        }
         alarm(0);
     }
 #else
@@ -202,6 +261,9 @@ int main()
     {
         Application app(true);
         DAF_ASSERT_EQUAL(app.getWaylandInput().data, nullptr, "standalone input belongs to its own event loop");
+        if (app.getWindowSystem() != Application::kWindowSystemWayland)
+            DAF_ASSERT_EQUAL(app.activateWaylandSurface(&app, "unused-token"), false,
+                             "another backend never interprets the supplied native handle");
         IdleCallbackCounter idleCounter;
         app.addIdleCallback(&idleCounter);
         DAF_ASSERT_EQUAL(app.isQuitting(), false, "app MUST NOT be set as quitting during init");

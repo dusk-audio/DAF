@@ -39,6 +39,7 @@
 
 /* we will include all header files used in pugl in their C++ friendly form, then pugl stuff in custom namespace */
 #include <cassert>
+#include <cerrno>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
@@ -404,6 +405,38 @@ WaylandInput puglGetWaylandInput(PuglWorld* const world)
     (void)world;
    #endif
     return input;
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+// DGL specific, foreign Wayland activation
+
+bool puglActivateWaylandSurface(PuglWorld* const world, void* const surface, const char* const token)
+{
+   #ifdef DGL_USING_WAYLAND
+    if (world == nullptr || surface == nullptr || token == nullptr || *token == '\0')
+        return false;
+    #ifdef DGL_RUNTIME_BACKEND
+    if (world->system != kPuglWindowSystemWayland)
+        return false;
+    namespace backend = pugl_wl;
+    #else
+    namespace backend = DGL_NAMESPACE;
+    #endif
+    auto* const impl = static_cast<backend::PuglWorld*>(world)->impl;
+    if (impl->activation == nullptr)
+        return false;
+    xdg_activation_v1_activate(impl->activation, token, static_cast<wl_surface*>(surface));
+    int result;
+    do {
+        result = wl_display_flush(impl->display);
+    } while (result < 0 && errno == EINTR);
+    return result >= 0 || errno == EAGAIN;
+   #else
+    (void)world;
+    (void)surface;
+    (void)token;
+    return false;
+   #endif
 }
 
 // --------------------------------------------------------------------------------------------------------------------

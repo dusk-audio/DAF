@@ -56,6 +56,11 @@ WaylandInput Application::getWaylandInput() const noexcept
     return puglGetWaylandInput(pData->world);
 }
 
+bool Application::activateWaylandSurface(void* const surface, const char* const token) noexcept
+{
+    return puglActivateWaylandSurface(pData->world, surface, token);
+}
+
 Application::WindowSystem Application::getWindowSystem() const noexcept
 {
     if (pData->world == nullptr)

@@ -228,6 +228,17 @@ public:
     WaylandInput getWaylandInput() const noexcept;
 
    /**
+      Submit an activation token for a live toplevel surface on this application's Wayland connection.
+
+      The host owns the mapped wl_surface and must call from the display-owner thread. Neither the
+      surface nor the token is retained. This does not read the environment, obtain a token, create
+      a window, or dispatch events. Consume the single-use token before calling, even on failure.
+      True means the request was submitted or queued, not that the compositor granted focus.
+      False means invalid arguments, an unavailable backend/protocol, or a broken connection.
+   */
+    bool activateWaylandSurface(void* surface, const char* token) noexcept;
+
+   /**
       Add a callback function to be triggered on every idle cycle.
       You can add more than one, and remove them at anytime with removeIdleCallback().
       Idle callbacks trigger right after OS event handling and Window idle events (within the same cycle).

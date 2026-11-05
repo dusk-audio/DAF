@@ -65,6 +65,7 @@ START_NAMESPACE_DGL
 PuglWorld* puglNewWorldWithWaylandDisplay(PuglWorldType type, PuglWorldFlags flags, void* display,
                                         void* inputSeat = nullptr);
 WaylandInput puglGetWaylandInput(PuglWorld* world);
+bool puglActivateWaylandSurface(PuglWorld* world, void* surface, const char* token);
 
 // DGL outgoing file drag, polled by Window outside its rendering callback.
 struct PuglFileDrag
