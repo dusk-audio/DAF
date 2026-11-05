@@ -368,9 +368,9 @@ PuglWorld* puglNewWorldWithWaylandDisplay(const PuglWorldType type,
 // --------------------------------------------------------------------------------------------------------------------
 // DGL specific, host Wayland input
 
-WaylandInput puglGetWaylandInput(PuglWorld* const world)
+DGL_NAMESPACE::WaylandInput puglGetWaylandInput(PuglWorld* const world)
 {
-    WaylandInput input = {};
+    DGL_NAMESPACE::WaylandInput input = {};
    #ifdef DGL_USING_WAYLAND
     if (world == nullptr)
         return input;
