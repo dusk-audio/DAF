@@ -3416,7 +3416,8 @@ puglWaylandInitWorldInternals(struct wl_display* const display,
     return NULL;
   }
 
-  if (impl->dataDeviceManager && impl->seat) {
+  // A second data device can divert clipboard selections from the host.
+  if (!impl->hostManagedInput && impl->dataDeviceManager && impl->seat) {
     impl->dataDevice = wl_data_device_manager_get_data_device(
       impl->dataDeviceManager, impl->seat);
     wl_data_device_add_listener(

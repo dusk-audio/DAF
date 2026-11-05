@@ -161,6 +161,7 @@ private:
                     global(words[0], 1, "wl_compositor", 4);
                 global(words[0], 2, "xdg_wm_base", 1);
                 global(words[0], 3, "wl_output", 2);
+                global(words[0], 7, "wl_data_device_manager", 3);
                 if (advertiseSubcompositor)
                     global(words[0], 4, "wl_subcompositor", 1);
                 if (advertiseSeat)
@@ -183,6 +184,8 @@ private:
                 objects[words[0]] = "wl_pointer";
             else if (type == "wl_seat" && opcode == 1)
                 objects[words[0]] = "wl_keyboard";
+            else if (type == "wl_data_device_manager" && opcode == 1)
+                objects[words[0]] = "wl_data_device";
             else if (type == "wl_compositor" && opcode == 0)
                 objects[words[0]] = "wl_surface";
             else if (type == "wl_subcompositor" && opcode == 1)

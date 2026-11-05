@@ -214,6 +214,7 @@ static void testIndependentSeat()
     assert(!puglGetWaylandInput(world).data);
     wl::PuglWorldInternals* const impl = static_cast<wl::PuglWorld*>(world)->impl;
     assert(impl->seat && impl->pointer && impl->keyboard);
+    assert(impl->dataDeviceManager && impl->dataDevice);
     wl::puglWaylandSeatCapabilities(impl, impl->seat,
                                   WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
     DGL_NAMESPACE::puglFreeWorld(world);
@@ -264,6 +265,7 @@ static void testHostSeat()
                 auto* const impl = static_cast<wl::PuglWorld*>(world)->impl;
                 assert(impl->hostManagedInput && impl->seat == seat);
                 assert(!impl->pointer && !impl->keyboard);
+                assert(impl->dataDeviceManager && !impl->dataDevice);
                 impl->pointer = pointer;
                 impl->keyboard = keyboard;
                 wl::puglWaylandSeatCapabilities(impl, seat, 0);
@@ -283,6 +285,7 @@ static void testHostSeat()
             if (request.type == "wl_registry" && request.opcode == 0 && request.words[0] == 5U) ++seats;
             if (request.type == "wl_seat" && request.opcode == 0) ++pointers;
             if (request.type == "wl_seat" && request.opcode == 1) ++keyboards;
+            assert(!(request.type == "wl_data_device_manager" && request.opcode == 1));
             assert(!(request.type == "wl_seat" && request.opcode == 3));
             assert(!(request.type == "wl_pointer" && request.opcode == 1));
             assert(!(request.type == "wl_keyboard" && request.opcode == 0));
