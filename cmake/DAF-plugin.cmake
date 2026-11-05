@@ -559,6 +559,55 @@ function(daf__build_jack NAME HAS_UI FORCE_NATIVE_AUDIO_FALLBACK SKIP_NATIVE_AUD
   else()
     set(SDL2_FOUND FALSE)
   endif()
+  # pkg-config answers "found" for a library built for the wrong architecture.
+  # On macOS that is routine: an Intel Homebrew in /usr/local leaves an x86_64
+  # SDL2 that an arm64 or universal build cannot link, and the standalone then
+  # fails with undefined _SDL_* symbols while every plugin format builds fine.
+  # SDL2 is only the standalone's optional audio fallback (RtAudio covers macOS),
+  # so a library that cannot cover the architectures being built is dropped.
+  # With no CMAKE_OSX_ARCHITECTURES, CMake builds for the host processor.
+  if(SDL2_FOUND AND APPLE)
+    set(_daf_archs ${CMAKE_OSX_ARCHITECTURES})
+    if(NOT _daf_archs)
+      set(_daf_archs ${CMAKE_SYSTEM_PROCESSOR})
+    endif()
+    # Xcode build settings such as $(ARCHS_STANDARD) are only known at build
+    # time; there is nothing to compare them with here.
+    list(FILTER _daf_archs EXCLUDE REGEX "^\\$\\(")
+    if(_daf_archs)
+      # Not cached: a stale result from an earlier configure must not vouch for
+      # a library pkg-config now resolves differently.
+      unset(DAF_SDL2_LIBRARY_FILE CACHE)
+      find_library(DAF_SDL2_LIBRARY_FILE NAMES SDL2
+        HINTS ${SDL2_STATIC_LIBRARY_DIRS} ${SDL2_LIBRARY_DIRS} ${SDL2_LIBDIR}
+        NO_DEFAULT_PATH)
+      if(NOT DAF_SDL2_LIBRARY_FILE)
+        message(STATUS "SDL2 reported by pkg-config but its library was not found; building the standalone without SDL2")
+        set(SDL2_FOUND FALSE)
+      else()
+        execute_process(COMMAND lipo -archs "${DAF_SDL2_LIBRARY_FILE}"
+          OUTPUT_VARIABLE _daf_sdl2_archs
+          ERROR_VARIABLE _daf_sdl2_lipo_error
+          RESULT_VARIABLE _daf_sdl2_lipo_status
+          OUTPUT_STRIP_TRAILING_WHITESPACE
+          ERROR_STRIP_TRAILING_WHITESPACE)
+        if(NOT _daf_sdl2_lipo_status EQUAL 0)
+          message(STATUS "Could not read the architectures of ${DAF_SDL2_LIBRARY_FILE} (${_daf_sdl2_lipo_error}); building the standalone without SDL2")
+          set(SDL2_FOUND FALSE)
+        else()
+          string(REPLACE " " ";" _daf_sdl2_arch_list "${_daf_sdl2_archs}")
+          foreach(_daf_arch ${_daf_archs})
+            if(NOT "${_daf_arch}" IN_LIST _daf_sdl2_arch_list)
+              message(STATUS "SDL2 at ${DAF_SDL2_LIBRARY_FILE} has [${_daf_sdl2_archs}] and cannot provide ${_daf_arch}; building the standalone without SDL2")
+              set(SDL2_FOUND FALSE)
+              break()
+            endif()
+          endforeach()
+        endif()
+      endif()
+      unset(DAF_SDL2_LIBRARY_FILE CACHE)
+    endif()
+  endif()
   if(SDL2_FOUND)
     target_compile_definitions("${NAME}" PUBLIC "HAVE_SDL2")
     target_include_directories("${NAME}-jack" PRIVATE ${SDL2_STATIC_INCLUDE_DIRS})
@@ -1088,6 +1137,54 @@ function(daf__build_static NAME HAS_UI)
     PREFIX "")
 endfunction()
 
+# daf__set_macos_objc_namespace
+# ------------------------------------------------------------------------------
+#
+# Give a dgl target's pugl classes (PuglWindow, PuglWrapperView, PuglOpenGLView,
+# ...) names that are unique to the plugin project and version on macOS.
+#
+# The Objective-C runtime has one flat class namespace per process. When a host
+# loads two plugins that define a class with the same name, it logs "Class ...
+# is implemented in both" (auval prints one line per clash), and every lookup of
+# that class BY NAME -- NSClassFromString, archiving, KVO, host introspection --
+# resolves to whichever image loaded first. Code referring to its class directly
+# still gets its own. pugl suffixes its classes with DAF_MACOS_NAMESPACE_TIME to
+# avoid this.
+#
+# The Makefile build sets that token from `date +%s`. This CMake path set
+# nothing, so dgl/src/pugl.cpp fell back to __apple_build_version__ and every
+# plugin built by the same Xcode shipped identical class names -- measured
+# 2026-09-17 across five released Dusk plugins, all `DGL_15000309_*`.
+#
+# The token is built from the TOP-LEVEL project's name and version, not a clock,
+# so it is identical from one build of the same source to the next and changes
+# with every release. CMAKE_PROJECT_NAME rather than PROJECT_NAME, because with
+# DAF_LIBRARIES=ON the dgl targets are created inside DAF's own project. A fixed
+# prefix keeps the token from being macro-expanded (it is pasted after one level
+# of expansion), and a short hash of the raw name keeps names that sanitise to
+# the same string (Foo-Bar, Foo.Bar) apart.
+#
+# Precondition: one plugin per configure. The dgl targets are created once per
+# build tree and shared by every plugin in it, so plugins configured together
+# share one set of class names. They are then built from the same source, which
+# is the harmless case; Dusk builds each plugin in its own tree. The web view's
+# delegate class is named separately (daf/extra/WebViewImpl.cpp) and is not
+# covered here; no Dusk plugin uses the web view UI.
+function(daf__set_macos_objc_namespace TARGET_NAME)
+  if(NOT APPLE)
+    return()
+  endif()
+  set(_daf_raw "${CMAKE_PROJECT_NAME}")
+  if(CMAKE_PROJECT_VERSION)
+    string(APPEND _daf_raw "_${CMAKE_PROJECT_VERSION}")
+  endif()
+  string(MD5 _daf_hash "${_daf_raw}")
+  string(SUBSTRING "${_daf_hash}" 0 6 _daf_hash)
+  string(REGEX REPLACE "[^A-Za-z0-9_]" "_" _daf_ns "${_daf_raw}")
+  # pugl.cpp compiles these names; nothing else references them.
+  target_compile_definitions("${TARGET_NAME}" PRIVATE "DAF_MACOS_NAMESPACE_TIME=P${_daf_hash}_${_daf_ns}")
+endfunction()
+
 # daf__add_dgl_cairo
 # ------------------------------------------------------------------------------
 #
@@ -1133,6 +1230,7 @@ function(daf__add_dgl_cairo SHARED_RESOURCES USE_FILE_BROWSER USE_WEB_VIEW)
     target_sources(dgl-cairo PRIVATE
       "${DAF_ROOT_DIR}/dgl/src/pugl.cpp")
   endif()
+  daf__set_macos_objc_namespace(dgl-cairo)
   target_include_directories(dgl-cairo PUBLIC
     "${DAF_ROOT_DIR}/dgl")
   target_include_directories(dgl-cairo PUBLIC
@@ -1208,6 +1306,7 @@ function(daf__add_dgl_external USE_FILE_BROWSER USE_WEB_VIEW)
     target_sources(dgl-external PRIVATE
       "${DAF_ROOT_DIR}/dgl/src/pugl.cpp")
   endif()
+  daf__set_macos_objc_namespace(dgl-external)
   target_include_directories(dgl-external PUBLIC
     "${DAF_ROOT_DIR}/dgl")
   target_include_directories(dgl-external PUBLIC
@@ -1291,6 +1390,7 @@ function(daf__add_dgl_gles2 SHARED_RESOURCES USE_FILE_BROWSER USE_WEB_VIEW)
     target_sources(dgl-gles2 PRIVATE
       "${DAF_ROOT_DIR}/dgl/src/pugl.cpp")
   endif()
+  daf__set_macos_objc_namespace(dgl-gles2)
   target_include_directories(dgl-gles2 PUBLIC
     "${DAF_ROOT_DIR}/dgl")
   target_include_directories(dgl-gles2 PUBLIC
@@ -1390,6 +1490,7 @@ function(daf__add_dgl_gles3 SHARED_RESOURCES USE_FILE_BROWSER USE_WEB_VIEW)
     target_sources(dgl-gles3 PRIVATE
       "${DAF_ROOT_DIR}/dgl/src/pugl.cpp")
   endif()
+  daf__set_macos_objc_namespace(dgl-gles3)
   target_include_directories(dgl-gles3 PUBLIC
     "${DAF_ROOT_DIR}/dgl")
   target_include_directories(dgl-gles3 PUBLIC
@@ -1489,6 +1590,7 @@ function(daf__add_dgl_opengl SHARED_RESOURCES USE_FILE_BROWSER USE_WEB_VIEW)
     target_sources(dgl-opengl PRIVATE
       "${DAF_ROOT_DIR}/dgl/src/pugl.cpp")
   endif()
+  daf__set_macos_objc_namespace(dgl-opengl)
   target_include_directories(dgl-opengl PUBLIC
     "${DAF_ROOT_DIR}/dgl")
   target_include_directories(dgl-opengl PUBLIC
@@ -1585,6 +1687,7 @@ function(daf__add_dgl_opengl3 SHARED_RESOURCES USE_FILE_BROWSER USE_WEB_VIEW)
     target_sources(dgl-opengl3 PRIVATE
       "${DAF_ROOT_DIR}/dgl/src/pugl.cpp")
   endif()
+  daf__set_macos_objc_namespace(dgl-opengl3)
   target_include_directories(dgl-opengl3 PUBLIC
     "${DAF_ROOT_DIR}/dgl")
   target_include_directories(dgl-opengl3 PUBLIC
@@ -1671,6 +1774,7 @@ function(daf__add_dgl_vulkan SHARED_RESOURCES USE_FILE_BROWSER USE_WEB_VIEW)
     target_sources(dgl-vulkan PRIVATE
       "${DAF_ROOT_DIR}/dgl/src/pugl.cpp")
   endif()
+  daf__set_macos_objc_namespace(dgl-vulkan)
   target_include_directories(dgl-vulkan PUBLIC
     "${DAF_ROOT_DIR}/dgl")
   target_include_directories(dgl-vulkan PUBLIC
