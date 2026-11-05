@@ -179,6 +179,33 @@ static void testConnectionOwnership()
     }
 }
 
+static void testIndependentSeat()
+{
+    ConnectionServer server(true, true, true);
+    wl_display* const display = server.connect();
+    DGL_NAMESPACE::PuglWorld* const world =
+        puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display);
+    assert(world);
+    wl::PuglWorldInternals* const impl = static_cast<wl::PuglWorld*>(world)->impl;
+    assert(impl->seat && impl->pointer && impl->keyboard);
+    wl::puglWaylandSeatCapabilities(impl, impl->seat,
+                                  WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
+    DGL_NAMESPACE::puglFreeWorld(world);
+    assert(wl_display_roundtrip(display) >= 0);
+    unsigned pointers = 0, keyboards = 0, pointerReleases = 0, keyboardReleases = 0, seatReleases = 0;
+    for (const auto& request : server.requests())
+    {
+        if (request.type == "wl_seat" && request.opcode == 0) ++pointers;
+        if (request.type == "wl_seat" && request.opcode == 1) ++keyboards;
+        if (request.type == "wl_seat" && request.opcode == 3) ++seatReleases;
+        if (request.type == "wl_pointer" && request.opcode == 1) ++pointerReleases;
+        if (request.type == "wl_keyboard" && request.opcode == 0) ++keyboardReleases;
+    }
+    assert(pointers == 1 && keyboards == 1);
+    assert(pointerReleases == 1 && keyboardReleases == 1 && seatReleases == 1);
+    wl_display_disconnect(display);
+}
+
 static void testForeignSurface()
 {
     using namespace DGL_NAMESPACE;
@@ -494,6 +521,7 @@ int main()
     alarm(30); // Bound a broken protocol or an accidental blocking borrowed-world update.
     testBorrowedConnection();
     testConnectionOwnership();
+    testIndependentSeat();
     testForeignSurface();
     testSubsurfaceLifetime();
     alarm(0);

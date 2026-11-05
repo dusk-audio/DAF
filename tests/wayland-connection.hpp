@@ -41,8 +41,10 @@ public:
         std::vector<uint32_t> words;
     };
 
-    explicit ConnectionServer(const bool advertiseCompositor = true, const bool advertiseSubcompositor = true)
-        : advertiseCompositor(advertiseCompositor), advertiseSubcompositor(advertiseSubcompositor)
+    explicit ConnectionServer(const bool advertiseCompositor = true, const bool advertiseSubcompositor = true,
+                              const bool advertiseSeat = false)
+        : advertiseCompositor(advertiseCompositor), advertiseSubcompositor(advertiseSubcompositor),
+          advertiseSeat(advertiseSeat)
     {
         int fds[2];
         assert(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) == 0);
@@ -161,6 +163,8 @@ private:
                 global(words[0], 3, "wl_output", 2);
                 if (advertiseSubcompositor)
                     global(words[0], 4, "wl_subcompositor", 1);
+                if (advertiseSeat)
+                    global(words[0], 5, "wl_seat", 5);
             }
             else if (type == "wl_registry" && opcode == 0)
             {
@@ -170,7 +174,13 @@ private:
                     post(words.back(), 3, {2U});
                     post(words.back(), 2, {});
                 }
+                else if (objects[words.back()] == "wl_seat")
+                    post(words.back(), 0, {WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD});
             }
+            else if (type == "wl_seat" && opcode == 0)
+                objects[words[0]] = "wl_pointer";
+            else if (type == "wl_seat" && opcode == 1)
+                objects[words[0]] = "wl_keyboard";
             else if (type == "wl_compositor" && opcode == 0)
                 objects[words[0]] = "wl_surface";
             else if (type == "wl_subcompositor" && opcode == 1)
@@ -184,6 +194,7 @@ private:
 
     const bool advertiseCompositor;
     const bool advertiseSubcompositor;
+    const bool advertiseSeat;
     int serverFd;
     int clientFd;
     std::thread thread;
