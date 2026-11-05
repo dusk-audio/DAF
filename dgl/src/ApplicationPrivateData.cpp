@@ -104,7 +104,7 @@ Application::PrivateData::PrivateData(const bool standalone, const Type type, co
     : PrivateData(newWorld(standalone, windowSystem), standalone) {}
 
 Application::PrivateData::PrivateData(const ExternalWaylandDisplay display)
-    : PrivateData(puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display.display), false) {}
+    : PrivateData(puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display.display, display.inputSeat), false) {}
 
 Application::PrivateData::PrivateData(PuglWorld* const nativeWorld, const bool standalone)
     : world(nativeWorld),

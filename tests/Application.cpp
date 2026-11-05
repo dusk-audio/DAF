@@ -138,6 +138,41 @@ int main()
             assert(wl_display_roundtrip(incompleteDisplay) >= 0);
             wl_display_disconnect(incompleteDisplay);
         }
+        {
+            dafTestWayland::ConnectionServer inputServer(true, true, true);
+            wl_display* const hostDisplay = inputServer.connect();
+            wl_registry* const registry = wl_display_get_registry(hostDisplay);
+            const wl_registry_listener registryListener = {
+                [](void*, wl_registry*, uint32_t, const char*, uint32_t) {},
+                [](void*, wl_registry*, uint32_t) {}
+            };
+            assert(wl_registry_add_listener(registry, &registryListener, nullptr) == 0);
+            assert(wl_display_roundtrip(hostDisplay) >= 0);
+            wl_seat* const seat = static_cast<wl_seat*>(wl_registry_bind(registry, 5, &wl_seat_interface, 5));
+            const wl_seat_listener seatListener = {
+                [](void*, wl_seat*, uint32_t) {}, [](void*, wl_seat*, const char*) {}
+            };
+            assert(wl_seat_add_listener(seat, &seatListener, nullptr) == 0);
+            {
+                Application app(Application::ExternalWaylandDisplay{hostDisplay, seat});
+                DAF_ASSERT_EQUAL(app.getWindowSystem(), Application::kWindowSystemWayland,
+                                 "a host-managed input application uses Wayland");
+                app.idle();
+            }
+            assert(wl_display_roundtrip(hostDisplay) >= 0);
+            unsigned seatBindings = 0;
+            for (const auto& request : inputServer.requests())
+            {
+                if (request.type == "wl_registry" && request.opcode == 0 && request.words[0] == 5U) ++seatBindings;
+                DAF_ASSERT_NOT_EQUAL(request.type, std::string("wl_seat"),
+                                     "DAF must neither create input streams nor release the host seat");
+            }
+            DAF_ASSERT_EQUAL(seatBindings, 1u, "only the host binds the input seat");
+            wl_seat_release(seat);
+            wl_registry_destroy(registry);
+            assert(wl_display_roundtrip(hostDisplay) >= 0);
+            wl_display_disconnect(hostDisplay);
+        }
         alarm(0);
     }
 #else

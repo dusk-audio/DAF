@@ -130,7 +130,11 @@ public:
     Application(int argc, char* argv[], WindowSystem windowSystem = kWindowSystemAuto);
 
     struct ExternalWaylandDisplay {
+        explicit ExternalWaylandDisplay(void* nativeDisplay, void* nativeInputSeat = nullptr)
+            : display(nativeDisplay), inputSeat(nativeInputSeat) {}
+
         void* display; // wl_display*, owned by the host
+        void* inputSeat; // optional wl_seat*, owned by the host
     };
 
    /**
@@ -142,6 +146,9 @@ public:
       The host reads the connection; idle dispatches only this application's pending events.
       Initialization and synchronous clipboard requests may read the socket while dispatching only
       this application's events.
+
+      Supplying inputSeat selects host-managed input and prevents DAF from creating another pointer
+      or keyboard stream. The seat must belong to this display and outlive this Application.
 
       A host using EGL must initialize it before creating DAF windows and keep it initialized until
       all those windows are destroyed. DAF preserves existing EGL resources and current bindings;
