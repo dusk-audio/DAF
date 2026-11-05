@@ -503,7 +503,7 @@ PuglStatus puglSetAcceptsFileDrops(PuglView* const view, const bool accept)
         return PUGL_SUCCESS;
     }
 
-    // Wayland has no embedding; a compositor without a data device has no drops either
+    // Only parentless views take drops, through a data device, which a borrowed connection never has
     if (view->parent != 0 || wimpl->dataDevice == nullptr)
         return PUGL_UNSUPPORTED;
 

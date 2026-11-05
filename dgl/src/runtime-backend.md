@@ -107,7 +107,7 @@ Why this and not something else:
 
 A call inside a pass to a public function that the same pass only defines further down finds the
 DGL-scope forwarder through the base class (argument-dependent lookup), and reaches the same function
-one step later. Eleven calls do that, found by building without optimisation and listing every call
+one step later. Twelve calls do that, found by building without optimisation and listing every call
 from a pass into DGL scope:
 
 | Called | From |
@@ -116,6 +116,7 @@ from a pass into DGL scope:
 | `puglGetTime` | `puglUpdate` in `x11.c` |
 | `puglGetViewStyle` | `puglSetViewStyle` in both passes |
 | `puglGetVisible` | `flushExposures` in `x11.c`, `puglWaylandFlushExposures` in `wayland.c` |
+| `puglGrabFocus` | `puglWaylandPointerButton` in `wayland.c` |
 | `puglObscureRegion` | `puglObscureView` in both passes |
 | `puglObscureView` | `puglShow` in `x11.c` |
 | `puglSetTransientParent` | `puglRealize` in `x11.c` |
