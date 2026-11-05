@@ -187,6 +187,7 @@ static void testIndependentSeat()
     DGL_NAMESPACE::PuglWorld* const world =
         puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display);
     assert(world);
+    assert(!puglGetWaylandInput(world).data);
     wl::PuglWorldInternals* const impl = static_cast<wl::PuglWorld*>(world)->impl;
     assert(impl->seat && impl->pointer && impl->keyboard);
     wl::puglWaylandSeatCapabilities(impl, impl->seat,
@@ -292,6 +293,10 @@ static void testHostFocus()
     DGL_NAMESPACE::PuglWorld* const world = puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display, seat);
     assert(world);
     auto* const impl = static_cast<wl::PuglWorld*>(world)->impl;
+    const auto input = puglGetWaylandInput(world);
+    assert(input.data == impl && input.keyboard && input.pointer && input.consumed &&
+           input.hasKeyboardFocus && input.releaseFocus && input.reset);
+    assert(!input.hasKeyboardFocus(input.data));
     struct FocusLog {
         std::vector<std::pair<DGL_NAMESPACE::PuglView*, PuglEventType>> events;
         wl::PuglView* redirect = nullptr;
@@ -378,10 +383,18 @@ static void testHostFocus()
         "xkb_keymap { xkb_keycodes { minimum=8; maximum=255; <AC01>=38; };"
         "xkb_types { type \"ONE_LEVEL\" { modifiers=None; map[None]=Level1; }; };"
         "xkb_compatibility {}; xkb_symbols { key <AC01> { [ a ] }; }; };";
-    impl->xkb.keymap = xkb_keymap_new_from_string(impl->xkb.context, keymap,
-                                                XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
-    assert(impl->xkb.keymap);
-    impl->xkb.state = xkb_state_new(impl->xkb.keymap);
+    char keymapPath[] = "/tmp/daf-keymap-XXXXXX";
+    const int keymapFd = mkstemp(keymapPath);
+    assert(keymapFd >= 0 && unlink(keymapPath) == 0);
+    const size_t keymapSize = std::strlen(keymap) + 1U;
+    assert(write(keymapFd, keymap, keymapSize) == static_cast<ssize_t>(keymapSize));
+    const int copy = fcntl(keymapFd, F_DUPFD_CLOEXEC, 0);
+    assert(copy >= 0);
+    input.keyboard->keymap(input.data, nullptr, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, copy, uint32_t(keymapSize));
+    errno = 0;
+    assert(fcntl(copy, F_GETFD) < 0 && errno == EBADF);
+    assert(fcntl(keymapFd, F_GETFD) >= 0);
+    close(keymapFd);
     assert(impl->xkb.state);
     wl::puglWaylandKeyboardKey(impl, nullptr, 101, 200, 30, WL_KEYBOARD_KEY_STATE_PRESSED);
     assert(wl::puglGrabFocus(views[0]) == PUGL_SUCCESS);
@@ -417,19 +430,25 @@ static void testHostFocus()
     assert(wl::puglShow(views[1], PUGL_SHOW_PASSIVE) == PUGL_SUCCESS);
     assert(wl::puglGrabFocus(views[1]) == PUGL_SUCCESS);
     const auto key = [&](uint32_t code, bool pressed) {
-        wl::puglWaylandKeyboardKey(impl, nullptr, 200, 300, code,
-                                   pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED);
-        return impl->lastEventConsumed;
+        input.keyboard->key(input.data, nullptr, 200, 300, code,
+                            pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED);
+        return input.consumed(input.data);
     };
     const auto button = [&](bool pressed) {
-        wl::puglWaylandPointerButton(impl, nullptr, 201, 301, PUGL_WAYLAND_BTN_LEFT,
-                                     pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
-        return impl->lastEventConsumed;
+        input.pointer->button(input.data, nullptr, 201, 301, PUGL_WAYLAND_BTN_LEFT,
+                              pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
+        return input.consumed(input.data);
     };
     log.events.clear();
     assert(key(30, false) && button(false) && log.events.empty());
     assert(key(30, true) && key(30, false));
     assert(log.events.size() == 3 && log.events.back().second == PUGL_KEY_RELEASE);
+    assert(input.hasKeyboardFocus(input.data) && key(30, true));
+    input.releaseFocus(input.data);
+    assert(!input.hasKeyboardFocus(input.data) && !impl->selectedView);
+    log.events.clear();
+    assert(key(30, false) && log.events.empty());
+    assert(wl::puglGrabFocus(views[1]) == PUGL_SUCCESS);
 
     uint32_t heldCode = 30;
     wl_array held = {sizeof(heldCode), sizeof(heldCode), &heldCode};
@@ -485,6 +504,8 @@ static void testHostFocus()
     assert(log.events.back().second == PUGL_FOCUS_OUT);
     log.events.clear();
     assert(button(false) && key(30, false) && log.events.empty());
+    input.reset(input.data);
+    assert(!impl->xkb.state && !impl->xkb.keymap && !input.consumed(input.data));
     DGL_NAMESPACE::puglFreeWorld(world);
     wl_surface_destroy(otherParent);
     wl_surface_destroy(parent);
@@ -514,6 +535,7 @@ static void testHostPointer()
     auto* const world = puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display, seat);
     assert(world);
     auto* const impl = static_cast<wl::PuglWorld*>(world)->impl;
+    const auto input = puglGetWaylandInput(world);
     struct PointerLog {
         std::vector<std::pair<DGL_NAMESPACE::PuglView*, PuglEventType>> events;
         double x = 0, y = 0;
@@ -568,6 +590,20 @@ static void testHostPointer()
     wl::puglWaylandPointerMotion(impl, pointer, 103, 0, 0);
     wl::puglWaylandPointerButton(impl, pointer, 46, 104, PUGL_WAYLAND_BTN_RIGHT, WL_POINTER_BUTTON_STATE_PRESSED);
     assert(log.events.empty() && !impl->lastEventConsumed);
+    log.hideOnScroll = false;
+    input.keyboard->enter(input.data, nullptr, 47, parent, nullptr);
+    assert(wl::puglGrabFocus(views[0]) == PUGL_SUCCESS);
+    input.pointer->enter(input.data, pointer, 48, views[0]->impl->wlSurface, 0, 0);
+    input.pointer->button(input.data, pointer, 49, 105, PUGL_WAYLAND_BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+    input.keyboard->key(input.data, nullptr, 50, 106, 30, WL_KEYBOARD_KEY_STATE_PRESSED);
+    wl::puglWaylandStartRepeat(impl, views[0], 30, 0.0);
+    assert(input.hasKeyboardFocus(input.data) && impl->heldKeys.count && impl->heldButtons.count);
+    input.reset(input.data);
+    assert(!input.hasKeyboardFocus(input.data) && !impl->pointerFocus && !impl->pointer && !impl->keyboard);
+    assert(!impl->heldKeys.count && !impl->heldButtons.count && !impl->repeat.view && !impl->lastSerial);
+    assert(impl->seat == seat);
+    input.pointer->enter(input.data, pointer, 51, views[0]->impl->wlSurface, 0, 0);
+    assert(impl->pointer == pointer && impl->pointerFocus == views[0]);
     for (auto* view : views) DGL_NAMESPACE::puglFreeView(view);
     DGL_NAMESPACE::puglFreeWorld(world);
     assert(wl_pointer_get_user_data(pointer) == &log);
@@ -901,6 +937,7 @@ int main()
     }
 #endif
     assert(puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, nullptr) == nullptr);
+    assert(!puglGetWaylandInput(nullptr).data);
     alarm(30); // Bound a broken protocol or an accidental blocking borrowed-world update.
     testBorrowedConnection();
     testConnectionOwnership();

@@ -1925,6 +1925,37 @@ static const struct wl_keyboard_listener puglWaylandKeyboardListener = {
 };
 
 static void
+puglWaylandResetHostInput(PuglWorldInternals* const impl)
+{
+  impl->pointer = NULL;
+  impl->keyboard = NULL;
+  impl->hostKeyboardSurface = NULL;
+  impl->selectedView = NULL;
+  impl->heldKeys.count = 0;
+  impl->heldButtons.count = 0;
+  impl->lastSerial = 0;
+  impl->pointerEnterSerial = 0;
+  impl->activationSource = NULL;
+  impl->activationSerial = 0;
+  impl->mods = 0;
+  puglWaylandStopRepeat(impl);
+  puglWaylandUpdateHostFocus(impl);
+  puglWaylandClearPointerFocus(impl);
+  if (impl->xkb.state) {
+    xkb_state_unref(impl->xkb.state);
+    impl->xkb.state = NULL;
+  }
+  if (impl->xkb.keymap) {
+    xkb_keymap_unref(impl->xkb.keymap);
+    impl->xkb.keymap = NULL;
+  }
+  if (impl->xkb.composeState) {
+    xkb_compose_state_reset(impl->xkb.composeState);
+  }
+  impl->lastEventConsumed = false;
+}
+
+static void
 puglWaylandHandleRepeat(PuglWorldInternals* const impl)
 {
 #if PUGL_WAYLAND_HAVE_TIMERFD

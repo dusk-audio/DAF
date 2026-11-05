@@ -365,6 +365,48 @@ PuglWorld* puglNewWorldWithWaylandDisplay(const PuglWorldType type,
 }
 
 // --------------------------------------------------------------------------------------------------------------------
+// DGL specific, host Wayland input
+
+WaylandInput puglGetWaylandInput(PuglWorld* const world)
+{
+    WaylandInput input = {};
+   #ifdef DGL_USING_WAYLAND
+    if (world == nullptr)
+        return input;
+    #ifdef DGL_RUNTIME_BACKEND
+    if (world->system != kPuglWindowSystemWayland)
+        return input;
+    namespace backend = pugl_wl;
+    #else
+    namespace backend = DGL_NAMESPACE;
+    #endif
+    auto* const impl = static_cast<backend::PuglWorld*>(world)->impl;
+    if (!impl->hostManagedInput)
+        return input;
+    input.keyboard = &backend::puglWaylandKeyboardListener;
+    input.pointer = &backend::puglWaylandPointerListener;
+    input.data = impl;
+    input.consumed = [](void* data) {
+        return static_cast<backend::PuglWorldInternals*>(data)->lastEventConsumed;
+    };
+    input.hasKeyboardFocus = [](void* data) {
+        return static_cast<backend::PuglWorldInternals*>(data)->keyboardFocus != nullptr;
+    };
+    input.releaseFocus = [](void* data) {
+        auto* const impl = static_cast<backend::PuglWorldInternals*>(data);
+        impl->selectedView = nullptr;
+        backend::puglWaylandUpdateHostFocus(impl);
+    };
+    input.reset = [](void* data) {
+        backend::puglWaylandResetHostInput(static_cast<backend::PuglWorldInternals*>(data));
+    };
+   #else
+    (void)world;
+   #endif
+    return input;
+}
+
+// --------------------------------------------------------------------------------------------------------------------
 // DGL specific, build-specific drawing prepare
 
 void puglOnDisplayPrepare(PuglView*)

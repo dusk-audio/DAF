@@ -18,6 +18,7 @@
 #define DGL_PUGL_HPP_INCLUDED
 
 #include "../Base.hpp"
+#include "../WaylandInput.hpp"
 
 // we will include all header files used in pugl.h in their C++ friendly form, then pugl stuff in custom namespace
 #include <cstddef>
@@ -63,6 +64,7 @@ START_NAMESPACE_DGL
 // A supplied seat selects host-managed input. The host keeps both proxies alive until world teardown.
 PuglWorld* puglNewWorldWithWaylandDisplay(PuglWorldType type, PuglWorldFlags flags, void* display,
                                         void* inputSeat = nullptr);
+WaylandInput puglGetWaylandInput(PuglWorld* world);
 
 // DGL outgoing file drag, polled by Window outside its rendering callback.
 struct PuglFileDrag
