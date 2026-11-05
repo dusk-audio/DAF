@@ -167,12 +167,14 @@ static bool puglWaylandCanMakeGlContext(pugl_wl::PuglWorld* const world)
 
     EGLConfig config = nullptr;
     EGLint numConfigs = 0;
+    const EGLenum previousApi = eglQueryAPI();
     const bool usable = eglBindAPI(api) == EGL_TRUE
                      && eglChooseConfig(display, attributes, &config, 1, &numConfigs) == EGL_TRUE
                      && numConfigs > 0;
+    const bool restored = eglBindAPI(previousApi) == EGL_TRUE;
 
     pugl_wl::puglWaylandGlReleaseDisplay(world->impl);
-    return usable;
+    return usable && restored;
 }
 #endif
 

@@ -343,6 +343,11 @@ static int checkBorrowedEgl()
     HostEgl host;
     if (host.connect() || host.initialize()) return 1;
     DAF_ASSERT_EQUAL(eglBindAPI(EGL_OPENGL_ES_API), EGL_TRUE, "the host selects a different client API");
+    {
+        WorldOwner probe(puglNewWorldOn(kPuglWindowSystemWayland, PUGL_MODULE, 0), puglFreeWorld);
+        DAF_ASSERT_NOT_EQUAL(probe.get(), nullptr, "the runtime probe opens a separate Wayland connection");
+        if (host.checkBinding()) return 1;
+    }
     WorldOwner world(puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, host.connection), puglFreeWorld);
     DAF_ASSERT_NOT_EQUAL(world.get(), nullptr, "the DAF world borrows the host connection");
     {

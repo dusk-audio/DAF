@@ -457,6 +457,46 @@ int main()
         }
         DAF_ASSERT_EQUAL(win.contextIsCurrent(), false, "the outer scope leaves the context it entered");
     }
+
+    {
+        Application app(true);
+        DAF_NAMESPACE::PluginWindow parent(app, 160, 160, 1.0);
+        DAF_NAMESPACE::PluginWindow child(app, 160, 160, 1.0);
+        for (unsigned parentActive = 0; parentActive < 2; ++parentActive)
+        {
+            const auto exercise = [&]() -> int {
+                Window::ScopedGraphicsContext scope(child, parent);
+                DAF_ASSERT_EQUAL(child.contextIsCurrent(), true, "a transient scope enters the child");
+                scope.done();
+                DAF_ASSERT_EQUAL(parent.contextIsCurrent(), parentActive != 0, "done restores only an active parent");
+                scope.reinit();
+                DAF_ASSERT_EQUAL(child.contextIsCurrent(), true, "reinit enters the child again");
+                scope.done();
+                DAF_ASSERT_EQUAL(parent.contextIsCurrent(), parentActive != 0, "repeated done preserves parent state");
+                return 0;
+            };
+            if (parentActive)
+            {
+                const Window::ScopedGraphicsContext outer(parent);
+                if (exercise()) return 1;
+            }
+            else if (exercise()) return 1;
+            DAF_ASSERT_EQUAL(parent.contextIsCurrent(), false, "the parent has no unmatched context entry");
+        }
+        if (app.getWindowSystem() == Application::kWindowSystemWayland)
+        {
+            const Window::ScopedGraphicsContext outer(parent);
+            {
+                const Window::ScopedGraphicsContext inner(child);
+                {
+                    const Window::ScopedGraphicsContext nested(parent);
+                    DAF_ASSERT_EQUAL(parent.contextIsCurrent(), true, "a different-window scope can re-enter its caller");
+                }
+                DAF_ASSERT_EQUAL(child.contextIsCurrent(), true, "nested destruction restores the child");
+            }
+            DAF_ASSERT_EQUAL(parent.contextIsCurrent(), true, "different-window scope restores its caller");
+        }
+    }
    #endif
 
     // TODO

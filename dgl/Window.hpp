@@ -101,7 +101,7 @@ public:
             If it already is, it is left current when done, so scopes can nest. */
         explicit ScopedGraphicsContext(Window& window);
 
-        /** Overloaded constructor, gives back context to its transient parent when done */
+        /** Overloaded constructor, restores an active transient-parent context when done. */
         explicit ScopedGraphicsContext(Window& window, Window& transientParentWindow);
 
         /** Destructor for clearing current context, if not done yet */

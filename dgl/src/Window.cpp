@@ -55,11 +55,11 @@ Window::ScopedGraphicsContext::ScopedGraphicsContext(Window& win, Window& transi
     : window(win),
       ppData(transientWin.pData),
       active(false),
-      reenter(window.pData->view != nullptr)
+      reenter(false)
 {
-    if (reenter)
+    if (window.pData->view != nullptr)
     {
-        puglBackendLeave(ppData->view);
+        reenter = puglBackendIsCurrent(ppData->view, false) && puglBackendLeave(ppData->view);
         active = puglBackendEnter(window.pData->view);
         if (active)
             window.pData->createContextIfNeeded();
@@ -94,8 +94,10 @@ void Window::ScopedGraphicsContext::reinit()
     DAF_SAFE_ASSERT_RETURN(!reenter,);
     DAF_SAFE_ASSERT_RETURN(ppData != nullptr,);
 
-    reenter = true;
-    puglBackendLeave(ppData->view);
+    if (window.pData->view == nullptr)
+        return;
+
+    reenter = puglBackendIsCurrent(ppData->view, false) && puglBackendLeave(ppData->view);
     active = puglBackendEnter(window.pData->view);
 }
 
