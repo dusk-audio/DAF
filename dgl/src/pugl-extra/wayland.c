@@ -1086,19 +1086,48 @@ static PuglStatus puglWaylandApplyCursor(PuglWorldInternals* impl,
                                          PuglCursor          cursor);
 
 static void
+puglWaylandClearPointerFocus(PuglWorldInternals* const impl)
+{
+  PuglView* const view = impl->pointerFocus;
+  impl->pointerFocus = NULL;
+  memset(&impl->scroll, 0, sizeof(impl->scroll));
+  if (view) {
+    PuglEvent event      = {{PUGL_POINTER_OUT, 0U}};
+    event.crossing.time  = puglWaylandTime(view->world);
+    event.crossing.x     = impl->pointerX;
+    event.crossing.y     = impl->pointerY;
+    event.crossing.xRoot = impl->pointerX;
+    event.crossing.yRoot = impl->pointerY;
+    event.crossing.state = puglWaylandMods(impl);
+    event.crossing.mode  = PUGL_CROSSING_NORMAL;
+    puglDispatchEvent(view, &event);
+  }
+}
+
+static void
 puglWaylandPointerEnter(void* const              data,
-                        struct wl_pointer* const PUGL_UNUSED(pointer),
+                        struct wl_pointer* const pointer,
                         const uint32_t           serial,
                         struct wl_surface* const surface,
                         const wl_fixed_t         surfaceX,
                         const wl_fixed_t         surfaceY)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
-  PuglView* const           view = puglWaylandViewForSurface(surface);
+  PuglView* view = puglWaylandViewForSurface(surface);
+  if (view && view->world->impl != impl) {
+    view = NULL;
+  }
+  if (impl->hostManagedInput) {
+    impl->pointer = pointer;
+    if (view && !view->impl->visible) {
+      view = NULL;
+    }
+  }
 
   impl->lastSerial         = serial;
   impl->pointerEnterSerial = serial;
   impl->pointerFocus       = view;
+  memset(&impl->scroll, 0, sizeof(impl->scroll));
 
   if (!view) {
     return;
@@ -1128,27 +1157,19 @@ puglWaylandPointerLeave(void* const              data,
                         struct wl_surface* const surface)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
-  PuglView* const           view = puglWaylandViewForSurface(surface);
+  PuglView* const view = impl->pointerFocus;
 
   impl->lastSerial = serial;
 
-  if (impl->pointerFocus == view) {
-    impl->pointerFocus = NULL;
-  }
-
-  if (!view) {
+  if (!view || view->impl->wlSurface != surface) {
     return;
   }
 
-  PuglEvent event      = {{PUGL_POINTER_OUT, 0U}};
-  event.crossing.time  = puglWaylandTime(view->world);
-  event.crossing.x     = impl->pointerX;
-  event.crossing.y     = impl->pointerY;
-  event.crossing.xRoot = impl->pointerX;
-  event.crossing.yRoot = impl->pointerY;
-  event.crossing.state = puglWaylandMods(impl);
-  event.crossing.mode  = PUGL_CROSSING_NORMAL;
-  puglDispatchEvent(view, &event);
+  const uint32_t enterSerial = impl->pointerEnterSerial;
+  puglWaylandFlushScroll(impl);
+  if (impl->pointerFocus == view && impl->pointerEnterSerial == enterSerial) {
+    puglWaylandClearPointerFocus(impl);
+  }
 }
 
 static void
@@ -1266,6 +1287,9 @@ puglWaylandPointerAxis(void* const              data,
                        const wl_fixed_t         value)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
+  if (!impl->pointerFocus) {
+    return;
+  }
 
   const double lines = wl_fixed_to_double(value) / PUGL_WAYLAND_AXIS_PER_LINE;
 
@@ -1509,8 +1533,7 @@ puglWaylandForgetHostInput(PuglView* const view)
     puglWaylandCancelPresses(&impl->heldKeys, view);
     puglWaylandCancelPresses(&impl->heldButtons, view);
     if (impl->pointerFocus == view) {
-      impl->pointerFocus = NULL;
-      memset(&impl->scroll, 0, sizeof(impl->scroll));
+      puglWaylandClearPointerFocus(impl);
     }
     if (impl->selectedView == view) {
       impl->selectedView = NULL;

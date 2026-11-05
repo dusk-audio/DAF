@@ -18,6 +18,7 @@
 
 #include <cassert>
 #include <cerrno>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -494,6 +495,100 @@ static void testHostFocus()
     wl_display_disconnect(display);
 }
 
+static void testHostPointer()
+{
+    ConnectionServer server(true, true, true);
+    wl_display* const display = server.connect();
+    wl_registry* const registry = wl_display_get_registry(display);
+    wl_compositor* compositor = nullptr;
+    const wl_registry_listener registryListener = {hostGlobal, hostGlobalRemove};
+    assert(wl_registry_add_listener(registry, &registryListener, &compositor) == 0);
+    assert(wl_display_roundtrip(display) >= 0);
+    wl_seat* const seat = static_cast<wl_seat*>(wl_registry_bind(registry, 5, &wl_seat_interface, 5));
+    const wl_seat_listener seatListener = {
+        [](void*, wl_seat*, uint32_t) {}, [](void*, wl_seat*, const char*) {}
+    };
+    assert(wl_seat_add_listener(seat, &seatListener, nullptr) == 0);
+    wl_pointer* const pointer = wl_seat_get_pointer(seat);
+    wl_surface* const parent = wl_compositor_create_surface(compositor);
+    auto* const world = puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display, seat);
+    assert(world);
+    auto* const impl = static_cast<wl::PuglWorld*>(world)->impl;
+    struct PointerLog {
+        std::vector<std::pair<DGL_NAMESPACE::PuglView*, PuglEventType>> events;
+        double x = 0, y = 0;
+        bool hideOnScroll = false;
+    } log;
+    wl_pointer_set_user_data(pointer, &log);
+    wl::PuglView* views[2];
+    for (auto& view : views)
+    {
+        view = static_cast<wl::PuglView*>(DGL_NAMESPACE::puglNewView(world));
+        assert(view);
+        wl::puglSetMatchingBackendForCurrentBuild(view);
+        wl::puglSetParent(view, reinterpret_cast<PuglNativeView>(parent));
+        wl::puglSetSizeHint(view, PUGL_DEFAULT_SIZE, 200, 100);
+        wl::puglSetHandle(view, &log);
+        wl::puglSetEventFunc(view, [](DGL_NAMESPACE::PuglView* view, const PuglEvent* event) {
+            auto* const log = static_cast<PointerLog*>(DGL_NAMESPACE::puglGetHandle(view));
+            if (event->type == PUGL_POINTER_IN || event->type == PUGL_POINTER_OUT ||
+                event->type == PUGL_MOTION || event->type == PUGL_SCROLL || event->type == PUGL_BUTTON_PRESS)
+                log->events.emplace_back(view, event->type);
+            if (event->type == PUGL_MOTION) {
+                log->x = event->motion.x;
+                log->y = event->motion.y;
+            }
+            if (event->type == PUGL_SCROLL && log->hideOnScroll)
+                assert(DGL_NAMESPACE::puglHide(view) == PUGL_SUCCESS);
+            return PUGL_SUCCESS;
+        });
+        assert(wl::puglShow(view, PUGL_SHOW_PASSIVE) == PUGL_SUCCESS);
+        view->impl->scale = 1.5;
+    }
+    wl::puglWaylandPointerEnter(impl, pointer, 41, views[0]->impl->wlSurface, 0, 0);
+    assert(impl->pointer == pointer);
+    assert(wl::puglSetCursor(views[0], PUGL_CURSOR_NONE) == PUGL_SUCCESS);
+    wl::puglWaylandPointerMotion(impl, pointer, 100, wl_fixed_from_int(12), wl_fixed_from_int(8));
+    assert(std::abs(log.x - 18.0) < 1e-9 && std::abs(log.y - 12.0) < 1e-9);
+    log.events.clear();
+    wl::puglWaylandPointerAxis(impl, pointer, 101, WL_POINTER_AXIS_VERTICAL_SCROLL, wl_fixed_from_int(10));
+    wl::puglWaylandPointerLeave(impl, pointer, 42, views[0]->impl->wlSurface);
+    assert(log.events.size() == 2 && log.events[0].second == PUGL_SCROLL &&
+           log.events[1].second == PUGL_POINTER_OUT);
+    wl::puglWaylandPointerEnter(impl, pointer, 43, views[1]->impl->wlSurface, 0, 0);
+    log.events.clear();
+    wl::puglWaylandPointerFrame(impl, pointer);
+    assert(log.events.empty());
+    log.hideOnScroll = true;
+    wl::puglWaylandPointerAxis(impl, pointer, 102, WL_POINTER_AXIS_VERTICAL_SCROLL, wl_fixed_from_int(10));
+    wl::puglWaylandPointerLeave(impl, pointer, 44, views[1]->impl->wlSurface);
+    assert(log.events.size() == 2 && log.events.back().second == PUGL_POINTER_OUT);
+    log.events.clear();
+    wl::puglWaylandPointerEnter(impl, pointer, 45, views[1]->impl->wlSurface, 0, 0);
+    wl::puglWaylandPointerMotion(impl, pointer, 103, 0, 0);
+    wl::puglWaylandPointerButton(impl, pointer, 46, 104, PUGL_WAYLAND_BTN_RIGHT, WL_POINTER_BUTTON_STATE_PRESSED);
+    assert(log.events.empty() && !impl->lastEventConsumed);
+    for (auto* view : views) DGL_NAMESPACE::puglFreeView(view);
+    DGL_NAMESPACE::puglFreeWorld(world);
+    assert(wl_pointer_get_user_data(pointer) == &log);
+    assert(wl_display_roundtrip(display) >= 0);
+    bool cursorHidden = false;
+    for (const auto& request : server.requests())
+    {
+        if (request.type != "wl_pointer") continue;
+        assert(request.opcode != 1);
+        if (request.opcode == 0 && request.words[0] == 41 && request.words[1] == 0) cursorHidden = true;
+    }
+    assert(cursorHidden);
+    wl_pointer_release(pointer);
+    wl_surface_destroy(parent);
+    wl_seat_release(seat);
+    wl_compositor_destroy(compositor);
+    wl_registry_destroy(registry);
+    assert(wl_display_roundtrip(display) >= 0);
+    wl_display_disconnect(display);
+}
+
 static void testForeignSurface()
 {
     using namespace DGL_NAMESPACE;
@@ -812,6 +907,7 @@ int main()
     testIndependentSeat();
     testHostSeat();
     testHostFocus();
+    testHostPointer();
     testForeignSurface();
     testSubsurfaceLifetime();
     alarm(0);
