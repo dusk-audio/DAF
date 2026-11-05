@@ -60,6 +60,9 @@ START_NAMESPACE_DGL
 
 // --------------------------------------------------------------------------------------------------------------------
 
+// Borrows the display without backend fallback; the caller keeps it alive until the world is freed.
+PuglWorld* puglNewWorldWithWaylandDisplay(PuglWorldType type, PuglWorldFlags flags, void* display);
+
 // DGL outgoing file drag, polled by Window outside its rendering callback.
 struct PuglFileDrag
 {

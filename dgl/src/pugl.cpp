@@ -314,6 +314,50 @@ START_NAMESPACE_DGL
 #endif
 
 // --------------------------------------------------------------------------------------------------------------------
+// DGL specific, borrowed Wayland connection
+
+PuglWorld* puglNewWorldWithWaylandDisplay(const PuglWorldType type,
+                                        const PuglWorldFlags flags,
+                                        void* const display)
+{
+    if (display == nullptr)
+    {
+        d_stderr2("DGL: cannot borrow a null Wayland display");
+        return nullptr;
+    }
+
+   #ifdef DGL_USING_WAYLAND
+    #ifdef DGL_RUNTIME_BACKEND
+    if (const char* const failure = dglWaylandLoad())
+    {
+        d_stderr2("DGL: cannot borrow the Wayland display: %s", failure);
+        return nullptr;
+    }
+    namespace backend = pugl_wl;
+    #else
+    namespace backend = DGL_NAMESPACE;
+    #endif
+
+    backend::PuglWorld* const world = backend::puglNewWorldWithInit(
+        type, flags,
+        [](PuglWorldType worldType, PuglWorldFlags, void* context) {
+            return backend::puglWaylandInitWorldInternals(
+                static_cast<wl_display*>(context), false, worldType);
+        }, display);
+    #ifdef DGL_RUNTIME_BACKEND
+    if (world != nullptr)
+        world->system = kPuglWindowSystemWayland;
+    #endif
+    return world;
+   #else
+    (void)type;
+    (void)flags;
+    d_stderr2("DGL: this build cannot borrow a Wayland display");
+    return nullptr;
+   #endif
+}
+
+// --------------------------------------------------------------------------------------------------------------------
 // DGL specific, build-specific drawing prepare
 
 void puglOnDisplayPrepare(PuglView*)

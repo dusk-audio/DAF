@@ -20,15 +20,12 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
-#include <map>
 #include <string>
-#include <thread>
-#include <vector>
 #include <fcntl.h>
-#include <sys/socket.h>
 #include <unistd.h>
 
 #include "dgl/src/pugl.cpp"
+#include "wayland-connection.hpp"
 
 #ifndef HAVE_WAYLAND
 # error This test requires the native Wayland backend
@@ -39,143 +36,12 @@
 namespace {
 
 using namespace DGL_NAMESPACE;
+using namespace dafTestWayland;
 #ifdef DGL_RUNTIME_BACKEND
 namespace wl = DGL_NAMESPACE::pugl_wl;
 #else
 namespace wl = DGL_NAMESPACE;
 #endif
-
-// Only registry discovery and sync replies are needed; no compositor or display server is used.
-class ConnectionServer
-{
-public:
-    explicit ConnectionServer(const bool advertiseCompositor = true)
-        : advertiseCompositor(advertiseCompositor)
-    {
-        int fds[2];
-        assert(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) == 0);
-        serverFd = fds[0];
-        clientFd = fds[1];
-        objects[1] = "wl_display";
-        thread = std::thread(&ConnectionServer::serve, this);
-    }
-
-    ~ConnectionServer()
-    {
-        shutdown(serverFd, SHUT_RDWR);
-        thread.join();
-        close(serverFd);
-        if (clientFd >= 0)
-            close(clientFd);
-    }
-
-    wl_display* connect()
-    {
-        const char* const previous = std::getenv("WAYLAND_SOCKET");
-        const bool hadPrevious = previous != nullptr;
-        const std::string saved = previous ? previous : "";
-        assert(setenv("WAYLAND_SOCKET", std::to_string(clientFd).c_str(), 1) == 0);
-        wl_display* const display = wl_display_connect(nullptr);
-        clientFd = -1; // wl_display_connect consumes the socket, even on failure
-        if (hadPrevious)
-            assert(setenv("WAYLAND_SOCKET", saved.c_str(), 1) == 0);
-        else
-            assert(unsetenv("WAYLAND_SOCKET") == 0);
-        assert(display);
-        return display;
-    }
-
-private:
-    void post(const uint32_t object, const uint16_t opcode, std::vector<uint32_t> payload)
-    {
-        payload.insert(payload.begin(), (uint32_t(payload.size() + 2U) * 4U << 16U) | opcode);
-        payload.insert(payload.begin(), object);
-        const char* data = reinterpret_cast<const char*>(payload.data());
-        size_t remaining = payload.size() * sizeof(uint32_t);
-        while (remaining)
-        {
-            const ssize_t sent = send(serverFd, data, remaining, MSG_NOSIGNAL);
-            if (sent < 0 && errno == EINTR)
-                continue;
-            if (sent <= 0)
-                return;
-            remaining -= size_t(sent);
-            data += sent;
-        }
-    }
-
-    void global(const uint32_t registry, const uint32_t name, const char* const interface,
-                const uint32_t version)
-    {
-        const size_t length = std::strlen(interface) + 1U;
-        std::vector<uint32_t> words(2U + (length + 3U) / 4U, 0U);
-        words[0] = name;
-        words[1] = uint32_t(length);
-        std::memcpy(words.data() + 2, interface, length);
-        words.push_back(version);
-        post(registry, 0, words);
-    }
-
-    bool read(void* const buffer, const size_t size)
-    {
-        char* data = static_cast<char*>(buffer);
-        size_t remaining = size;
-        while (remaining)
-        {
-            const ssize_t received = recv(serverFd, data, remaining, 0);
-            if (received < 0 && errno == EINTR)
-                continue;
-            if (received <= 0)
-                return false;
-            remaining -= size_t(received);
-            data += received;
-        }
-        return true;
-    }
-
-    void serve()
-    {
-        uint32_t header[2];
-        while (read(header, sizeof(header)))
-        {
-            const uint32_t size = header[1] >> 16U;
-            assert(size >= 8U && size % 4U == 0U);
-            std::vector<uint32_t> words((size - 8U) / 4U);
-            if (! read(words.data(), size - 8U))
-                return;
-            const uint16_t opcode = uint16_t(header[1]);
-            const std::string type = objects[header[0]];
-            if (type == "wl_display" && opcode == 0)
-            {
-                post(words[0], 0, {1U});
-                post(1, 1, {words[0]});
-            }
-            else if (type == "wl_display" && opcode == 1)
-            {
-                objects[words[0]] = "wl_registry";
-                if (advertiseCompositor)
-                    global(words[0], 1, "wl_compositor", 4);
-                global(words[0], 2, "xdg_wm_base", 1);
-                global(words[0], 3, "wl_output", 2);
-            }
-            else if (type == "wl_registry" && opcode == 0)
-            {
-                objects[words.back()] = reinterpret_cast<const char*>(words.data() + 2);
-                if (objects[words.back()] == "wl_output")
-                {
-                    post(words.back(), 3, {2U});
-                    post(words.back(), 2, {});
-                }
-            }
-        }
-    }
-
-    const bool advertiseCompositor;
-    int serverFd;
-    int clientFd;
-    std::thread thread;
-    std::map<uint32_t, std::string> objects;
-};
 
 static void hostGlobal(void* data, wl_registry* registry, uint32_t name,
                        const char* interface, uint32_t)
@@ -186,39 +52,6 @@ static void hostGlobal(void* data, wl_registry* registry, uint32_t name,
 }
 
 static void hostGlobalRemove(void*, wl_registry*, uint32_t) {}
-
-static void syncDone(void* const data, wl_callback* const callback, uint32_t)
-{
-    ++*static_cast<unsigned*>(data);
-    wl_callback_destroy(callback);
-}
-
-static void queueSync(wl_display* const display, wl_event_queue* const queue,
-                      const wl_callback_listener* const listener, void* const data)
-{
-    wl_callback* callback;
-    if (queue)
-    {
-        wl_display* const wrapper = static_cast<wl_display*>(wl_proxy_create_wrapper(display));
-        assert(wrapper);
-        wl_proxy_set_queue(reinterpret_cast<wl_proxy*>(wrapper), queue);
-        callback = wl_display_sync(wrapper);
-        wl_proxy_wrapper_destroy(wrapper);
-    }
-    else
-        callback = wl_display_sync(display);
-    assert(callback);
-    assert(wl_callback_add_listener(callback, listener, data) == 0);
-}
-
-// Read all preceding replies without dispatching either the host queue or DAF's queue.
-static void readReplies(wl_display* const display)
-{
-    wl_event_queue* const fence = wl_display_create_queue(display);
-    assert(fence);
-    assert(wl_display_roundtrip_queue(display, fence) >= 0);
-    wl_event_queue_destroy(fence);
-}
 
 static void sendPaste(void* const data, wl_callback* const callback, uint32_t)
 {
@@ -239,28 +72,39 @@ static void testBorrowedConnection()
     const bool hadPrevious = previous != nullptr;
     const std::string saved = previous ? previous : "";
     assert(setenv("XDG_ACTIVATION_TOKEN", "host-launch-token", 1) == 0);
+    const char* const previousBackend = std::getenv("DAF_WINDOW_BACKEND");
+    const bool hadBackend = previousBackend != nullptr;
+    const std::string savedBackend = previousBackend ? previousBackend : "";
+    assert(setenv("DAF_WINDOW_BACKEND", "x11", 1) == 0);
 
     for (unsigned cycle = 0; cycle < 3; ++cycle)
     {
         unsigned hostCalls = 0;
         queueSync(display, nullptr, &syncListener, &hostCalls);
-        wl::PuglWorld world = {};
-        world.impl = wl::puglWaylandInitWorldInternals(display, false, PUGL_PROGRAM);
-        assert(world.impl && !world.impl->ownsDisplay);
-        assert(world.impl->launcherToken == nullptr);
+        DGL_NAMESPACE::PuglWorld* const world =
+            puglNewWorldWithWaylandDisplay(PUGL_PROGRAM, 0, display);
+        assert(world);
+        wl::PuglWorld* const nativeWorld = static_cast<wl::PuglWorld*>(world);
+        assert(!nativeWorld->impl->ownsDisplay);
+        assert(nativeWorld->type == PUGL_PROGRAM);
+        assert(nativeWorld->startTime > 0.0);
+        assert(puglGetNativeWorld(world) == display);
+        assert(std::strcmp(puglGetWorldString(world, PUGL_CLASS_NAME), "Pugl") == 0);
+        assert(puglGetTime(world) >= 0.0 && puglGetTime(world) < 30.0);
+        assert(nativeWorld->impl->launcherToken == nullptr);
         assert(std::getenv("XDG_ACTIVATION_TOKEN"));
         assert(std::strcmp(std::getenv("XDG_ACTIVATION_TOKEN"), "host-launch-token") == 0);
         assert(hostCalls == 0);
-        assert(world.impl->numOutputs == 1U && world.impl->outputs[0].scale == 2);
+        assert(nativeWorld->impl->numOutputs == 1U && nativeWorld->impl->outputs[0].scale == 2);
 
         unsigned privateCalls = 0;
         queueSync(display, nullptr, &syncListener, &hostCalls);
-        queueSync(display, world.impl->queue, &syncListener, &privateCalls);
+        queueSync(display, nativeWorld->impl->queue, &syncListener, &privateCalls);
         readReplies(display);
         assert(privateCalls == 0 && hostCalls == 0);
-        assert(wl::puglUpdate(&world, 60.0) == PUGL_SUCCESS);
+        assert(DGL_NAMESPACE::puglUpdate(world, 60.0) == PUGL_SUCCESS);
         assert(privateCalls == 1 && hostCalls == 0);
-        assert(wl::puglUpdate(&world, -1.0) == PUGL_SUCCESS);
+        assert(DGL_NAMESPACE::puglUpdate(world, -1.0) == PUGL_SUCCESS);
         assert(wl_display_dispatch_pending(display) >= 0);
         assert(hostCalls == 2);
 
@@ -269,16 +113,15 @@ static void testBorrowedConnection()
         assert(pipe(pipeFds) == 0);
         const wl_callback_listener pasteListener = {sendPaste};
         queueSync(display, nullptr, &syncListener, &hostCalls);
-        queueSync(display, world.impl->queue, &pasteListener, &pipeFds[1]);
+        queueSync(display, nativeWorld->impl->queue, &pasteListener, &pipeFds[1]);
         wl::PuglBlob received = {};
-        assert(wl::puglWaylandReadPipe(world.impl, pipeFds[0], &received) == PUGL_SUCCESS);
+        assert(wl::puglWaylandReadPipe(nativeWorld->impl, pipeFds[0], &received) == PUGL_SUCCESS);
         assert(received.len == 5U && std::memcmp(received.data, "paste", 5U) == 0);
         std::free(received.data);
         close(pipeFds[0]);
         assert(hostCalls == 2);
 
-        wl::puglFreeWorldInternals(&world);
-        assert(world.impl == nullptr);
+        DGL_NAMESPACE::puglFreeWorld(world);
         assert(fcntl(fd, F_GETFD) >= 0);
         assert(hostCalls == 2);
         assert(wl_display_roundtrip(display) >= 0);
@@ -289,6 +132,10 @@ static void testBorrowedConnection()
         assert(setenv("XDG_ACTIVATION_TOKEN", saved.c_str(), 1) == 0);
     else
         assert(unsetenv("XDG_ACTIVATION_TOKEN") == 0);
+    if (hadBackend)
+        assert(setenv("DAF_WINDOW_BACKEND", savedBackend.c_str(), 1) == 0);
+    else
+        assert(unsetenv("DAF_WINDOW_BACKEND") == 0);
     wl_display_disconnect(display);
 }
 
@@ -320,6 +167,12 @@ static void testConnectionOwnership()
                 assert(fcntl(fd, F_GETFD) >= 0);
                 assert(wl_display_roundtrip(display) >= 0);
                 assert(hostCalls == 1);
+                if (!valid)
+                {
+                    assert(puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display) == nullptr);
+                    assert(fcntl(fd, F_GETFD) >= 0);
+                    assert(wl_display_roundtrip(display) >= 0);
+                }
                 wl_display_disconnect(display);
             }
         }
@@ -346,17 +199,12 @@ static void testForeignSurface()
     wl_surface_set_user_data(surface, &foreignData);
     assert(puglWaylandViewForSurface(surface) == nullptr);
 
-    wl::PuglWorld world = {};
-#ifdef DGL_RUNTIME_BACKEND
-    world.system = kPuglWindowSystemWayland;
-#endif
-    world.impl = wl::puglWaylandInitWorldInternals(display, false, PUGL_MODULE);
-    assert(world.impl);
-    wl::PuglView* const view = wl::puglNewView(&world);
+    DGL_NAMESPACE::PuglWorld* const world =
+        puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display);
+    assert(world);
+    wl::PuglWorldInternals* const impl = static_cast<wl::PuglWorld*>(world)->impl;
+    wl::PuglView* const view = static_cast<wl::PuglView*>(DGL_NAMESPACE::puglNewView(world));
     assert(view);
-#ifdef DGL_RUNTIME_BACKEND
-    view->system = kPuglWindowSystemWayland;
-#endif
     wl::puglSetMatchingBackendForCurrentBuild(view);
     assert(wl::puglSetSizeHint(view, PUGL_DEFAULT_SIZE, 200, 100) == PUGL_SUCCESS);
     assert(wl::puglSetEventFunc(view, [](DGL_NAMESPACE::PuglView*, const PuglEvent*) {
@@ -369,11 +217,11 @@ static void testForeignSurface()
     {
         wl_surface_set_user_data(surface, foreign);
         assert(puglWaylandViewForSurface(surface) == nullptr);
-        puglWaylandPointerEnter(world.impl, nullptr, 1U, surface, 0, 0);
-        puglWaylandKeyboardEnter(world.impl, nullptr, 2U, surface, nullptr);
-        assert(world.impl->pointerFocus == nullptr && world.impl->keyboardFocus == nullptr);
-        puglWaylandPointerLeave(world.impl, nullptr, 3U, surface);
-        puglWaylandKeyboardLeave(world.impl, nullptr, 4U, surface);
+        puglWaylandPointerEnter(impl, nullptr, 1U, surface, 0, 0);
+        puglWaylandKeyboardEnter(impl, nullptr, 2U, surface, nullptr);
+        assert(impl->pointerFocus == nullptr && impl->keyboardFocus == nullptr);
+        puglWaylandPointerLeave(impl, nullptr, 3U, surface);
+        puglWaylandKeyboardLeave(impl, nullptr, 4U, surface);
         assert(wl_surface_get_user_data(surface) == foreign);
     }
 
@@ -383,13 +231,12 @@ static void testForeignSurface()
     wl_output_set_user_data(output, &foreignData);
     puglWaylandSurfaceEnter(view, view->impl->wlSurface, output);
     assert(view->impl->bufferScale == 1);
-    puglWaylandSurfaceEnter(view, view->impl->wlSurface, world.impl->outputs[0].output);
+    puglWaylandSurfaceEnter(view, view->impl->wlSurface, impl->outputs[0].output);
     assert(view->impl->bufferScale == 2);
     assert(wl_output_get_user_data(output) == &foreignData);
     wl_output_destroy(output);
-    wl::puglFreeView(view);
-    std::free(world.views);
-    wl::puglFreeWorldInternals(&world);
+    DGL_NAMESPACE::puglFreeView(view);
+    DGL_NAMESPACE::puglFreeWorld(world);
 
     wl_surface_destroy(surface);
     wl_compositor_destroy(compositor);
@@ -527,6 +374,7 @@ int main()
         return 1;
     }
 #endif
+    assert(puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, nullptr) == nullptr);
     alarm(30); // Bound a broken protocol or an accidental blocking borrowed-world update.
     testBorrowedConnection();
     testConnectionOwnership();
