@@ -82,6 +82,7 @@ struct Application::PrivateData {
 
     /** List of idle callbacks for this application. */
     IdleCallbacks idleCallbacks;
+    ClipboardCallbacks clipboardCallbacks;
 
     /** Constructor and destructor */
     explicit PrivateData(bool standalone, Type type, WindowSystem windowSystem);

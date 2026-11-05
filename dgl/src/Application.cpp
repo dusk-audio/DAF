@@ -223,6 +223,14 @@ Application::Type Application::getType() const noexcept
     return pData->isModern ? kTypeModern : kTypeClassic;
 }
 
+bool Application::setClipboardCallbacks(const ClipboardCallbacks& callbacks) noexcept
+{
+    if ((callbacks.get == nullptr) != (callbacks.set == nullptr))
+        return false;
+    pData->clipboardCallbacks = callbacks;
+    return true;
+}
+
 void Application::addIdleCallback(IdleCallback* const callback)
 {
     DAF_SAFE_ASSERT_RETURN(callback != nullptr,)

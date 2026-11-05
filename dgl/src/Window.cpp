@@ -412,11 +412,23 @@ void Window::setIgnoringKeyRepeat(const bool ignore) noexcept
 
 const void* Window::getClipboard(size_t& dataSize)
 {
+    const auto callbacks = pData->appData->clipboardCallbacks;
+    if (callbacks.get != nullptr)
+    {
+        dataSize = 0;
+        const void* const data = callbacks.get(callbacks.context, dataSize);
+        if (data == nullptr)
+            dataSize = 0;
+        return data;
+    }
     return pData->getClipboard(dataSize);
 }
 
 bool Window::setClipboard(const char* const mimeType, const void* const data, const size_t dataSize)
 {
+    const auto callbacks = pData->appData->clipboardCallbacks;
+    if (callbacks.set != nullptr)
+        return callbacks.set(callbacks.context, mimeType != nullptr ? mimeType : "text/plain", data, dataSize);
     return pData->view != nullptr
         && puglSetClipboard(pData->view, mimeType != nullptr ? mimeType : "text/plain", data, dataSize) == PUGL_SUCCESS;
 }

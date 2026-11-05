@@ -38,7 +38,19 @@
 #include "dgl/src/Geometry.cpp"
 #include "dgl/src/Widget.cpp"
 #include "dgl/src/WidgetPrivateData.cpp"
+
+START_NAMESPACE_DGL
+static unsigned int nativeClipboardWrites = 0;
+static PuglStatus testSetClipboard(PuglView* view, const char* type, const void* data, size_t size)
+{
+    ++nativeClipboardWrites;
+    return puglSetClipboard(view, type, data, size);
+}
+END_NAMESPACE_DGL
+
+#define puglSetClipboard testSetClipboard
 #include "dgl/src/Window.cpp"
+#undef puglSetClipboard
 
 #ifndef DGL_RUNTIME_BACKEND
 # error This test is for DGL_BACKEND=both builds
@@ -723,6 +735,76 @@ int main()
         DAF_ASSERT_EQUAL(DGL_NAMESPACE::waylandWaitLoopUpdates > 0, true, "a Wayland window waits on Wayland events");
         DAF_ASSERT_EQUAL(DGL_NAMESPACE::x11WaitLoopUpdates, 0, "a Wayland window never waits on X11 events");
     }
+
+    struct Clipboard {
+        std::string text;
+        unsigned int reads = 0;
+        unsigned int writes = 0;
+        bool reject = false;
+    } clipboard;
+    DGL_NAMESPACE::Application::ClipboardCallbacks callbacks;
+    callbacks.context = &clipboard;
+    callbacks.get = [](void* context, size_t& size) -> const void* {
+        auto& value = *static_cast<Clipboard*>(context);
+        ++value.reads;
+        size = value.text.size() + 1;
+        return value.reject ? nullptr : value.text.c_str();
+    };
+    callbacks.set = [](void* context, const char* type, const void* data, size_t size) {
+        auto& value = *static_cast<Clipboard*>(context);
+        ++value.writes;
+        if (value.reject || std::strcmp(type, "text/plain") != 0 || data == nullptr || size == 0)
+            return false;
+        value.text.assign(static_cast<const char*>(data), size - 1);
+        return true;
+    };
+    DAF_ASSERT_EQUAL(app.setClipboardCallbacks(callbacks), true, "complete host clipboard callbacks are accepted");
+    auto incomplete = callbacks;
+    incomplete.set = nullptr;
+    DAF_ASSERT_EQUAL(app.setClipboardCallbacks(incomplete), false, "partial clipboard callbacks preserve registration");
+    const unsigned int writesBefore = DGL_NAMESPACE::nativeClipboardWrites;
+    const int x11WaitsBefore = DGL_NAMESPACE::x11WaitLoopUpdates;
+    const int waylandWaitsBefore = DGL_NAMESPACE::waylandWaitLoopUpdates;
+    DGL_NAMESPACE::pasteWithTypesToCome = true;
+    {
+        DAF_NAMESPACE::PluginWindow sibling(app);
+        const char unicode[] = "host \xce\xa9 \xe2\x82\xac";
+        std::string temporary(unicode);
+        DAF_ASSERT_EQUAL(sibling.setClipboard(nullptr, temporary.c_str(), temporary.size() + 1), true,
+                         "host clipboard receives normalized text MIME");
+        temporary.assign("overwritten");
+        size_t size = 99;
+        const void* data = win.getClipboard(size);
+        DAF_ASSERT_NOT_EQUAL(data, nullptr, "another window reads the host clipboard");
+        DAF_ASSERT_EQUAL(size, sizeof(unicode), "host clipboard retains the UTF-8 byte count and terminator");
+        DAF_ASSERT_EQUAL(std::memcmp(data, unicode, size), 0, "publication copies temporary data");
+        DAF_ASSERT_EQUAL(win.setClipboard("application/octet-stream", "a", 2), false,
+                         "unsupported formats do not fall back to the native selection");
+        DAF_ASSERT_EQUAL(win.setClipboard(nullptr, "", 1), true, "empty text reaches the host clipboard");
+        data = sibling.getClipboard(size);
+        DAF_ASSERT_NOT_EQUAL(data, nullptr, "empty text is still a successful read");
+        DAF_ASSERT_EQUAL(size, 1, "empty host text includes its terminator");
+        DAF_ASSERT_EQUAL(*static_cast<const char*>(data), '\0', "empty host text is terminated");
+        clipboard.reject = true;
+        DAF_ASSERT_EQUAL(win.getClipboard(size), static_cast<const void*>(nullptr), "host rejection is final");
+        DAF_ASSERT_EQUAL(size, 0, "rejected reads report no data");
+        DAF_ASSERT_EQUAL(win.setClipboard(nullptr, "a", 2), false, "rejected publication is final");
+        clipboard.reject = false;
+    }
+    DAF_ASSERT_EQUAL(clipboard.reads, 3, "both windows use the shared reader");
+    DAF_ASSERT_EQUAL(clipboard.writes, 4, "both windows use the shared publisher");
+    DAF_ASSERT_EQUAL(DGL_NAMESPACE::nativeClipboardWrites, writesBefore, "callbacks never create a native selection");
+    DAF_ASSERT_EQUAL(DGL_NAMESPACE::x11WaitLoopUpdates, x11WaitsBefore, "callbacks never enter the X11 wait loop");
+    DAF_ASSERT_EQUAL(DGL_NAMESPACE::waylandWaitLoopUpdates, waylandWaitsBefore, "callbacks never enter the Wayland wait loop");
+    {
+        DGL_NAMESPACE::Application independent(true);
+        DAF_NAMESPACE::PluginWindow other(independent);
+        size_t size = 0;
+        other.getClipboard(size);
+        DAF_ASSERT_EQUAL(clipboard.reads, 3, "another application does not share the callbacks");
+    }
+    DGL_NAMESPACE::pasteWithTypesToCome = false;
+    DAF_ASSERT_EQUAL(app.setClipboardCallbacks({}), true, "host callbacks can be removed");
 
     // What the window puts on the clipboard comes back through its own backend's paste. A compositor only
     // offers the selection to the client with keyboard focus, which no window gets on a headless one, so on

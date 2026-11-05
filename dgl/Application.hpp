@@ -20,6 +20,8 @@
 #include "Base.hpp"
 #include "WaylandInput.hpp"
 
+#include <cstddef>
+
 #ifdef DAF_NAMESPACE
 START_NAMESPACE_DAF
 class PluginApplication;
@@ -237,6 +239,24 @@ public:
       False means invalid arguments, an unavailable backend/protocol, or a broken connection.
    */
     bool activateWaylandSurface(void* surface, const char* token) noexcept;
+
+    struct ClipboardCallbacks {
+        void* context = nullptr;
+        const void* (*get)(void*, size_t&) = nullptr;
+        bool (*set)(void*, const char* mimeType, const void*, size_t) = nullptr;
+    };
+
+   /**
+      Route every window's clipboard operations through the host. Set or clear both callbacks together;
+      a partial pair is rejected without changing registration. Null/false callback results are final,
+      with no native fallback. An empty pair restores native clipboard handling.
+
+      The application copies the record but does not own context. Registration and callbacks run on
+      the event thread; callbacks must not pump events or recursively call DGL clipboard methods.
+      Returned storage stays valid until the next clipboard operation or removal. The setter must
+      copy supplied bytes before returning. A null MIME type is passed as "text/plain".
+    */
+    bool setClipboardCallbacks(const ClipboardCallbacks& callbacks) noexcept;
 
    /**
       Add a callback function to be triggered on every idle cycle.
