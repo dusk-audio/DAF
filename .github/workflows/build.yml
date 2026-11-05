@@ -112,15 +112,16 @@ jobs:
         make -C tests ../build/tests/FileDrop ../build/tests/FileDropCocoa USE_WEB_VIEW=false -j5
         ./build/tests/FileDrop
         ./build/tests/FileDropCocoa
-    - name: AU wrapper and sidechain-on-mono-main regressions
+    - name: AU wrapper, sidechain-on-mono-main and latency-notification regressions
       if: ${{ runner.os == 'macOS' }}
       env:
         CFLAGS: -Werror
         CXXFLAGS: -Werror
       run: |
-        make -C tests ../build/tests/AUWrapper ../build/tests/AUSidechainLayout USE_WEB_VIEW=false -j5
+        make -C tests ../build/tests/AUWrapper ../build/tests/AUSidechainLayout ../build/tests/AULatency USE_WEB_VIEW=false -j5
         ./build/tests/AUWrapper
         ./build/tests/AUSidechainLayout
+        ./build/tests/AULatency
     # gnu++98 dropped: this fork's C++ floor is C++11 (std::atomic in the CLAP wrapper)
     - name: As C++11 mode
       env:

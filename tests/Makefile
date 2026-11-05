@@ -58,6 +58,10 @@ WRAPPER_TESTS += AUWrapper
 WRAPPER_TESTS += AUSidechainLayout
 ../build/tests/AUSidechainLayout.cpp.o: BUILD_CXX_FLAGS += -Iau-sidechain -I../daf
 ../build/tests/AUSidechainLayout$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
+# the AU wrapper's latency notification, on a plugin whose latency follows a parameter (see au-latency/)
+WRAPPER_TESTS += AULatency
+../build/tests/AULatency.cpp.o: BUILD_CXX_FLAGS += -Iau-latency -I../daf
+../build/tests/AULatency$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
 endif
 ../build/tests/%Wrapper.cpp.o: BUILD_CXX_FLAGS += -Iplugin-wrappers -I../daf
 ifeq ($(LINUX),true)

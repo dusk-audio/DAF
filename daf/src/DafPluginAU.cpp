@@ -17,7 +17,6 @@
 // TODO
 // - g_nextBundlePath vs d_nextBundlePath cleanup
 // - scale points to kAudioUnitParameterFlag_ValuesHaveStrings
-// - report latency changes
 
 #include "DafPluginInternal.hpp"
 #include "../DafPluginUtils.hpp"
@@ -31,8 +30,13 @@
 
 #include "DafPluginAUBufferList.hpp"
 
+#include <algorithm>
 #include <map>
 #include <vector>
+
+#if DAF_PLUGIN_WANT_LATENCY
+# include <mutex>
+#endif
 
 #ifndef DAF_PLUGIN_BRAND_ID
 # error DAF_PLUGIN_BRAND_ID undefined!
@@ -375,6 +379,10 @@ public:
          #endif
           fChannelInfoCount(0),
           fUsingRenderListeners(false),
+        #if DAF_PLUGIN_WANT_LATENCY
+          fRenderedLatency(0),
+          fNotifiedLatency(0),
+        #endif
           fParameterCount(fPlugin.getParameterCount()),
           fLastParameterValues(nullptr),
           fBypassParameterIndex(UINT32_MAX),
@@ -482,6 +490,9 @@ public:
 
     ~PluginAU()
     {
+       #if DAF_PLUGIN_WANT_LATENCY
+        unwatchLatency();
+       #endif
         delete[] fLastParameterValues;
         CFRelease(fUserPresetData.presetName);
 
@@ -525,11 +536,20 @@ public:
        #endif
 
         fPlugin.activate();
+       #if DAF_PLUGIN_WANT_LATENCY
+        // activate() may have moved the latency (a new sample rate or buffer size). The watch tells the listeners
+        // on the main thread, whichever thread initializes the unit, and from then on whenever render sees it move.
+        fRenderedLatency.store(fPlugin.getLatency(), std::memory_order_relaxed);
+        watchLatency();
+       #endif
         return noErr;
     }
 
     OSStatus auUninitialize()
     {
+       #if DAF_PLUGIN_WANT_LATENCY
+        unwatchLatency();
+       #endif
         fPlugin.deactivateIfNeeded();
 
        #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS != 0
@@ -1901,6 +1921,10 @@ public:
                                    const AudioUnitPropertyListenerProc proc,
                                    void* const userData)
     {
+       #if DAF_PLUGIN_WANT_LATENCY
+        // Serialised with the watch's walk over the listeners (notifyLatencyIfChanged).
+        const std::lock_guard<std::recursive_mutex> guard(latencyWatch().lock);
+       #endif
         const PropertyListener pl = {
             prop, proc, userData
         };
@@ -1911,6 +1935,9 @@ public:
 
     OSStatus auRemovePropertyListener(const AudioUnitPropertyID prop, const AudioUnitPropertyListenerProc proc)
     {
+       #if DAF_PLUGIN_WANT_LATENCY
+        const std::lock_guard<std::recursive_mutex> guard(latencyWatch().lock);
+       #endif
         for (PropertyListeners::iterator it = fPropertyListeners.begin(); it != fPropertyListeners.end(); ++it)
         {
             const PropertyListener& pl(*it);
@@ -1929,6 +1956,9 @@ public:
                                                   const AudioUnitPropertyListenerProc proc,
                                                   void* const userData)
     {
+       #if DAF_PLUGIN_WANT_LATENCY
+        const std::lock_guard<std::recursive_mutex> guard(latencyWatch().lock);
+       #endif
         for (PropertyListeners::iterator it = fPropertyListeners.begin(); it != fPropertyListeners.end(); ++it)
         {
             const PropertyListener& pl(*it);
@@ -2398,6 +2428,15 @@ private:
     uint16_t fChannelInfoCount;
     bool fUsingRenderListeners;
 
+   #if DAF_PLUGIN_WANT_LATENCY
+    // A latency change reaches the host's kAudioUnitProperty_Latency listeners on the main thread: render records
+    // the plugin's latency after each run (fRenderedLatency), and while the unit is initialized the process's
+    // latency watch (LatencyWatch) compares it with what the listeners last heard (fNotifiedLatency) and tells them
+    // when it moved. A listener is a host callback that may lock or allocate, so it is never called from render.
+    std::atomic<uint32_t> fRenderedLatency;
+    uint32_t fNotifiedLatency;
+   #endif
+
     // Caching
     const uint32_t fParameterCount;
     float* fLastParameterValues;
@@ -2685,6 +2724,90 @@ private:
 
     // ----------------------------------------------------------------------------------------------------------------
 
+   #if DAF_PLUGIN_WANT_LATENCY
+    // Every initialized unit in the process shares one timer on the main run loop: a unit joins the watch at
+    // Initialize and leaves it at Uninitialize and in its destructor. The watch's lock is held while a unit's
+    // listeners are told, so a unit uninitialized or disposed on another thread waits for that to finish; a listener
+    // that does either from inside its callback, on the main thread, re-enters the lock (recursive). The latency
+    // listeners are copied out before any is called, so nothing reads the unit once a listener has run.
+    struct LatencyWatch
+    {
+        std::recursive_mutex lock;
+        std::vector<PluginAU*> units;
+        CFRunLoopTimerRef timer;
+
+        LatencyWatch() : lock(), units(), timer(nullptr) {}
+    };
+
+    // Never destroyed: the main run loop can fire the timer while the process tears its statics down.
+    static LatencyWatch& latencyWatch()
+    {
+        static LatencyWatch* const watch = new LatencyWatch();
+        return *watch;
+    }
+
+    void watchLatency()
+    {
+        LatencyWatch& watch(latencyWatch());
+        const std::lock_guard<std::recursive_mutex> guard(watch.lock);
+        if (std::find(watch.units.begin(), watch.units.end(), this) == watch.units.end())
+            watch.units.push_back(this);
+        if (watch.timer != nullptr)
+            return;
+        // 50 ms keeps a lookahead change's compensation close behind the change; the tolerance lets the system
+        // coalesce the wake-ups with others.
+        constexpr CFTimeInterval kInterval = 0.05;
+        watch.timer = CFRunLoopTimerCreate(kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + kInterval, kInterval,
+                                           0, 0, latencyTimerCallback, nullptr);
+        DAF_SAFE_ASSERT_RETURN(watch.timer != nullptr,);
+        CFRunLoopTimerSetTolerance(watch.timer, 0.5 * kInterval);
+        CFRunLoopAddTimer(CFRunLoopGetMain(), watch.timer, kCFRunLoopCommonModes);
+    }
+
+    void unwatchLatency()
+    {
+        LatencyWatch& watch(latencyWatch());
+        const std::lock_guard<std::recursive_mutex> guard(watch.lock);
+        watch.units.erase(std::remove(watch.units.begin(), watch.units.end(), this), watch.units.end());
+        if (watch.units.empty() && watch.timer != nullptr)
+        {
+            CFRunLoopTimerInvalidate(watch.timer);
+            CFRelease(watch.timer);
+            watch.timer = nullptr;
+        }
+    }
+
+    // Main thread. A listener may uninitialize or dispose any unit, this one included, so the walk starts over
+    // after every unit whose listeners were told.
+    static void latencyTimerCallback(CFRunLoopTimerRef, void*)
+    {
+        LatencyWatch& watch(latencyWatch());
+        const std::lock_guard<std::recursive_mutex> guard(watch.lock);
+        for (size_t i = 0; i < watch.units.size();)
+            i = watch.units[i]->notifyLatencyIfChanged() ? 0 : i + 1;
+    }
+
+    // Under the watch's lock, on the main thread: tells the latency listeners if the plugin's latency has moved
+    // since they last heard. True when any listener was called.
+    bool notifyLatencyIfChanged()
+    {
+        const uint32_t latency = fRenderedLatency.load(std::memory_order_relaxed);
+        if (latency == fNotifiedLatency)
+            return false;
+        fNotifiedLatency = latency;
+        static constexpr size_t kMaxListeners = 16;
+        PropertyListener listeners[kMaxListeners];
+        size_t count = 0;
+        for (size_t i = 0; i < fPropertyListeners.size() && count < kMaxListeners; ++i)
+            if (fPropertyListeners[i].prop == kAudioUnitProperty_Latency)
+                listeners[count++] = fPropertyListeners[i];
+        const AudioUnit component = fComponent;
+        for (size_t i = 0; i < count; ++i)
+            listeners[i].proc(listeners[i].userData, component, kAudioUnitProperty_Latency, kAudioUnitScope_Global, 0);
+        return count != 0;
+    }
+   #endif
+
     void notifyPropertyListeners(const AudioUnitPropertyID prop, const AudioUnitScope scope, const AudioUnitElement elem)
     {
         for (PropertyListeners::iterator it = fPropertyListeners.begin(); it != fPropertyListeners.end(); ++it)
@@ -2815,6 +2938,10 @@ private:
         fMidiEventCount = 0;
        #else
         fPlugin.run(inputs, outputs, frames);
+       #endif
+       #if DAF_PLUGIN_WANT_LATENCY
+        // Plugin::setLatency() may be called from run(); the listeners hear of it on the main thread.
+        fRenderedLatency.store(fPlugin.getLatency(), std::memory_order_relaxed);
        #endif
 
        #if DAF_PLUGIN_WANT_MIDI_OUTPUT
