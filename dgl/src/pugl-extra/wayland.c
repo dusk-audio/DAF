@@ -982,6 +982,54 @@ static const struct wl_output_listener puglWaylandOutputListener = {
 // --------------------------------------------------------------------------------------------
 // Pointer
 
+static bool
+puglWaylandRoutePress(PuglWaylandPresses* const presses,
+                      const uint32_t code, const bool pressed, PuglView** const view)
+{
+  PuglView* const candidate = *view;
+  *view = NULL;
+  for (size_t i = 0; i < presses->count; ++i) {
+    if (presses->data[i].code == code) {
+      if (!pressed) {
+        *view = presses->data[i].view;
+        presses->data[i] = presses->data[--presses->count];
+      }
+      return true;
+    }
+  }
+  if (!pressed || !candidate) {
+    return false;
+  }
+  if (presses->count == presses->capacity) {
+    if (presses->capacity > SIZE_MAX / sizeof(PuglWaylandPress) / 2U) {
+      return false;
+    }
+    const size_t capacity = presses->capacity ? presses->capacity * 2U : 8U;
+    PuglWaylandPress* const data =
+      (PuglWaylandPress*)realloc(presses->data, capacity * sizeof(PuglWaylandPress));
+    if (!data) {
+      return false;
+    }
+    presses->data = data;
+    presses->capacity = capacity;
+  }
+  presses->data[presses->count].code = code;
+  presses->data[presses->count++].view = candidate;
+  *view = candidate;
+  return true;
+}
+
+static void
+puglWaylandCancelPresses(PuglWaylandPresses* const presses, const PuglView* const view)
+{
+  // Keep ownership until release, even when the recipient has lost focus or been destroyed.
+  for (size_t i = 0; i < presses->count; ++i) {
+    if (presses->data[i].view == view) {
+      presses->data[i].view = NULL;
+    }
+  }
+}
+
 static PuglMods
 puglWaylandMods(const PuglWorldInternals* const impl)
 {
@@ -1167,25 +1215,30 @@ puglWaylandPointerButton(void* const              data,
                          const uint32_t           state)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
-  PuglView* const           view = impl->pointerFocus;
+  PuglView* view = impl->pointerFocus;
 
   impl->lastSerial = serial;
+  impl->lastEventConsumed = false;
+  const uint32_t number = puglWaylandButtonNumber(button);
+  if (number == PUGL_WAYLAND_BTN_UNKNOWN) {
+    return;
+  }
+  const bool pressed = state == WL_POINTER_BUTTON_STATE_PRESSED;
+  const bool consumed = impl->hostManagedInput &&
+    puglWaylandRoutePress(&impl->heldButtons, button, pressed, &view);
 
   if (!view) {
+    impl->lastEventConsumed = consumed;
     return;
   }
 
   impl->activationSource = view;
   impl->activationSerial = serial;
 
-  const uint32_t number = puglWaylandButtonNumber(button);
-  if (number == PUGL_WAYLAND_BTN_UNKNOWN) {
-    return;
-  }
-
-  if (impl->hostManagedInput && number == 0U && state == WL_POINTER_BUTTON_STATE_PRESSED) {
+  if (impl->hostManagedInput && number == 0U && pressed) {
     puglGrabFocus(view);
-    if (impl->pointerFocus != view) {
+    if (impl->pointerFocus != view || !view->impl->visible) {
+      impl->lastEventConsumed = consumed;
       return;
     }
   }
@@ -1202,6 +1255,7 @@ puglWaylandPointerButton(void* const              data,
   event.button.state  = puglWaylandMods(impl);
   event.button.button = number;
   puglDispatchEvent(view, &event);
+  impl->lastEventConsumed = consumed;
 }
 
 static void
@@ -1423,6 +1477,7 @@ puglWaylandUpdateHostFocus(PuglWorldInternals* const impl)
   const uint64_t generation = ++impl->focusGeneration;
   PuglView* const previous = impl->keyboardFocus;
   impl->keyboardFocus = NULL;
+  puglWaylandCancelPresses(&impl->heldKeys, previous);
   puglWaylandStopRepeat(impl);
   if (impl->xkb.composeState) {
     xkb_compose_state_reset(impl->xkb.composeState);
@@ -1447,10 +1502,16 @@ puglWaylandUpdateHostFocus(PuglWorldInternals* const impl)
 }
 
 static void
-puglWaylandForgetHostFocus(PuglView* const view)
+puglWaylandForgetHostInput(PuglView* const view)
 {
   PuglWorldInternals* const impl = view->world->impl;
   if (impl->hostManagedInput) {
+    puglWaylandCancelPresses(&impl->heldKeys, view);
+    puglWaylandCancelPresses(&impl->heldButtons, view);
+    if (impl->pointerFocus == view) {
+      impl->pointerFocus = NULL;
+      memset(&impl->scroll, 0, sizeof(impl->scroll));
+    }
     if (impl->selectedView == view) {
       impl->selectedView = NULL;
     }
@@ -1652,7 +1713,7 @@ puglWaylandKeyboardEnter(void* const               data,
                          struct wl_keyboard* const PUGL_UNUSED(keyboard),
                          const uint32_t            serial,
                          struct wl_surface* const  surface,
-                         struct wl_array* const    PUGL_UNUSED(keys))
+                         struct wl_array* const    keys)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
   PuglView* const           view = puglWaylandViewForSurface(surface);
@@ -1662,6 +1723,17 @@ puglWaylandKeyboardEnter(void* const               data,
   impl->activationSerial = serial;
 
   if (impl->hostManagedInput) {
+    for (size_t i = impl->heldKeys.count; i > 0; --i) {
+      const uint32_t code = impl->heldKeys.data[i - 1U].code;
+      bool held = false;
+      const uint32_t* const codes = keys ? (const uint32_t*)keys->data : NULL;
+      for (size_t j = 0; keys && j < keys->size / sizeof(uint32_t); ++j) {
+        held |= codes[j] == code;
+      }
+      if (!held) {
+        impl->heldKeys.data[i - 1U] = impl->heldKeys.data[--impl->heldKeys.count];
+      }
+    }
     impl->hostKeyboardSurface = surface;
     if (view && view->world->impl == impl) {
       impl->selectedView = view;
@@ -1721,18 +1793,20 @@ puglWaylandKeyboardKey(void* const               data,
                        const uint32_t            state)
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
-  PuglView* const           view = impl->keyboardFocus;
+  PuglView* view = impl->keyboardFocus;
 
   impl->lastSerial = serial;
+  const bool pressed = state == WL_KEYBOARD_KEY_STATE_PRESSED;
+  const bool consumed = impl->hostManagedInput &&
+    puglWaylandRoutePress(&impl->heldKeys, key, pressed, &view);
 
   if (!view) {
+    impl->lastEventConsumed = consumed;
     return;
   }
 
   impl->activationSource = view;
   impl->activationSerial = serial;
-
-  const bool pressed = (state == WL_KEYBOARD_KEY_STATE_PRESSED);
 
   if (!pressed && impl->repeat.key == key) {
     puglWaylandStopRepeat(impl);
@@ -1746,6 +1820,7 @@ puglWaylandKeyboardKey(void* const               data,
       xkb_keymap_key_repeats(impl->xkb.keymap, key + 8U)) {
     puglWaylandStartRepeat(impl, view, key, time / 1e3);
   }
+  impl->lastEventConsumed = consumed;
 }
 
 static void
@@ -3105,6 +3180,8 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
   }
   free(impl->timers);
   free(impl->pollFds);
+  free(impl->heldKeys.data);
+  free(impl->heldButtons.data);
 
   if (impl->xkb.composeState) {
     xkb_compose_state_unref(impl->xkb.composeState);
@@ -3651,7 +3728,7 @@ puglUnrealize(PuglView* const view)
 
   puglWaylandCancelActivation(impl);
   impl->visible = false;
-  puglWaylandForgetHostFocus(view);
+  puglWaylandForgetHostInput(view);
   puglDispatchSimpleEvent(view, PUGL_UNREALIZE);
 
   PuglWorldInternals* const wimpl = view->world->impl;
@@ -3738,7 +3815,7 @@ puglHide(PuglView* const view)
   puglWaylandCancelActivation(impl);
   impl->hasPresented = false;
   impl->visible = false;
-  puglWaylandForgetHostFocus(view);
+  puglWaylandForgetHostInput(view);
   if (view->world->impl->activationSource == view) {
     view->world->impl->activationSource = NULL;
   }

@@ -124,6 +124,17 @@ typedef struct {
   uint32_t time;       ///< Timestamp of the most recent axis event
 } PuglWaylandScroll;
 
+typedef struct {
+  uint32_t code;
+  PuglView* view;
+} PuglWaylandPress;
+
+typedef struct {
+  PuglWaylandPress* data;
+  size_t count;
+  size_t capacity;
+} PuglWaylandPresses;
+
 struct PuglWorldInternalsImpl {
   /* The world these internals belong to.  puglInitWorldInternals() is not given it, so it is filled
      in as soon as anything that has it runs (see puglInitViewInternals and
@@ -185,6 +196,9 @@ struct PuglWorldInternalsImpl {
   struct wl_surface* hostKeyboardSurface;
   PuglView* selectedView;
   uint64_t focusGeneration;
+  PuglWaylandPresses heldKeys;
+  PuglWaylandPresses heldButtons;
+  bool lastEventConsumed;
 
   // Activation serials must retain their originating surface, unlike clipboard serials.
   PuglView* activationSource;

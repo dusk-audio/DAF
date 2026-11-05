@@ -153,6 +153,10 @@ activation. It receives keyboard focus only while its parent has the host's keyb
 A primary-button press selects the child before dispatching the button event. Parent focus loss,
 hiding, or destroying the child sends focus-out and cancels repeat and compose state. Returning
 to the parent restores its selected child; showing a hidden child requires selecting it again.
+Key and button releases retain the owner of their press. Keyboard focus loss cancels keys;
+hiding or destroying the child cancels both. Their releases are consumed without dispatching elsewhere.
+Keys already held on keyboard entry are not synthesized as presses, and releases owned by the
+host remain with the host even if a DAF child becomes selected in between.
 
 PUGL_CURSOR_NONE hides the pointer with wl_pointer.set_cursor and a null surface, which needs
 neither a cursor theme nor wl_shm. Like every other cursor it applies to the pointer that is

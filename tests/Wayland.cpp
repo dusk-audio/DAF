@@ -296,6 +296,7 @@ static void testHostFocus()
         wl::PuglView* redirect = nullptr;
         wl_surface* leaveParent = nullptr;
         bool hideOnKey = false;
+        bool hideOnFocus = false;
     } log;
     wl::PuglView* views[2];
     for (auto& view : views)
@@ -309,9 +310,16 @@ static void testHostFocus()
         wl::puglSetEventFunc(view, [](DGL_NAMESPACE::PuglView* view, const PuglEvent* event) {
             auto* const log = static_cast<FocusLog*>(DGL_NAMESPACE::puglGetHandle(view));
             if (event->type == PUGL_FOCUS_IN || event->type == PUGL_FOCUS_OUT || event->type == PUGL_BUTTON_PRESS ||
-                event->type == PUGL_KEY_PRESS || event->type == PUGL_TEXT)
+                event->type == PUGL_BUTTON_RELEASE || event->type == PUGL_KEY_PRESS ||
+                event->type == PUGL_KEY_RELEASE || event->type == PUGL_TEXT)
                 log->events.emplace_back(view, event->type);
             if (event->type == PUGL_KEY_PRESS && log->hideOnKey)
+            {
+                assert(DGL_NAMESPACE::puglHide(view) == PUGL_SUCCESS);
+                wl::puglWaylandKeyboardKey(static_cast<wl::PuglView*>(view)->world->impl,
+                                           nullptr, 98, 300, 31, WL_KEYBOARD_KEY_STATE_RELEASED);
+            }
+            if (event->type == PUGL_FOCUS_IN && log->hideOnFocus)
                 assert(DGL_NAMESPACE::puglHide(view) == PUGL_SUCCESS);
             if (event->type == PUGL_FOCUS_OUT && log->leaveParent)
             {
@@ -374,12 +382,20 @@ static void testHostFocus()
     assert(impl->xkb.keymap);
     impl->xkb.state = xkb_state_new(impl->xkb.keymap);
     assert(impl->xkb.state);
+    wl::puglWaylandKeyboardKey(impl, nullptr, 101, 200, 30, WL_KEYBOARD_KEY_STATE_PRESSED);
+    assert(wl::puglGrabFocus(views[0]) == PUGL_SUCCESS);
+    log.events.clear();
+    wl::puglWaylandKeyboardKey(impl, nullptr, 102, 201, 30, WL_KEYBOARD_KEY_STATE_RELEASED);
+    assert(log.events.empty() && impl->lastEventConsumed);
+    wl::puglWaylandKeyboardKey(impl, nullptr, 103, 202, 31, WL_KEYBOARD_KEY_STATE_RELEASED);
+    assert(log.events.empty() && !impl->lastEventConsumed);
+    assert(wl::puglGrabFocus(views[1]) == PUGL_SUCCESS);
     log.hideOnKey = true;
     log.events.clear();
     wl::puglWaylandKeyboardKey(impl, nullptr, 7, 200, 30, WL_KEYBOARD_KEY_STATE_PRESSED);
     assert(log.events.size() == 2);
     assert(log.events[0].second == PUGL_KEY_PRESS && log.events[1].second == PUGL_FOCUS_OUT);
-    assert(!impl->repeat.view);
+    assert(!impl->repeat.view && impl->lastEventConsumed);
     assert(wl::puglShow(views[1], PUGL_SHOW_PASSIVE) == PUGL_SUCCESS);
     assert(wl::puglGrabFocus(views[1]) == PUGL_SUCCESS);
     log.events.clear();
@@ -399,11 +415,75 @@ static void testHostFocus()
     log.hideOnKey = false;
     assert(wl::puglShow(views[1], PUGL_SHOW_PASSIVE) == PUGL_SUCCESS);
     assert(wl::puglGrabFocus(views[1]) == PUGL_SUCCESS);
+    const auto key = [&](uint32_t code, bool pressed) {
+        wl::puglWaylandKeyboardKey(impl, nullptr, 200, 300, code,
+                                   pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED);
+        return impl->lastEventConsumed;
+    };
+    const auto button = [&](bool pressed) {
+        wl::puglWaylandPointerButton(impl, nullptr, 201, 301, PUGL_WAYLAND_BTN_LEFT,
+                                     pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
+        return impl->lastEventConsumed;
+    };
+    log.events.clear();
+    assert(key(30, false) && button(false) && log.events.empty());
+    assert(key(30, true) && key(30, false));
+    assert(log.events.size() == 3 && log.events.back().second == PUGL_KEY_RELEASE);
+
+    uint32_t heldCode = 30;
+    wl_array held = {sizeof(heldCode), sizeof(heldCode), &heldCode};
+    assert(key(30, true));
+    wl::puglWaylandKeyboardLeave(impl, nullptr, 202, parent);
+    wl::puglWaylandKeyboardEnter(impl, nullptr, 203, parent, &held);
+    log.events.clear();
+    assert(key(30, false) && log.events.empty());
+    wl::puglWaylandKeyboardLeave(impl, nullptr, 204, parent);
+    assert(!key(30, true));
+    wl::puglWaylandKeyboardEnter(impl, nullptr, 205, parent, &held);
+    log.events.clear();
+    assert(!key(30, false) && log.events.empty());
+    assert(key(30, true));
+    wl::puglWaylandKeyboardLeave(impl, nullptr, 206, parent);
+    wl::puglWaylandKeyboardEnter(impl, nullptr, 207, parent, nullptr);
+    assert(impl->heldKeys.count == 0);
+    assert(key(30, true) && key(30, false));
+
+    for (uint32_t code = 30; code < 158; ++code) assert(key(code, true));
+    assert(impl->heldKeys.count == 128);
+    assert(wl::puglHide(views[1]) == PUGL_SUCCESS);
+    assert(wl::puglGrabFocus(views[0]) == PUGL_SUCCESS);
+    log.events.clear();
+    for (uint32_t code = 30; code < 158; ++code) assert(key(code, false));
+    assert(log.events.empty() && impl->heldKeys.count == 0);
+
+    wl::puglWaylandPointerEnter(impl, nullptr, 208, parent, 0, 0);
+    assert(!button(true));
+    wl::puglWaylandPointerEnter(impl, nullptr, 209, views[0]->impl->wlSurface, 0, 0);
+    assert(!button(false) && log.events.empty());
+    assert(button(true));
+    assert(wl::puglHide(views[0]) == PUGL_SUCCESS);
+    assert(wl::puglShow(views[0], PUGL_SHOW_PASSIVE) == PUGL_SUCCESS);
+    assert(wl::puglShow(views[1], PUGL_SHOW_PASSIVE) == PUGL_SUCCESS);
+    wl::puglWaylandPointerEnter(impl, nullptr, 210, views[1]->impl->wlSurface, 0, 0);
+    log.events.clear();
+    assert(button(false) && log.events.empty());
+    log.hideOnFocus = true;
+    assert(button(true));
+    assert(log.events.size() == 2 && log.events.back().second == PUGL_FOCUS_OUT);
+    log.events.clear();
+    assert(button(false) && log.events.empty());
+    log.hideOnFocus = false;
+    assert(wl::puglShow(views[1], PUGL_SHOW_PASSIVE) == PUGL_SUCCESS);
+    assert(wl::puglGrabFocus(views[1]) == PUGL_SUCCESS);
+    wl::puglWaylandPointerEnter(impl, nullptr, 211, views[1]->impl->wlSurface, 0, 0);
+    assert(button(true) && key(30, true));
     DGL_NAMESPACE::puglFreeView(views[0]);
     assert(wl::puglHasFocus(views[1]));
     DGL_NAMESPACE::puglFreeView(views[1]);
     assert(!impl->keyboardFocus && !impl->repeat.view);
     assert(log.events.back().second == PUGL_FOCUS_OUT);
+    log.events.clear();
+    assert(button(false) && key(30, false) && log.events.empty());
     DGL_NAMESPACE::puglFreeWorld(world);
     wl_surface_destroy(otherParent);
     wl_surface_destroy(parent);
