@@ -153,7 +153,7 @@ static void testConnectionOwnership()
             if (!owned)
                 queueSync(display, nullptr, &syncListener, &hostCalls);
             wl::PuglWorldInternals* const impl =
-                wl::puglWaylandInitWorldInternals(display, owned != 0, PUGL_MODULE);
+                wl::puglWaylandInitWorldInternals(display, owned != 0, PUGL_MODULE, nullptr);
             assert(bool(impl) == bool(valid));
             wl::puglWaylandDestroyWorldInternals(impl);
             if (owned)
@@ -204,6 +204,72 @@ static void testIndependentSeat()
     assert(pointers == 1 && keyboards == 1);
     assert(pointerReleases == 1 && keyboardReleases == 1 && seatReleases == 1);
     wl_display_disconnect(display);
+}
+
+static void testHostSeat()
+{
+    for (unsigned valid = 0; valid < 2; ++valid)
+    {
+        ConnectionServer server(valid != 0, true, true);
+        wl_display* const display = server.connect();
+        wl_registry* const registry = wl_display_get_registry(display);
+        wl_compositor* compositor = nullptr;
+        const wl_registry_listener registryListener = {hostGlobal, hostGlobalRemove};
+        assert(wl_registry_add_listener(registry, &registryListener, &compositor) == 0);
+        assert(wl_display_roundtrip(display) >= 0);
+        wl_seat* const seat = static_cast<wl_seat*>(wl_registry_bind(registry, 5, &wl_seat_interface, 5));
+        unsigned hostCalls = 0;
+        const wl_seat_listener seatListener = {
+            [](void* data, wl_seat*, uint32_t) { ++*static_cast<unsigned*>(data); },
+            [](void*, wl_seat*, const char*) {}
+        };
+        assert(wl_seat_add_listener(seat, &seatListener, &hostCalls) == 0);
+        wl_pointer* const pointer = wl_seat_get_pointer(seat);
+        wl_keyboard* const keyboard = wl_seat_get_keyboard(seat);
+        wl_pointer_set_user_data(pointer, &hostCalls);
+        wl_keyboard_set_user_data(keyboard, &hostCalls);
+        for (unsigned cycle = 0; cycle < 2; ++cycle)
+        {
+            DGL_NAMESPACE::PuglWorld* const world =
+                puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display, seat);
+            assert(bool(world) == bool(valid));
+            if (world)
+            {
+                auto* const impl = static_cast<wl::PuglWorld*>(world)->impl;
+                assert(impl->hostManagedInput && impl->seat == seat);
+                assert(!impl->pointer && !impl->keyboard);
+                impl->pointer = pointer;
+                impl->keyboard = keyboard;
+                wl::puglWaylandSeatCapabilities(impl, seat, 0);
+                assert(impl->pointer == pointer && impl->keyboard == keyboard);
+                DGL_NAMESPACE::puglFreeWorld(world);
+            }
+            assert(hostCalls == 0);
+            assert(wl_seat_get_user_data(seat) == &hostCalls);
+            assert(wl_pointer_get_user_data(pointer) == &hostCalls);
+            assert(wl_keyboard_get_user_data(keyboard) == &hostCalls);
+        }
+        assert(wl_display_roundtrip(display) >= 0);
+        assert(hostCalls == 1);
+        unsigned pointers = 0, keyboards = 0, seats = 0;
+        for (const auto& request : server.requests())
+        {
+            if (request.type == "wl_registry" && request.opcode == 0 && request.words[0] == 5U) ++seats;
+            if (request.type == "wl_seat" && request.opcode == 0) ++pointers;
+            if (request.type == "wl_seat" && request.opcode == 1) ++keyboards;
+            assert(!(request.type == "wl_seat" && request.opcode == 3));
+            assert(!(request.type == "wl_pointer" && request.opcode == 1));
+            assert(!(request.type == "wl_keyboard" && request.opcode == 0));
+        }
+        assert(seats == 1 && pointers == 1 && keyboards == 1);
+        wl_keyboard_release(keyboard);
+        wl_pointer_release(pointer);
+        wl_seat_release(seat);
+        if (compositor) wl_compositor_destroy(compositor);
+        wl_registry_destroy(registry);
+        assert(wl_display_roundtrip(display) >= 0);
+        wl_display_disconnect(display);
+    }
 }
 
 static void testForeignSurface()
@@ -522,6 +588,7 @@ int main()
     testBorrowedConnection();
     testConnectionOwnership();
     testIndependentSeat();
+    testHostSeat();
     testForeignSurface();
     testSubsurfaceLifetime();
     alarm(0);

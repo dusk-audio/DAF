@@ -1789,6 +1789,10 @@ puglWaylandSeatCapabilities(void* const           data,
 {
   PuglWorldInternals* const impl = (PuglWorldInternals*)data;
 
+  if (impl->hostManagedInput) {
+    return;
+  }
+
   const bool hasPointer  = (capabilities & WL_SEAT_CAPABILITY_POINTER) != 0U;
   const bool hasKeyboard = (capabilities & WL_SEAT_CAPABILITY_KEYBOARD) != 0U;
 
@@ -3042,7 +3046,7 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
     wl_cursor_theme_destroy(impl->cursorTheme);
   }
 
-  if (impl->keyboard) {
+  if (impl->keyboard && !impl->hostManagedInput) {
     if (wl_keyboard_get_version(impl->keyboard) >=
         WL_KEYBOARD_RELEASE_SINCE_VERSION) {
       wl_keyboard_release(impl->keyboard);
@@ -3050,7 +3054,7 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
       wl_keyboard_destroy(impl->keyboard);
     }
   }
-  if (impl->pointer) {
+  if (impl->pointer && !impl->hostManagedInput) {
     if (wl_pointer_get_version(impl->pointer) >=
         WL_POINTER_RELEASE_SINCE_VERSION) {
       wl_pointer_release(impl->pointer);
@@ -3066,7 +3070,7 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
       wl_data_device_destroy(impl->dataDevice);
     }
   }
-  if (impl->seat) {
+  if (impl->seat && !impl->hostManagedInput) {
     if (wl_seat_get_version(impl->seat) >= WL_SEAT_RELEASE_SINCE_VERSION) {
       wl_seat_release(impl->seat);
     } else {
@@ -3129,7 +3133,8 @@ puglWaylandDestroyWorldInternals(PuglWorldInternals* const impl)
 static PuglWorldInternals*
 puglWaylandInitWorldInternals(struct wl_display* const display,
                               const bool ownsDisplay,
-                              const PuglWorldType type)
+                              const PuglWorldType type,
+                              struct wl_seat* const inputSeat)
 {
   if (!display) {
     return NULL;
@@ -3153,6 +3158,8 @@ puglWaylandInitWorldInternals(struct wl_display* const display,
 
   impl->display     = display;
   impl->ownsDisplay = ownsDisplay;
+  impl->hostManagedInput = inputSeat != NULL;
+  impl->seat        = inputSeat;
   impl->scaleFactor = 1.0;
   impl->cursorSize  = 24;
   impl->repeat.fd   = -1;
@@ -3244,7 +3251,7 @@ puglInitWorldInternals(const PuglWorldType type,
     return NULL;
   }
 
-  return puglWaylandInitWorldInternals(display, true, type);
+  return puglWaylandInitWorldInternals(display, true, type, NULL);
 }
 
 void*

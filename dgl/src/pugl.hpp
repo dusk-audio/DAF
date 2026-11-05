@@ -60,8 +60,9 @@ START_NAMESPACE_DGL
 
 // --------------------------------------------------------------------------------------------------------------------
 
-// Borrows the display without backend fallback; the caller keeps it alive until the world is freed.
-PuglWorld* puglNewWorldWithWaylandDisplay(PuglWorldType type, PuglWorldFlags flags, void* display);
+// A supplied seat selects host-managed input. The host keeps both proxies alive until world teardown.
+PuglWorld* puglNewWorldWithWaylandDisplay(PuglWorldType type, PuglWorldFlags flags, void* display,
+                                        void* inputSeat = nullptr);
 
 // DGL outgoing file drag, polled by Window outside its rendering callback.
 struct PuglFileDrag

@@ -135,6 +135,7 @@ struct PuglWorldInternalsImpl {
   struct wl_display*    display;
   struct wl_event_queue* queue;
   bool                  ownsDisplay;
+  bool                  hostManagedInput;
   struct wl_registry*   registry;
   struct wl_compositor* compositor;
   struct wl_subcompositor* subcompositor;

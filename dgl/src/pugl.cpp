@@ -318,7 +318,8 @@ START_NAMESPACE_DGL
 
 PuglWorld* puglNewWorldWithWaylandDisplay(const PuglWorldType type,
                                         const PuglWorldFlags flags,
-                                        void* const display)
+                                        void* const display,
+                                        void* const inputSeat)
 {
     if (display == nullptr)
     {
@@ -338,12 +339,17 @@ PuglWorld* puglNewWorldWithWaylandDisplay(const PuglWorldType type,
     namespace backend = DGL_NAMESPACE;
     #endif
 
+    struct HostConnection {
+        wl_display* display;
+        wl_seat* seat;
+    } host = {static_cast<wl_display*>(display), static_cast<wl_seat*>(inputSeat)};
     backend::PuglWorld* const world = backend::puglNewWorldWithInit(
         type, flags,
         [](PuglWorldType worldType, PuglWorldFlags, void* context) {
+            const auto* const host = static_cast<const HostConnection*>(context);
             return backend::puglWaylandInitWorldInternals(
-                static_cast<wl_display*>(context), false, worldType);
-        }, display);
+                host->display, false, worldType, host->seat);
+        }, &host);
     #ifdef DGL_RUNTIME_BACKEND
     if (world != nullptr)
         world->system = kPuglWindowSystemWayland;
@@ -352,6 +358,7 @@ PuglWorld* puglNewWorldWithWaylandDisplay(const PuglWorldType type,
    #else
     (void)type;
     (void)flags;
+    (void)inputSeat;
     d_stderr2("DGL: this build cannot borrow a Wayland display");
     return nullptr;
    #endif
