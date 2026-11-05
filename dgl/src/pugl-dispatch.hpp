@@ -687,6 +687,14 @@ PuglStatus puglWaylandActivate(PuglView* const view, const char* const token)
     return puglIsWayland(view) ? pugl_wl::puglWaylandActivate(asWayland(view), token) : PUGL_UNSUPPORTED;
 }
 
+PuglStatus puglWaylandSetEmbeddedGeometry(PuglView* const view, const int x, const int y,
+                                        const unsigned width, const unsigned height)
+{
+    return puglIsWayland(view)
+         ? pugl_wl::puglWaylandSetEmbeddedGeometry(asWayland(view), x, y, width, height)
+         : PUGL_UNSUPPORTED;
+}
+
 const char* puglWaylandGetExportedHandle(const PuglView* const view)
 {
     return view != nullptr && puglIsWayland(view) ? pugl_wl::puglWaylandGetExportedHandle(asWayland(view)) : nullptr;

@@ -242,6 +242,9 @@ void puglWaylandSetAppId(PuglView* view, const char* appId);
 // Wayland specific, activate a shown view with a copied, single-use launcher token
 PuglStatus puglWaylandActivate(PuglView* view, const char* token);
 
+// The host commits the parent after changing a subsurface's logical rectangle.
+PuglStatus puglWaylandSetEmbeddedGeometry(PuglView* view, int x, int y, unsigned width, unsigned height);
+
 // Wayland specific, get this view's xdg-foreign handle, or null if it has none
 // The handle is asked for while realizing and arrives in a later event, so it is null until the
 // compositor answers, and stays null on a compositor without xdg-foreign.

@@ -558,6 +558,44 @@ static int checkSubsurfaceRendering()
     first->impl->frameCallbackWorks = false;
     DAF_ASSERT_EQUAL(puglShow(views[0].get(), PUGL_SHOW_PASSIVE), PUGL_SUCCESS, "the child remaps without xdg negotiation");
     DAF_ASSERT_EQUAL(presented(0), true, "the remapped child presents a new frame");
+
+    puglSetViewHint(views[0].get(), PUGL_RESIZABLE, PUGL_FALSE);
+    DAF_ASSERT_EQUAL(puglWaylandSetEmbeddedGeometry(views[0].get(), -12, 21, 125, 50), PUGL_SUCCESS,
+                     "the host assigns a non-resizable child's logical rectangle");
+    wl_surface_commit(host.nativeSurface);
+    DAF_ASSERT_EQUAL(puglWaylandSetEmbeddedGeometry(views[0].get(), 10, 20, 0, 50), PUGL_BAD_PARAMETER,
+                     "invalid geometry is rejected without changing the rectangle");
+    DAF_ASSERT_EQUAL(puglWaylandSetEmbeddedGeometry(views[0].get(), 32768, 20, 125, 50), PUGL_BAD_PARAMETER,
+                     "out-of-range parent coordinates cannot wrap");
+    if (first->impl->viewport && first->impl->fractionalScale)
+    {
+        for (const uint32_t scale : {120u, 180u, 240u, 120u})
+        {
+            states[0].exposed = false;
+            first->impl->frameCallbackWorks = false;
+            pugl_wl::puglWaylandPreferredScale(first, first->impl->fractionalScale, scale);
+            DAF_ASSERT_EQUAL(puglObscureView(views[0].get()), PUGL_SUCCESS, "a scale update can redraw");
+            DAF_ASSERT_EQUAL(presented(0), true, "the scaled child presents through its viewport");
+            DAF_ASSERT_EQUAL(first->impl->logicalSize.width, 125u, "native scale preserves the host width");
+            DAF_ASSERT_EQUAL(first->impl->logicalSize.height, 50u, "native scale preserves the host height");
+            DAF_ASSERT_EQUAL(states[0].configuredWidth, unsigned(std::lround(125.0 * scale / 120.0)),
+                             "buffer width follows native scale despite fixed pixel hints");
+            DAF_ASSERT_EQUAL(states[0].configuredHeight, unsigned(std::lround(50.0 * scale / 120.0)),
+                             "buffer height follows native scale despite fixed pixel hints");
+            DAF_ASSERT_EQUAL(first->impl->parentPosition.x, -12, "native scale preserves the parent x offset");
+            DAF_ASSERT_EQUAL(first->impl->parentPosition.y, 21, "native scale preserves the parent y offset");
+        }
+    }
+    else
+    {
+        d_stdout("RuntimeBackend: SKIP fractional geometry events (compositor lacks fractional scale/viewport)");
+    }
+    DAF_ASSERT_EQUAL(puglHide(views[0].get()), PUGL_SUCCESS, "the logically sized child hides");
+    DAF_ASSERT_EQUAL(puglShow(views[0].get(), PUGL_SHOW_PASSIVE), PUGL_SUCCESS, "the logically sized child remaps");
+    states[0].exposed = false;
+    first->impl->frameCallbackWorks = false;
+    DAF_ASSERT_EQUAL(presented(0), true, "logical geometry survives a remap");
+    DAF_ASSERT_EQUAL(first->impl->logicalSize.width, 125u, "remapping preserves the requested logical width");
     views[0].reset();
     states[1].exposed = false;
     static_cast<pugl_wl::PuglView*>(views[1].get())->impl->frameCallbackWorks = false;

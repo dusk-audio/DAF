@@ -429,8 +429,8 @@ puglWaylandConstrainSize(const PuglView* const view, PuglArea size)
 /**
    Settle on a new view size.
 
-   `logicalRequest` is what the compositor asked for, zero when it does not care and the choice is
-   ours.  Everything else is derived from it and the current scale.
+   `logicalRequest` is the host's subsurface size or the compositor's toplevel request,
+   zero when the choice is ours.
 */
 static bool
 puglWaylandSetSize(PuglView* const view, const PuglArea logicalRequest)
@@ -452,14 +452,13 @@ puglWaylandSetSize(PuglView* const view, const PuglArea logicalRequest)
     logical = puglGetInitialSize(view);
   }
 
-  // The size hints are in pixels, so constrain there and convert back
-  PuglArea pixels = puglWaylandConstrainSize(
-    view, puglWaylandLogicalToPixels(logical, impl->scale));
-
-  logical = puglWaylandPixelsToLogical(pixels, impl->scale);
-
-  // Renormalise so the buffer is exactly the logical size times the scale
-  pixels = puglWaylandLogicalToPixels(logical, impl->scale);
+  PuglArea pixels = puglWaylandLogicalToPixels(logical, impl->scale);
+  // Host-sized subsurfaces keep their logical extent even when fixed pixel hints would constrain it.
+  if (!impl->subsurface || !puglIsValidArea(impl->requestedLogicalSize)) {
+    pixels  = puglWaylandConstrainSize(view, pixels);
+    logical = puglWaylandPixelsToLogical(pixels, impl->scale);
+    pixels  = puglWaylandLogicalToPixels(logical, impl->scale);
+  }
 
   impl->size          = pixels;
   impl->logicalSize   = logical;
@@ -4407,6 +4406,35 @@ puglSetWindowPosition(PuglView* const view, const int x, const int y)
   wl_subsurface_set_position(impl->subsurface, x, y);
   puglWaylandQueueConfigure(view);
   wl_display_flush(view->world->impl->display);
+  return PUGL_SUCCESS;
+}
+
+PuglStatus
+puglWaylandSetEmbeddedGeometry(PuglView* const view,
+                               const int x,
+                               const int y,
+                               const unsigned width,
+                               const unsigned height)
+{
+  PuglInternals* const impl = view->impl;
+  if (!impl->subsurface) {
+    return PUGL_UNSUPPORTED;
+  }
+  if (!puglIsValidPosition(x, y) || !puglIsValidSize(width, height)) {
+    return PUGL_BAD_PARAMETER;
+  }
+  if (view->world->state == PUGL_WORLD_EXPOSING) {
+    return PUGL_BAD_CALL;
+  }
+
+  impl->requestedLogicalSize.width  = (PuglSpan)width;
+  impl->requestedLogicalSize.height = (PuglSpan)height;
+  impl->parentPosition.x = (PuglCoord)x;
+  impl->parentPosition.y = (PuglCoord)y;
+  wl_subsurface_set_position(impl->subsurface, x, y);
+  puglWaylandSetSize(view, impl->requestedLogicalSize);
+  puglWaylandQueueConfigure(view);
+  puglWaylandQueueFullExpose(view);
   return PUGL_SUCCESS;
 }
 
