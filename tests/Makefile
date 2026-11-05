@@ -102,6 +102,10 @@ endif
 ifeq ($(HAVE_OPENGL),true)
 UNIT_TESTS   += NanoSubWidgetsClip
 UNIT_TESTS   += Window.opengl
+ifeq ($(LINUX),true)
+UNIT_TESTS   += StaticTarget.opengl
+../build/tests/StaticTarget.cpp.opengl.o: BUILD_CXX_FLAGS += -Istatic-target -I../daf -I../dgl -DDAF_TEST_STATIC_TARGET_RUNTIME
+endif
 endif
 ifeq ($(HAVE_STUB),true)
 UNIT_TESTS   += KnobEventHandler.stub
@@ -281,6 +285,10 @@ clean:
 
 ../build/tests/WaylandActivation$(APP_EXT): ../build/tests/WaylandActivation.cpp.opengl.o ../build/libdgl-opengl.a
 	@echo "Linking WaylandActivation (OpenGL)"
+	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) $(OPENGL_LIBS) -o $@
+
+../build/tests/StaticTarget.opengl$(APP_EXT): ../build/tests/StaticTarget.cpp.opengl.o ../build/libdgl-opengl.a
+	@echo "Linking StaticTarget (OpenGL)"
 	$(SILENT)$(CXX) $^ $(LINK_FLAGS) $(DGL_SYSTEM_LIBS) $(OPENGL_LIBS) -o $@
 
 # ---------------------------------------------------------------------------------------------------------------------

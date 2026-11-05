@@ -31,10 +31,13 @@ class UIExporter
 
     UI* ui;
     UI::PrivateData* uiData;
+    bool quitRequested;
 
     // ----------------------------------------------------------------------------------------------------------------
 
 public:
+    // A host application must outlive the exporter. Its owner drives the event loop;
+    // exporter idle calls run only this UI's idle work, and quit never quits the host.
     UIExporter(void* const callbacksPtr,
                const uintptr_t winId,
                const double sampleRate,
@@ -51,9 +54,11 @@ public:
                const uint32_t bgColor = 0,
                const uint32_t fgColor = 0xffffffff,
                const char* const appClassName = nullptr,
-               const DGL_NAMESPACE::Application::WindowSystem appWindowSystem = DAF_UI_WINDOW_SYSTEM)
+               const DGL_NAMESPACE::Application::WindowSystem appWindowSystem = DAF_UI_WINDOW_SYSTEM,
+               DGL_NAMESPACE::Application* const hostApplication = nullptr)
         : ui(nullptr),
-          uiData(new UI::PrivateData(appClassName, appType, appWindowSystem))
+          uiData(new UI::PrivateData(appClassName, appType, appWindowSystem, hostApplication)),
+          quitRequested(false)
     {
         uiData->sampleRate = sampleRate;
         uiData->bundlePath = bundlePath != nullptr ? strdup(bundlePath) : nullptr;
@@ -113,6 +118,11 @@ public:
         return uiData->window->getScaleFactor();
     }
 
+    uint64_t getCompletedDisplayCount() const noexcept
+    {
+        return uiData->window->getCompletedDisplayCount();
+    }
+
     bool getGeometryConstraints(uint& minimumWidth, uint& minimumHeight, bool& keepAspectRatio) const noexcept
     {
         const DGL_NAMESPACE::Size<uint> size(uiData->window->getGeometryConstraints(keepAspectRatio));
@@ -139,7 +149,7 @@ public:
    #ifdef DGL_RUNTIME_BACKEND
     bool isX11() const noexcept
     {
-        return uiData->app.isX11();
+        return uiData->app.getWindowSystem() == DGL_NAMESPACE::Application::kWindowSystemX11;
     }
    #endif
 
@@ -201,8 +211,9 @@ public:
     void exec(DGL_NAMESPACE::IdleCallback* const cb)
     {
         DAF_SAFE_ASSERT_RETURN(cb != nullptr,);
+        DAF_SAFE_ASSERT_RETURN(uiData->ownedApp != nullptr,);
 
-        uiData->window->show();
+        setWindowVisible(true);
         uiData->window->focus();
         uiData->app.addIdleCallback(cb);
         uiData->app.exec();
@@ -224,12 +235,13 @@ public:
        #endif
 
         ui->uiIdle();
-        uiData->app.repaintIfNeeeded();
+        if (uiData->ownedApp != nullptr)
+            uiData->ownedApp->repaintIfNeeeded();
     }
 
     void showAndFocus()
     {
-        uiData->window->show();
+        setWindowVisible(true);
         uiData->window->focus();
     }
    #endif
@@ -238,7 +250,10 @@ public:
     {
         DAF_SAFE_ASSERT_RETURN(ui != nullptr, false);
 
-        uiData->app.idle();
+        if (quitRequested)
+            return false;
+        if (uiData->ownedApp != nullptr)
+            uiData->ownedApp->idle();
 
        #if DAF_UI_USE_WEB_VIEW
         if (uiData->webview != nullptr)
@@ -246,8 +261,9 @@ public:
        #endif
 
         ui->uiIdle();
-        uiData->app.repaintIfNeeeded();
-        return ! uiData->app.isQuitting();
+        if (uiData->ownedApp != nullptr)
+            uiData->ownedApp->repaintIfNeeeded();
+        return uiData->ownedApp != nullptr ? ! uiData->app.isQuitting() : ! uiData->window->isClosed();
     }
 
     void focus()
@@ -257,8 +273,10 @@ public:
 
     void quit()
     {
+        quitRequested = uiData->ownedApp == nullptr;
         uiData->window->close();
-        uiData->app.quit();
+        if (uiData->ownedApp != nullptr)
+            uiData->ownedApp->quit();
     }
 
     void repaint()
@@ -273,7 +291,10 @@ public:
     {
         DAF_SAFE_ASSERT_RETURN(ui != nullptr,);
 
-        uiData->app.triggerIdleCallbacks();
+        if (quitRequested)
+            return;
+        if (uiData->ownedApp != nullptr)
+            uiData->ownedApp->triggerIdleCallbacks();
 
        #if DAF_UI_USE_WEB_VIEW
         if (uiData->webview != nullptr)
@@ -281,7 +302,8 @@ public:
        #endif
 
         ui->uiIdle();
-        uiData->app.repaintIfNeeeded();
+        if (uiData->ownedApp != nullptr)
+            uiData->ownedApp->repaintIfNeeeded();
     }
 
     void addIdleCallbackForNativeIdle(DGL_NAMESPACE::IdleCallback* const cb, const uint timerFrequencyInMs)
@@ -309,6 +331,12 @@ public:
         return uiData->window->setEmbeddedOffset(x, y);
     }
 
+    bool setWindowEmbeddedSurfaceGeometry(const int x, const int y, const uint width, const uint height,
+                                          const double userScale)
+    {
+        return uiData->window->setEmbeddedSurfaceGeometry(x, y, width, height, userScale);
+    }
+
     // NOTE: AU has no size request/negotiation, but hosts do resize the parent view on their own
    #if DAF_UI_USES_SIZE_REQUEST || defined(DAF_PLUGIN_TARGET_AU)
     void setWindowSizeFromHost(const uint width, const uint height)
@@ -329,9 +357,12 @@ public:
 
     bool setWindowVisible(const bool yesNo)
     {
+        if (yesNo)
+            quitRequested = false;
         uiData->window->setVisible(yesNo);
 
-        return ! uiData->app.isQuitting();
+        return ! quitRequested && (uiData->ownedApp != nullptr ? ! uiData->app.isQuitting()
+                                                              : ! uiData->window->isClosed());
     }
 
     bool handlePluginKeyboardVST(const bool press, const bool special, const uint keychar, const uint keycode, const uint16_t mods)

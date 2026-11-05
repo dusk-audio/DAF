@@ -130,14 +130,6 @@ public:
         pData->triggerIdleCallbacks();
     }
 
-   #ifdef DGL_RUNTIME_BACKEND
-    // whether this application's windows opened on X11 rather than Wayland, see dgl/src/runtime-backend.md
-    bool isX11() const noexcept
-    {
-        return pData->world != nullptr && puglWorldIsX11(pData->world);
-    }
-   #endif
-
     void repaintIfNeeeded()
     {
         pData->repaintIfNeeeded();
@@ -156,7 +148,7 @@ class PluginWindow : public DGL_NAMESPACE::Window
 
 public:
     explicit PluginWindow(UI* const uiPtr,
-                          PluginApplication& app,
+                          DGL_NAMESPACE::Application& app,
                           const uintptr_t parentWindowHandle,
                           const uint width,
                           const uint height,
@@ -187,6 +179,11 @@ public:
     {
         if (pData->view != nullptr)
             puglBackendLeave(pData->view);
+    }
+
+    bool isClosed() const noexcept
+    {
+        return pData->isClosed;
     }
 
     // called after creating UI, restoring proper context
@@ -383,7 +380,8 @@ typedef bool (*fileRequestFunc) (void* ptr, const char* key);
 
 struct UI::PrivateData {
     // DGL
-    PluginApplication app;
+    ScopedPointer<PluginApplication> ownedApp;
+    DGL_NAMESPACE::Application& app;
     ScopedPointer<PluginWindow> window;
    #if DAF_UI_USE_WEB_VIEW
     WebViewHandle webview;
@@ -419,8 +417,10 @@ struct UI::PrivateData {
 
     PrivateData(const char* const appClassName,
                 const DGL_NAMESPACE::Application::Type appType,
-                const DGL_NAMESPACE::Application::WindowSystem appWindowSystem) noexcept
-        : app(appClassName, appType, appWindowSystem),
+                const DGL_NAMESPACE::Application::WindowSystem appWindowSystem,
+                DGL_NAMESPACE::Application* const hostApplication) noexcept
+        : ownedApp(hostApplication == nullptr ? new PluginApplication(appClassName, appType, appWindowSystem) : nullptr),
+          app(hostApplication != nullptr ? *hostApplication : ownedApp.getObject()),
           window(nullptr),
          #if DAF_UI_USE_WEB_VIEW
           webview(nullptr),

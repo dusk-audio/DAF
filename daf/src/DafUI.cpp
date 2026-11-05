@@ -193,7 +193,8 @@ PluginWindow& UI::PrivateData::createNextWindow(UI* const ui, uint width, uint h
    #ifdef DGL_RUNTIME_BACKEND
     // Xft.dpi describes the X server, so a window on Wayland follows its compositor's scale instead, as in
     // a Wayland-only build, even where an X server is reachable too.
-    const bool askDesktop = uiData->app.isX11() || std::getenv("DAF_SCALE_FACTOR") != nullptr;
+    const bool askDesktop = uiData->app.getWindowSystem() == DGL_NAMESPACE::Application::kWindowSystemX11
+                         || std::getenv("DAF_SCALE_FACTOR") != nullptr;
    #else
     const bool askDesktop = true;
    #endif
@@ -261,7 +262,7 @@ PluginWindow& UI::PrivateData::createNextWindow(UI* const ui, uint width, uint h
        #ifdef DGL_RUNTIME_BACKEND
         // The Linux web view is an X11 window reparented into this one, which a Wayland window cannot
         // host, so it is unavailable there, as it is in a Wayland-only build.
-        const bool canHostWebView = uiData->app.isX11();
+        const bool canHostWebView = uiData->app.getWindowSystem() == DGL_NAMESPACE::Application::kWindowSystemX11;
        #else
         const bool canHostWebView = true;
        #endif
