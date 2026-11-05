@@ -19,6 +19,8 @@
 
 #include "DafUIPrivateData.hpp"
 
+#include <stdexcept>
+
 START_NAMESPACE_DAF
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -77,20 +79,33 @@ public:
         uiData->setSizeCallbackFunc     = setSizeCall;
         uiData->fileRequestCallbackFunc = fileRequestCall;
 
+        UI::PrivateData* const previous = UI::PrivateData::s_nextPrivateData;
         UI::PrivateData::s_nextPrivateData = uiData;
+        try
+        {
+            ui = createUI();
+            if (ui == nullptr)
+                throw std::runtime_error("UI factory returned null");
 
-        UI* const uiPtr = createUI();
-
-        // enter context called in the PluginWindow constructor, see DafUIPrivateData.hpp
-        uiData->window->leaveContext();
-        UI::PrivateData::s_nextPrivateData = nullptr;
-
-        DAF_SAFE_ASSERT_RETURN(uiPtr != nullptr,);
-        ui = uiPtr;
-        uiData->initializing = false;
-
-        // must come after the flag above, see DafUIPrivateData.hpp
-        uiData->window->reconcileWidgetSize();
+            uiData->window->leaveContext();
+            UI::PrivateData::s_nextPrivateData = previous;
+            uiData->initializing = false;
+            uiData->window->reconcileWidgetSize();
+        }
+        catch (...)
+        {
+            UI::PrivateData::s_nextPrivateData = previous;
+            if (uiData->window != nullptr)
+            {
+                uiData->window->close();
+                // A throwing UI constructor still holds the construction context.
+                if (ui != nullptr)
+                    uiData->window->enterContextForDeletion();
+            }
+            delete ui;
+            delete uiData;
+            throw;
+        }
     }
 
     ~UIExporter()

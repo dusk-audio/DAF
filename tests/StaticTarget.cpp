@@ -51,11 +51,16 @@ START_NAMESPACE_DAF
 static unsigned int uiIdleCalls = 0;
 static unsigned int uiDestructions = 0;
 static bool destructionContextValid = true;
+static int constructionFailure = 0;
 
 class TestUI : public UI
 {
 public:
-    TestUI() : UI(160, 120) {}
+    TestUI() : UI(160, 120)
+    {
+        if (constructionFailure == 1)
+            throw 7;
+    }
     ~TestUI() override
     {
         ++uiDestructions;
@@ -72,7 +77,7 @@ protected:
     }
 };
 
-UI* createUI() { return new TestUI; }
+UI* createUI() { return constructionFailure == 2 ? nullptr : new TestUI; }
 
 END_NAMESPACE_DAF
 
@@ -149,6 +154,36 @@ int main()
         return first->getCompletedDisplayCount() > 0 && second->getCompletedDisplayCount() > 0;
     }), true, "host pump must draw both editors");
     DAF_ASSERT_NOT_EQUAL(idle.calls, beforeIdle, "host pump must run shared idle callbacks");
+    for (int failure = 1; failure <= 2; ++failure)
+    {
+        DAF_NAMESPACE::constructionFailure = failure;
+        bool failed = false;
+        const DGL_NAMESPACE::Window::ScopedGraphicsContext context(host);
+        GLuint texture = 0;
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        try
+        {
+            auto rejected = makeEditor(&app, host.getNativeWindowHandle());
+        }
+        catch (int code)
+        {
+            failed = failure == 1 && code == 7;
+        }
+        catch (const std::runtime_error&)
+        {
+            failed = failure == 2;
+        }
+        if (app.getWindowSystem() == Application::kWindowSystemWayland)
+        {
+            GLint binding = 0;
+            glGetIntegerv(GL_TEXTURE_BINDING_2D, &binding);
+            DAF_ASSERT_EQUAL(static_cast<GLuint>(binding), texture, "failure must restore the host graphics context");
+        }
+        glDeleteTextures(1, &texture);
+        DAF_NAMESPACE::constructionFailure = 0;
+        DAF_ASSERT_EQUAL(failed, true, "UI construction failure must reach the host");
+    }
     first->quit();
     DAF_ASSERT_EQUAL(first->plugin_idle(), false, "quit must stop this editor");
     first.reset();
@@ -182,6 +217,7 @@ int main()
     DAF_ASSERT_EQUAL(DAF_NAMESPACE::destructionContextValid, true, "UI destruction requires its graphics context");
     app.removeIdleCallback(&idle);
     host.close();
+    DAF_ASSERT_EQUAL(app.isQuitting(), true, "failed UI construction must not leave a registered window");
 
     auto owned = makeEditor(nullptr);
     owned->setWindowVisible(true);
