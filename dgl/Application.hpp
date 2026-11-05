@@ -129,6 +129,25 @@ public:
     */
     Application(int argc, char* argv[], WindowSystem windowSystem = kWindowSystemAuto);
 
+    struct ExternalWaylandDisplay {
+        void* display; // wl_display*, owned by the host
+    };
+
+   /**
+      Construct a module application borrowing the host's Wayland connection.
+
+      Create one Application per borrowed connection and share it among its Windows. The host must
+      keep the display alive until those Windows and this Application are destroyed. Construction,
+      idle and window operations run on the display owner's thread with no prepared read outstanding.
+      The host reads the connection; idle dispatches only this application's pending events.
+      Initialization and synchronous clipboard requests may read the socket while dispatching only
+      this application's events.
+
+      A null display, an unavailable Wayland backend or initialization failure opens no connection;
+      getWindowSystem() returns kWindowSystemAuto. There is no fallback to another backend.
+    */
+    explicit Application(ExternalWaylandDisplay display);
+
    /**
       Destructor.
     */
@@ -211,6 +230,7 @@ public:
       so it should be the same for every instance of the application, but different from other applications.
 
       Plugins created with DAF have their class name automatically set based on DGL_NAMESPACE and plugin name.
+      Returns null if no windowing system could be opened.
     */
     const char* getClassName() const noexcept;
 

@@ -100,19 +100,8 @@ bool daf_check_build_status() noexcept
    );
 }
 
-// --------------------------------------------------------------------------------------------------------------------
-
-#ifdef __EMSCRIPTEN__
-static void app_idle(void* const app)
+static void checkBuildConfiguration()
 {
-    static_cast<Application*>(app)->idle();
-}
-#endif
-
-Application::Application(const bool isStandalone, const Type type, const WindowSystem windowSystem)
-    : pData(new PrivateData(isStandalone, type, windowSystem))
-{
-    // build config sentinels
    #ifdef DAF_DEBUG
     fail_to_link_is_mismatch_daf_debug_on.ok = true;
    #else
@@ -139,6 +128,21 @@ Application::Application(const bool isStandalone, const Type type, const WindowS
     fail_to_link_is_mismatch_dgl_runtime_backend_off.ok = true;
    #endif
     DAF_SAFE_ASSERT(daf_check_build_status());
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+
+#ifdef __EMSCRIPTEN__
+static void app_idle(void* const app)
+{
+    static_cast<Application*>(app)->idle();
+}
+#endif
+
+Application::Application(const bool isStandalone, const Type type, const WindowSystem windowSystem)
+    : pData(new PrivateData(isStandalone, type, windowSystem))
+{
+    checkBuildConfiguration();
 }
 
 Application::Application(int argc, char* argv[], const WindowSystem windowSystem)
@@ -153,33 +157,13 @@ Application::Application(int argc, char* argv[], const WindowSystem windowSystem
     (void)argv;
    #endif
 
-    // build config sentinels
-   #ifdef DAF_DEBUG
-    fail_to_link_is_mismatch_daf_debug_on.ok = true;
-   #else
-    fail_to_link_is_mismatch_daf_debug_off.ok = true;
-   #endif
-   #ifdef DGL_USE_FILE_BROWSER
-    fail_to_link_is_mismatch_dgl_use_file_browser_on.ok = true;
-   #else
-    fail_to_link_is_mismatch_dgl_use_file_browser_off.ok = true;
-   #endif
-   #ifdef DGL_USE_WEB_VIEW
-    fail_to_link_is_mismatch_dgl_use_web_view_on.ok = true;
-   #else
-    fail_to_link_is_mismatch_dgl_use_web_view_off.ok = true;
-   #endif
-   #ifdef DGL_NO_SHARED_RESOURCES
-    fail_to_link_is_mismatch_dgl_no_shared_resources_on.ok = true;
-   #else
-    fail_to_link_is_mismatch_dgl_no_shared_resources_off.ok = true;
-   #endif
-   #ifdef DGL_RUNTIME_BACKEND
-    fail_to_link_is_mismatch_dgl_runtime_backend_on.ok = true;
-   #else
-    fail_to_link_is_mismatch_dgl_runtime_backend_off.ok = true;
-   #endif
-    DAF_SAFE_ASSERT(daf_check_build_status());
+    checkBuildConfiguration();
+}
+
+Application::Application(const ExternalWaylandDisplay display)
+    : pData(new PrivateData(display))
+{
+    checkBuildConfiguration();
 }
 
 Application::~Application()

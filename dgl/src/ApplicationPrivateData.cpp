@@ -48,7 +48,7 @@ static bool isThisTheMainThread(const d_ThreadHandle mainThreadHandle) noexcept
 
 const char* Application::getClassName() const noexcept
 {
-    return puglGetWorldString(pData->world, PUGL_CLASS_NAME);
+    return pData->world != nullptr ? puglGetWorldString(pData->world, PUGL_CLASS_NAME) : nullptr;
 }
 
 Application::WindowSystem Application::getWindowSystem() const noexcept
@@ -101,7 +101,13 @@ static PuglWorld* newWorld(const bool standalone, const Application::WindowSyste
 // --------------------------------------------------------------------------------------------------------------------
 
 Application::PrivateData::PrivateData(const bool standalone, const Type type, const WindowSystem windowSystem)
-    : world(newWorld(standalone, windowSystem)),
+    : PrivateData(newWorld(standalone, windowSystem), standalone) {}
+
+Application::PrivateData::PrivateData(const ExternalWaylandDisplay display)
+    : PrivateData(puglNewWorldWithWaylandDisplay(PUGL_MODULE, 0, display.display), false) {}
+
+Application::PrivateData::PrivateData(PuglWorld* const nativeWorld, const bool standalone)
+    : world(nativeWorld),
       isModern(false),
       isStandalone(standalone),
       isStarting(true),
