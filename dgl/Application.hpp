@@ -18,6 +18,7 @@
 #define DGL_APP_HPP_INCLUDED
 
 #include "Base.hpp"
+#include "WaylandInput.hpp"
 
 #ifdef DAF_NAMESPACE
 START_NAMESPACE_DAF
@@ -149,6 +150,7 @@ public:
 
       Supplying inputSeat selects host-managed input and prevents DAF from creating another pointer
       or keyboard stream. The seat must belong to this display and outlive this Application.
+      Forward host input through getWaylandInput().
 
       A host using EGL must initialize it before creating DAF windows and keep it initialized until
       all those windows are destroyed. DAF preserves existing EGL resources and current bindings;
@@ -217,6 +219,13 @@ public:
       Returns kWindowSystemAuto where the platform has no choice of one, and when none could be opened.
    */
     WindowSystem getWindowSystem() const noexcept;
+
+   /**
+      Return callbacks for the host-managed input seat supplied at construction.
+      All fields are null for other applications and failed initialization.
+      See WaylandInput for forwarding, reset and lifetime requirements.
+   */
+    WaylandInput getWaylandInput() const noexcept;
 
    /**
       Add a callback function to be triggered on every idle cycle.

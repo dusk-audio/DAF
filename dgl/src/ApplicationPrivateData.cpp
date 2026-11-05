@@ -51,6 +51,11 @@ const char* Application::getClassName() const noexcept
     return pData->world != nullptr ? puglGetWorldString(pData->world, PUGL_CLASS_NAME) : nullptr;
 }
 
+WaylandInput Application::getWaylandInput() const noexcept
+{
+    return puglGetWaylandInput(pData->world);
+}
+
 Application::WindowSystem Application::getWindowSystem() const noexcept
 {
     if (pData->world == nullptr)

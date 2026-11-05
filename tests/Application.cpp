@@ -69,6 +69,7 @@ int main()
                          "a null borrowed display must not fall back to another connection");
         DAF_ASSERT_EQUAL(app.isStandalone(), false, "a borrowed display belongs to a module");
         DAF_ASSERT_EQUAL(app.getClassName(), nullptr, "a failed application has no class name");
+        DAF_ASSERT_EQUAL(app.getWaylandInput().data, nullptr, "a failed application exposes no input callbacks");
         app.idle();
         app.setClassName("unavailable");
         app.quit();
@@ -99,6 +100,7 @@ int main()
             dafTestWayland::queueSync(display, nullptr, &listener, &hostCalls);
             {
                 Application app(Application::ExternalWaylandDisplay{display});
+                DAF_ASSERT_EQUAL(app.getWaylandInput().data, nullptr, "display-only borrowing retains its own input stream");
                 DAF_ASSERT_EQUAL(app.getWindowSystem(), Application::kWindowSystemWayland,
                                  "a borrowed application must use Wayland");
                 DAF_ASSERT_EQUAL(app.isStandalone(), false, "the host owns the event loop");
@@ -157,6 +159,16 @@ int main()
                 Application app(Application::ExternalWaylandDisplay{hostDisplay, seat});
                 DAF_ASSERT_EQUAL(app.getWindowSystem(), Application::kWindowSystemWayland,
                                  "a host-managed input application uses Wayland");
+                const auto input = app.getWaylandInput();
+                DAF_ASSERT_NOT_EQUAL(input.data, nullptr, "the public application exposes its input adapter");
+                assert(input.keyboard && input.pointer && input.consumed && input.hasKeyboardFocus &&
+                       input.releaseFocus && input.reset);
+                DAF_ASSERT_EQUAL(app.getWaylandInput().data, input.data, "the adapter remains bound to this application");
+                DAF_ASSERT_EQUAL(input.hasKeyboardFocus(input.data), false, "a new adapter has no child focus");
+                input.keyboard->key(input.data, nullptr, 1, 1, 30, WL_KEYBOARD_KEY_STATE_RELEASED);
+                DAF_ASSERT_EQUAL(input.consumed(input.data), false, "unowned releases remain with the host");
+                input.releaseFocus(input.data);
+                input.reset(input.data);
                 app.idle();
             }
             assert(wl_display_roundtrip(hostDisplay) >= 0);
@@ -189,6 +201,7 @@ int main()
     // regular usage
     {
         Application app(true);
+        DAF_ASSERT_EQUAL(app.getWaylandInput().data, nullptr, "standalone input belongs to its own event loop");
         IdleCallbackCounter idleCounter;
         app.addIdleCallback(&idleCounter);
         DAF_ASSERT_EQUAL(app.isQuitting(), false, "app MUST NOT be set as quitting during init");
