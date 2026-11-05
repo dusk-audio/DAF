@@ -21,7 +21,6 @@
 #include "pugl/pugl.h"
 
 #include <stdlib.h>
-#include <string.h>
 
 typedef struct {
   EGLDisplay            display;
