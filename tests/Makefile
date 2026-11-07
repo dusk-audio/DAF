@@ -83,6 +83,23 @@ ifeq ($(LINUX),true)
 ../build/tests/%Wrapper$(APP_EXT): LINK_FLAGS += -ldl
 endif
 
+# hosts that load a plugin bundle built apart, by its path, so `run` leaves them out: an AU's Cocoa view kept past its
+# unit, on the bundle `make -C au-view au` builds (run as AUViewDispose ../bin/d_au_view_test.component). It links
+# libAUViewDisposeWatch, which watches what the plugin binary calls (see AUViewDisposeWatch.hpp).
+HOST_TESTS =
+ifeq ($(MACOS),true)
+HOST_TESTS += AUViewDispose
+# rules of their own: target-specific LINK_FLAGS would reach the library too, which make builds as a prerequisite
+../build/tests/AUViewDispose$(APP_EXT): ../build/tests/AUViewDispose.cpp.o ../build/tests/libAUViewDisposeWatch.dylib
+	@echo "Linking AUViewDispose"
+	$(SILENT)$(CXX) $< ../build/tests/libAUViewDisposeWatch.dylib $(LINK_FLAGS) \
+		-framework AppKit -framework AudioToolbox -framework AudioUnit -framework CoreFoundation -o $@
+../build/tests/libAUViewDisposeWatch.dylib: ../build/tests/AUViewDisposeWatch.cpp.o
+	@echo "Linking AUViewDisposeWatch"
+	$(SILENT)$(CXX) $< $(LINK_FLAGS) -dynamiclib -install_name @executable_path/libAUViewDisposeWatch.dylib \
+		-framework AudioToolbox -framework CoreFoundation -o $@
+endif
+
 # the LV2 wrapper's TTL exporter, run on a plugin of its own (see lv2-preset-export/)
 ../build/tests/LV2PresetExport.cpp.o: BUILD_CXX_FLAGS += -Ilv2-preset-export -I../daf
 ifeq ($(LINUX),true)
@@ -166,18 +183,20 @@ UNIT_TESTS    := $(filter-out $(SKIP_UNIT_TESTS),$(UNIT_TESTS))
 
 MANUAL_TARGETS = $(MANUAL_TESTS:%=../build/tests/%$(APP_EXT))
 UNIT_TARGET    = $(UNIT_TESTS:%=../build/tests/%$(APP_EXT))
+HOST_TARGETS   = $(HOST_TESTS:%=../build/tests/%$(APP_EXT))
 CHECK_TARGETS  = $(BUILD_CHECKS:%=../build/tests/%.cpp.o)
 
 # A test called Name.variant (Window.opengl, KnobEventHandler.stub) is built from Name.cpp into
 # ../build/tests/Name.cpp.variant.o. Its object has to be listed under that name, or the -include at the end misses
 # its dependency file and a header change never rebuilds it.
 ALL_OBJS  = $(foreach test,$(MANUAL_TESTS) $(UNIT_TESTS),../build/tests/$(basename $(test)).cpp$(suffix $(test)).o)
+ALL_OBJS += $(HOST_TESTS:%=../build/tests/%.cpp.o) $(HOST_TESTS:%=../build/tests/%Watch.cpp.o)
 ALL_OBJS += $(CHECK_TARGETS)
 ALL_OBJS += ../build/tests/WaylandActivation.cpp.opengl.o
 
 # ---------------------------------------------------------------------------------------------------------------------
 
-all: $(MANUAL_TARGETS) $(UNIT_TARGET) $(CHECK_TARGETS)
+all: $(MANUAL_TARGETS) $(UNIT_TARGET) $(HOST_TARGETS) $(CHECK_TARGETS)
 
 # ---------------------------------------------------------------------------------------------------------------------
 
