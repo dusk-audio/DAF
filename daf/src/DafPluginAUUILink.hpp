@@ -39,22 +39,30 @@ START_NAMESPACE_DAF
 
    So the instance detaches every UI through here, from its destructor and before its plugin is deleted: the UI stops
    its idle timer, its instance pointer turns nullptr and it calls the unit no more. A UI that goes first takes itself
-   off. Both happen under the lock, which a UI also holds for each idle tick. The lock is recursive, so that a tick can
-   see its own instance disposed.
+   off. Both happen under the lock, which a UI also holds for each idle tick and for its setup on the unit: from its
+   attach to its idle timer and property listeners, and then for its request for the plugin's current values. The lock
+   is recursive, so that a tick can see its own instance disposed.
 
    That guarantees this much. A unit disposed on the main thread is disposed between the UI's callbacks, none of which
-   reads the plugin afterwards. A unit disposed on another thread waits for an idle tick in progress to end, and the UI
-   reads nullptr from the next callback on. Calls a tick makes into the unit do not wait for the dispose either:
-   AudioToolbox waits for a call in flight before it closes the unit, and answers new ones with an error at once.
+   reads the plugin afterwards. A unit disposed on another thread waits for an idle tick in progress to end, and for a
+   new UI's setup on the unit, whose timer it then stops; the UI reads nullptr from the next callback on. An instance
+   destroyed before a new UI attaches, during its plugin UI's construction for one, leaves that UI detached from the
+   start: the view fetches its link before it reads anything else of the instance, and attaches only once the plugin
+   UI is built. One whose destruction AudioToolbox holds back past the attach detaches the UI as usual. Calls a tick,
+   the setup or the values request makes into the unit do not wait for the dispose either: AudioToolbox waits for a
+   call in flight before it closes the unit, and answers new ones with an error at once.
 
-   It does not guarantee more. A unit disposed on another thread does not wait for a paint, an input event, a host
-   resize or the UI's destruction in progress, so any of those can still read the plugin as it goes; waiting for them
-   would deadlock a host whose own AppKit callbacks, which that UI code can reach (a resize reaches the host's frame
-   observers), take a lock the host holds across the dispose. The idle tick waited for can reach host code the same way
-   when the plugin's uiIdle(), or an idle callback the tick runs (one added with no timer), resizes the UI or otherwise
-   calls into AppKit, and with such a host that wait is a deadlock too. Plugin UI code run from threads, timers or
-   blocks of its own is not covered at all, and the property listeners a UI registers are called on the thread of
-   whatever changed the property.
+   It does not guarantee more. A unit disposed on another thread does not wait for the plugin UI's construction, which
+   comes before the attach, nor for a paint, an input event, a host resize or the UI's destruction in progress, so any
+   of those can still read the plugin as it goes; waiting for them would deadlock a host whose own AppKit callbacks,
+   which that UI code can reach (a resize reaches the host's frame observers), take a lock the host holds across the
+   dispose. The idle tick waited for can reach host code the same way when the plugin's uiIdle(), or an idle callback
+   the tick runs (one added with no timer), resizes the UI or otherwise calls into AppKit, and with such a host that
+   wait is a deadlock too. So can every parameterChanged(), programLoaded() and stateChanged(): they run inside a call
+   into the unit (the host's own value and preset changes, or the values request a new view makes, which reaches every
+   view of the unit), and a dispose waits for that call. Plugin UI code run from threads, timers or blocks of its own
+   is not covered at all, and the property listeners a UI registers are called on the thread of whatever changed the
+   property.
 
    The instance creates the link and hands each UI a reference of its own through the private 'DPFu' property. The link
    is freed when the last of them lets go.

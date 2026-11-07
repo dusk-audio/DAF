@@ -1360,9 +1360,10 @@ public:
 
        #if DAF_PLUGIN_HAS_UI
         case 'DPFu':
-            // Every get hands out a reference of the caller's own, which it gives back with AUUILink::release(): the
-            // UI asks once, when it is made, and releases it when it goes (~DAF_UI_AU). The property is private, so
-            // nothing else asks; anything that did would keep the link alive past both.
+            // Every get hands out a reference of the caller's own, which it gives back with AUUILink::release(): a
+            // view asks once, before it makes its UI, and the UI releases it when it goes (~DAF_UI_AU), or at once
+            // when it finds the instance gone. The property is private, so nothing else asks; anything that did
+            // would keep the link alive past both.
             fUILink->retain();
             *static_cast<AUUILink**>(outData) = fUILink;
             return noErr;

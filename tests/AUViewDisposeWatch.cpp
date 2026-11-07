@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 namespace
@@ -34,6 +35,9 @@ std::vector<AudioUnit> gDisposedUnits;
 std::vector<CFRunLoopTimerRef> gPluginTimers;  // retained here
 int gCallsOnDisposedUnits = 0;
 const char* gFirstCall = nullptr;
+// see auViewWatchBeforeNextPluginTimer: set, and taken and cleared, together under gLock
+void (*gBeforeNextTimer)(void*) = nullptr;
+void* gBeforeNextTimerArg = nullptr;
 
 bool calledFromPlugin(const void* const returnAddress)
 {
@@ -85,8 +89,21 @@ CFRunLoopTimerRef watchedTimerCreate(const CFAllocatorRef allocator, const CFAbs
                                      const CFTimeInterval interval, const CFOptionFlags flags, const CFIndex order,
                                      const CFRunLoopTimerCallBack callout, CFRunLoopTimerContext* const context)
 {
+    const bool fromPlugin = calledFromPlugin(__builtin_return_address(0));
+    if (fromPlugin)
+    {
+        void (*callback)(void*) = nullptr;
+        void* arg = nullptr;
+        {
+            const std::lock_guard<std::mutex> guard(gLock);
+            std::swap(callback, gBeforeNextTimer);
+            std::swap(arg, gBeforeNextTimerArg);
+        }
+        if (callback != nullptr)  // outside the lock: it may wait for a dispose that notes calls
+            callback(arg);
+    }
     CFRunLoopTimerRef const timer = CFRunLoopTimerCreate(allocator, fireDate, interval, flags, order, callout, context);
-    if (timer != nullptr && calledFromPlugin(__builtin_return_address(0)))
+    if (timer != nullptr && fromPlugin)
     {
         CFRetain(timer);
         const std::lock_guard<std::mutex> guard(gLock);
@@ -145,6 +162,13 @@ size_t auViewWatchPluginTimers(size_t* const valid)
     if (valid != nullptr)
         *valid = count;
     return gPluginTimers.size();
+}
+
+void auViewWatchBeforeNextPluginTimer(void (*const callback)(void*), void* const arg)
+{
+    const std::lock_guard<std::mutex> guard(gLock);
+    gBeforeNextTimer = callback;
+    gBeforeNextTimerArg = arg;
 }
 
 void auViewWatchForgetTimers(void)

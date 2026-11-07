@@ -21,7 +21,7 @@
 //
 //   AUViewDispose <path to d_au_view_test.component> [scenario]
 //
-// With a scenario number (1 to 7, in the order below), that scenario alone.
+// With a scenario number (1 to 9, in the order below), that scenario alone.
 //
 // Loads the bundle tests/au-view builds (`make -C tests/au-view au`) by its path, nothing installed. Each scenario
 // makes a unit, renders a few blocks, creates its view the way a host does (kAudioUnitProperty_CocoaUI) and runs the
@@ -35,14 +35,19 @@
 //   takes too, while the UI resizes itself from a paint: the dispose must not wait for the paint, which waits for the
 //   host's lock, so that this would be a deadlock
 // - after the host has let go of the view, which was its window's first responder
+// - from another thread while the wrapper sets the view's UI up, after the UI is tied to the unit (right before the
+//   wrapper makes the UI's idle timer, where libAUViewDisposeWatch lands it), which the dispose waits for
+// - from another thread while the plugin UI's constructor runs (it sleeps there), which the dispose does not wait
+//   for: the UI it makes must start detached, with no idle timer running and no call on the unit
 // The UI exits the process, failing the test, when its idle runs or it reads its plugin after the plugin was deleted
 // (tests/au-view/ViewDisposeUI.cpp). This host fails it when one of the plugin's idle timers is still running once a
 // unit is disposed, or when the plugin calls a unit after the unit was disposed, which libAUViewDisposeWatch watches
 // (AUViewDisposeWatch.hpp). Run under AddressSanitizer as well (CI), which catches a use after free anywhere else,
 // outside the UI's own reads.
 //
-// Not tested, as it is not guaranteed (see daf/src/DafPluginAUUILink.hpp): a unit disposed on another thread during a
-// paint, an input event or the UI's destruction, which can still read the plugin as it goes.
+// Not tested, as it is not guaranteed (see daf/src/DafPluginAUUILink.hpp): a unit disposed on another thread during
+// the plugin UI's construction (what it reads of the plugin then, not the detached UI it ends up as), a paint, an
+// input event or the UI's destruction, which can still read the plugin as it goes.
 
 #import <AppKit/AppKit.h>
 #import <AudioToolbox/AudioToolbox.h>
@@ -519,6 +524,100 @@ void disposeAfterTheHostLetGo()
     end();
 }
 
+// A dispose landed inside the making of a view, see disposeOnAnotherThreadWhileTheViewIsMade().
+struct DisposeWhileMade
+{
+    std::atomic<bool> go{false};
+    std::atomic<bool> disposed{false};
+};
+
+// Right before the wrapper makes the UI's idle timer: starts the dispose and gives it a second to end. A wrapper that
+// keeps the dispose waiting until the UI is set up makes the timer only after that second.
+void landTheDispose(void* const arg)
+{
+    DisposeWhileMade& d = *static_cast<DisposeWhileMade*>(arg);
+    d.go.store(true);
+    for (int i = 0; i < 1000 && ! d.disposed.load(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+}
+
+// The unit is disposed on another thread while the wrapper sets the view's UI up, once the UI is tied to the unit: the
+// dispose waits for the setup, the UI's idle timer and its listeners on the unit, and then stops that timer. A wrapper
+// that lets it through makes the timer after the detach, which leaves it running, and adds its listeners to the
+// disposed unit.
+void disposeOnAnotherThreadWhileTheViewIsMade()
+{
+    begin("a unit disposed on another thread while its view is being made");
+    AudioUnit const unit = newUnit();
+    DisposeWhileMade d;
+    std::thread disposer([unit, &d] {
+        while (! d.go.load())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        AudioUnitUninitialize(unit);
+        AudioComponentInstanceDispose(unit);
+        auViewWatchDisposed(unit);
+        d.disposed.store(true);
+    });
+    auViewWatchBeforeNextPluginTimer(landTheDispose, &d);
+    NSView* view = newView(unit);
+    if (! d.go.load())
+    {   // no timer made, so no dispose started: let the disposer go, the test fails below
+        d.go.store(true);
+        disposer.join();
+        REQUIRE(false, "the wrapper must make the UI's idle timer while it makes the view");
+    }
+
+    for (int i = 0; i < 500 && ! d.disposed.load(); ++i)
+        spin(0.01);
+    REQUIRE(d.disposed.load(), "the unit must dispose once the UI is set up");
+    disposer.join();
+    requireTimersStopped();
+    spin(0.3);
+
+    releaseView(view);
+    spin(0.1);
+    end();
+}
+
+// The unit is disposed on another thread while the plugin UI's constructor runs, which nothing waits for: the plugin
+// UI sets "UI busy" and sleeps there, reading nothing of the plugin afterwards. The UI made must start detached: no
+// idle timer runs it (its idle would read the deleted plugin), and the wrapper calls the disposed unit no more.
+void disposeOnAnotherThreadDuringThePluginUIConstruction()
+{
+    begin("a unit disposed on another thread while the plugin UI is constructed");
+    AudioUnit const unit = newUnit();
+    std::atomic<bool> sawBusy(false), disposed(false);
+    std::thread disposer([unit, &sawBusy, &disposed] {
+        for (int i = 0; i < 5000 && ! sawBusy.load(); ++i)
+        {
+            sawBusy.store(parameter(unit, kParameterUIBusy) > 0.5f);
+            if (! sawBusy.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        AudioUnitUninitialize(unit);
+        AudioComponentInstanceDispose(unit);
+        auViewWatchDisposed(unit);
+        disposed.store(true);
+    });
+    setenv("DAF_TEST_AU_VIEW_SLOW", "construct", 1);
+    NSView* view = newView(unit);
+    unsetenv("DAF_TEST_AU_VIEW_SLOW");
+
+    for (int i = 0; i < 500 && ! disposed.load(); ++i)
+        spin(0.01);
+    REQUIRE(disposed.load(), "the unit must dispose while the plugin UI is constructed");
+    disposer.join();
+    REQUIRE(sawBusy.load(), "the unit must be disposed during the plugin UI's construction");
+    size_t valid = 0;
+    auViewWatchPluginTimers(&valid);
+    REQUIRE(valid == 0, "no idle timer may run a UI made for a unit disposed during its construction");
+    spin(0.5);   // an idle tick here would read the deleted plugin, and the UI would fail the test
+
+    releaseView(view);
+    spin(0.1);
+    end();
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -552,6 +651,10 @@ int main(int argc, char* argv[])
         disposeOnAHostThreadWhileTheUIResizes();
     if (only == 0 || only == 7)
         disposeAfterTheHostLetGo();
+    if (only == 0 || only == 8)
+        disposeOnAnotherThreadWhileTheViewIsMade();
+    if (only == 0 || only == 9)
+        disposeOnAnotherThreadDuringThePluginUIConstruction();
 
     alarm(0);
     std::fprintf(stderr, "AUViewDispose: passed\n");

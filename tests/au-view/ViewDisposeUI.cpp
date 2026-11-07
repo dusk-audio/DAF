@@ -33,6 +33,8 @@ START_NAMESPACE_DAF
 // - "idle": each idle tick takes the pointer and sleeps, then reads through it and edits a parameter, calling the unit.
 // - "resize": the first paint after the host sets the plugin's "Resize" parameter sleeps, then resizes the UI, as a
 //   resize grip does. It reads nothing of the plugin after the sleep, as the plugin may be gone by then.
+// - "construct": the constructor sleeps, as one loading fonts or images does. It reads nothing of the plugin after
+//   the sleep either.
 //
 // The first paint after the plugin is gone edits a parameter, as a click into a view the host kept does: the UI must
 // not call the unit then (AUViewDispose watches).
@@ -46,7 +48,15 @@ public:
           fResized(false),
           fEditedWithoutPlugin(false),
           fPeak(0.0f),
-          fEdit(0.0f) {}
+          fEdit(0.0f)
+    {
+        if (fSlow == kSlowConstruct)
+            if (void* const instance = getPluginInstancePointer())
+            {
+                static_cast<ViewDisposePlugin*>(instance)->setUIBusy(true);
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+    }
 
 protected:
     void parameterChanged(uint32_t, float) override {}
@@ -91,7 +101,7 @@ protected:
     }
 
 private:
-    enum Slow { kSlowNone, kSlowIdle, kSlowResize };
+    enum Slow { kSlowNone, kSlowIdle, kSlowResize, kSlowConstruct };
 
     const void* const fInstance;
     const Slow fSlow;
@@ -137,7 +147,9 @@ private:
             return kSlowIdle;
         if (std::strcmp(place, "resize") == 0)
             return kSlowResize;
-        fail("DAF_TEST_AU_VIEW_SLOW must be idle or resize");
+        if (std::strcmp(place, "construct") == 0)
+            return kSlowConstruct;
+        fail("DAF_TEST_AU_VIEW_SLOW must be idle, resize or construct");
         return kSlowNone;
     }
 

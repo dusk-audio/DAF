@@ -43,4 +43,8 @@ AU_VIEW_WATCH_API int auViewWatchCallsOnDisposedUnits(const char** first);
 AU_VIEW_WATCH_API size_t auViewWatchPluginTimers(size_t* valid);
 AU_VIEW_WATCH_API void auViewWatchForgetTimers(void);
 
+// `callback(arg)` runs once, on the thread making it, right before the next run loop timer the plugin makes: the place
+// where AUViewDispose disposes a unit from another thread while the wrapper sets a new view's UI up.
+AU_VIEW_WATCH_API void auViewWatchBeforeNextPluginTimer(void (*callback)(void* arg), void* arg);
+
 }
