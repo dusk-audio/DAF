@@ -139,7 +139,8 @@ jobs:
         ./build/tests/AULatency
         ./build/tests/AULatencyWatch
     # A host keeping an AU's view past its unit, on a real bundle loaded by its path. USE_WEB_VIEW=true matches the DGL
-    # library the first step built, which the bundle links.
+    # library the first step built, which the bundle links. A failure's last lines also go into an annotation, which the
+    # run's summary shows without the log.
     - name: AU view outliving its unit
       if: ${{ runner.os == 'macOS' }}
       env:
@@ -148,7 +149,14 @@ jobs:
       run: |
         make -C tests/au-view au USE_WEB_VIEW=true -j5
         make -C tests ../build/tests/AUViewDispose USE_WEB_VIEW=false -j5
-        ./build/tests/AUViewDispose bin/d_au_view_test.component
+        status=0
+        ./build/tests/AUViewDispose bin/d_au_view_test.component > build/tests/AUViewDispose.log 2>&1 || status=$?
+        cat build/tests/AUViewDispose.log
+        if [ "$status" -ne 0 ]; then
+          message=$(grep -v 'TODO Lookup' build/tests/AUViewDispose.log | tail -n 3 | tr '\n' ' ')
+          echo "::error title=AU view outliving its unit::${message:-the test printed nothing}"
+          exit "$status"
+        fi
     # The test UI's own checks still fire first here, before ASan can see their read: this run adds a use after free
     # anywhere else, in the wrappers or DGL, which those checks cannot see.
     - name: AU view outliving its unit under AddressSanitizer
@@ -162,7 +170,16 @@ jobs:
           build/tests/libAUViewDisposeWatch.dylib build/tests/AUViewDisposeWatch.cpp.o
         make -C tests/au-view au USE_WEB_VIEW=true -j5
         make -C tests ../build/tests/AUViewDispose USE_WEB_VIEW=false -j5
-        ./build/tests/AUViewDispose bin/d_au_view_test.component
+        status=0
+        ./build/tests/AUViewDispose bin/d_au_view_test.component > build/tests/AUViewDispose.log 2>&1 || status=$?
+        cat build/tests/AUViewDispose.log
+        if [ "$status" -ne 0 ]; then
+          # an AddressSanitizer report ends in its legend: its SUMMARY line names the error
+          message=$(grep -m 1 '^SUMMARY: AddressSanitizer' build/tests/AUViewDispose.log \
+            || grep -v 'TODO Lookup' build/tests/AUViewDispose.log | tail -n 3 | tr '\n' ' ')
+          echo "::error title=AU view outliving its unit under AddressSanitizer::${message:-the test printed nothing}"
+          exit "$status"
+        fi
     # gnu++98 dropped: this fork's C++ floor is C++11 (std::atomic in the CLAP wrapper)
     - name: As C++11 mode
       env:
