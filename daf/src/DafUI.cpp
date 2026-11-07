@@ -510,7 +510,7 @@ bool UI::openFileBrowser(const FileBrowserOptions& options)
 
 void* UI::getPluginInstancePointer() const noexcept
 {
-    return uiData->dspPtr;
+    return uiData->dspPtr.load(std::memory_order_relaxed);
 }
 #endif
 
