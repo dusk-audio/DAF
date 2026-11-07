@@ -27,6 +27,8 @@
 #include "../../dgl/src/WindowPrivateData.hpp"
 #include "../../dgl/src/pugl.hpp"
 
+#include <atomic>
+
 #if DAF_PLUGIN_WANT_STATE && DAF_UI_FILE_BROWSER
 # include <map>
 # include <string>
@@ -390,7 +392,8 @@ struct UI::PrivateData {
     // DSP
     double   sampleRate;
     uint32_t parameterOffset;
-    void*    dspPtr;
+    // the plugin instance for direct access, cleared once it is gone (UIExporter::clearPluginInstancePointer)
+    std::atomic<void*> dspPtr;
 
     // UI
     uint bgColor;

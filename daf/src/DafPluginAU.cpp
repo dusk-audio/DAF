@@ -31,6 +31,9 @@
 #include <sched.h>
 
 #include "DafPluginAUBufferList.hpp"
+#if DAF_PLUGIN_HAS_UI
+# include "DafPluginAUUILink.hpp"
+#endif
 
 #include <algorithm>
 #include <map>
@@ -138,6 +141,7 @@ static const char* AudioUnitPropertyID2Str(const AudioUnitPropertyID prop) noexc
     PROP(DPFl)
     PROP(DPFs)
     PROP(DPFa)
+    PROP(DPFu)
     #undef PROP
     #undef PROPX
     }
@@ -362,6 +366,9 @@ public:
     PluginAU(const AudioUnit component)
         : fPlugin(this, writeMidiCallback, requestParameterValueChangeCallback, updateStateValueCallback),
           fComponent(component),
+        #if DAF_PLUGIN_HAS_UI
+          fUILink(new AUUILink()),
+        #endif
           fLastRenderError(noErr),
           fPropertyListeners(),
           fRenderListeners(),
@@ -497,6 +504,11 @@ public:
 
     ~PluginAU()
     {
+       #if DAF_PLUGIN_HAS_UI
+        // First, while the plugin is whole: a UI can outlive the instance, see DafPluginAUUILink.hpp.
+        fUILink->unitDisposed();
+        fUILink->release();
+       #endif
        #if DAF_PLUGIN_WANT_LATENCY
         unwatchLatency(true);
        #endif
@@ -898,6 +910,15 @@ public:
             DAF_SAFE_ASSERT_UINT_RETURN(inElement == 0, inElement, kAudioUnitErr_InvalidElement);
             outDataSize = sizeof(void*);
             outWritable = true;
+            return noErr;
+       #endif
+
+       #if DAF_PLUGIN_HAS_UI
+        case 'DPFu':
+            DAF_SAFE_ASSERT_UINT_RETURN(inScope == kAudioUnitScope_Global, inScope, kAudioUnitErr_InvalidScope);
+            DAF_SAFE_ASSERT_UINT_RETURN(inElement == 0, inElement, kAudioUnitErr_InvalidElement);
+            outDataSize = sizeof(AUUILink*);
+            outWritable = false;
             return noErr;
        #endif
 
@@ -1334,6 +1355,17 @@ public:
        #if DAF_PLUGIN_HAS_UI && DAF_PLUGIN_WANT_DIRECT_ACCESS
         case 'DPFa':
             *static_cast<void**>(outData) = fPlugin.getInstancePointer();
+            return noErr;
+       #endif
+
+       #if DAF_PLUGIN_HAS_UI
+        case 'DPFu':
+            // Every get hands out a reference of the caller's own, which it gives back with AUUILink::release(): a
+            // view asks once, before it makes its UI, and the UI releases it when it goes (~DAF_UI_AU), or at once
+            // when it finds the instance gone. The property is private, so nothing else asks; anything that did
+            // would keep the link alive past both.
+            fUILink->retain();
+            *static_cast<AUUILink**>(outData) = fUILink;
             return noErr;
        #endif
         }
@@ -2529,6 +2561,10 @@ private:
 
     // AU component
     const AudioUnit fComponent;
+   #if DAF_PLUGIN_HAS_UI
+    // the UIs made for this instance, detached before the plugin goes away
+    AUUILink* const fUILink;
+   #endif
 
     // AUv2 related fields
     OSStatus fLastRenderError;

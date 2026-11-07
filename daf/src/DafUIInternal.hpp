@@ -309,6 +309,12 @@ public:
         uiData->window->repaint();
     }
 
+    // The plugin instance is gone: getPluginInstancePointer() returns nullptr from now on. Any thread.
+    void clearPluginInstancePointer() noexcept
+    {
+        uiData->dspPtr.store(nullptr, std::memory_order_relaxed);
+    }
+
     // -------------------------------------------------------------------
 
    #if defined(DAF_OS_MAC) || defined(DAF_OS_WINDOWS)

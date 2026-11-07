@@ -15,6 +15,7 @@
  */
 
 #include "DafUIInternal.hpp"
+#include "DafPluginAUUILink.hpp"
 
 #define Point AudioUnitPoint
 #define Size AudioUnitSize
@@ -62,8 +63,10 @@ public:
     DAF_UI_AU(const AudioUnit component,
               NSView* const view,
               const double sampleRate,
-              void* const instancePointer)
+              void* const instancePointer,
+              AUUILink* const link)
         : fComponent(component),
+          fLink(nullptr),
           fParentView(view),
           fTimerRef(nullptr),
           fFrameObserver(nullptr),
@@ -80,12 +83,38 @@ public:
               d_nextBundlePath,
               instancePointer)
     {
+        // The tie to the instance, which detaches this UI before its plugin goes away (see DafPluginAUUILink.hpp):
+        // uiViewForAudioUnit fetched it before anything else, and the attach comes after the plugin UI's construction
+        // (fUI), so it sees an instance destroyed at any point since. Its lock is held from the attach to the end of
+        // this UI's setup on the unit below, the idle timer and the property listeners: an instance disposed on
+        // another thread meanwhile waits for that, and then finds the timer to stop. It is let go before the frame
+        // observer, whose AppKit calls can reach the host.
+        std::unique_lock<std::recursive_mutex> linkGuard;
+        if (link == nullptr)
+        {
+            // every unit of this wrapper answers 'DPFu': without a link it was gone, or going, when the view was made
+            unitDisposed();
+            return;
+        }
+        linkGuard = std::unique_lock<std::recursive_mutex>(link->lock());
+        if (link->attach(detachCallback, this))
+            fLink = link;
+        else
+        {
+            // the instance went away while this was being made, the plugin UI's construction included: detached
+            // from the start. The lock goes first, as it is the link's and the release may free the link.
+            linkGuard.unlock();
+            link->release();
+            unitDisposed();
+            return;
+        }
+
        #if DAF_PLUGIN_WANT_STATE
         // create state keys
         {
             CFArrayRef keysRef = nullptr;
             UInt32 dataSize = sizeof(CFArrayRef);
-            if (AudioUnitGetProperty(fComponent, 'DPFl', kAudioUnitScope_Global, 0, &keysRef, &dataSize) == noErr
+            if (AudioUnitGetProperty(component, 'DPFl', kAudioUnitScope_Global, 0, &keysRef, &dataSize) == noErr
                 && dataSize == sizeof(CFArrayRef))
             {
                 const CFIndex numStates = CFArrayGetCount(keysRef);
@@ -128,14 +157,18 @@ public:
         CFRunLoopAddTimer(CFRunLoopGetCurrent(), fTimerRef, kCFRunLoopCommonModes);
 
         // setup property listeners
-        AudioUnitAddPropertyListener(fComponent, kAudioUnitProperty_SampleRate, auPropertyChangedCallback, this);
-        AudioUnitAddPropertyListener(fComponent, 'DPFp', auPropertyChangedCallback, this);
+        AudioUnitAddPropertyListener(component, kAudioUnitProperty_SampleRate, auPropertyChangedCallback, this);
+        AudioUnitAddPropertyListener(component, 'DPFp', auPropertyChangedCallback, this);
        #if DAF_PLUGIN_WANT_PROGRAMS
-        AudioUnitAddPropertyListener(fComponent, 'DPFo', auPropertyChangedCallback, this);
+        AudioUnitAddPropertyListener(component, 'DPFo', auPropertyChangedCallback, this);
        #endif
        #if DAF_PLUGIN_WANT_STATE
-        AudioUnitAddPropertyListener(fComponent, 'DPFs', auPropertyChangedCallback, this);
+        AudioUnitAddPropertyListener(component, 'DPFs', auPropertyChangedCallback, this);
        #endif
+
+        // set up on the unit: a dispose waiting for that may go ahead
+        if (linkGuard.owns_lock())
+            linkGuard.unlock();
 
         // setup parent view frame listener
         //
@@ -170,18 +203,31 @@ public:
             fFrameObserver = nullptr;
         }
 
-        AudioUnitRemovePropertyListenerWithUserData(fComponent, kAudioUnitProperty_SampleRate, auPropertyChangedCallback, this);
-        AudioUnitRemovePropertyListenerWithUserData(fComponent, 'DPFp', auPropertyChangedCallback, this);
-       #if DAF_PLUGIN_WANT_PROGRAMS
-        AudioUnitRemovePropertyListenerWithUserData(fComponent, 'DPFo', auPropertyChangedCallback, this);
-       #endif
-       #if DAF_PLUGIN_WANT_STATE
-        AudioUnitRemovePropertyListenerWithUserData(fComponent, 'DPFs', auPropertyChangedCallback, this);
-       #endif
+        // off the instance's list: it does not detach this UI from here on, and a detach in progress on the thread
+        // disposing it has ended
+        if (fLink != nullptr)
+        {
+            fLink->remove(this);
+            fLink->release();
+            fLink = nullptr;
+        }
+
+        // the listeners died with the instance if it is gone, otherwise they are taken off it
+        if (const AudioUnit component = fComponent.load())
+        {
+            AudioUnitRemovePropertyListenerWithUserData(component, kAudioUnitProperty_SampleRate, auPropertyChangedCallback, this);
+            AudioUnitRemovePropertyListenerWithUserData(component, 'DPFp', auPropertyChangedCallback, this);
+           #if DAF_PLUGIN_WANT_PROGRAMS
+            AudioUnitRemovePropertyListenerWithUserData(component, 'DPFo', auPropertyChangedCallback, this);
+           #endif
+           #if DAF_PLUGIN_WANT_STATE
+            AudioUnitRemovePropertyListenerWithUserData(component, 'DPFs', auPropertyChangedCallback, this);
+           #endif
+        }
 
         if (fTimerRef != nullptr)
         {
-            CFRunLoopRemoveTimer(CFRunLoopGetCurrent(), fTimerRef, kCFRunLoopCommonModes);
+            CFRunLoopTimerInvalidate(fTimerRef);
             CFRelease(fTimerRef);
         }
     }
@@ -191,6 +237,26 @@ public:
         resizeParentView(fUI.getWidth(), fUI.getHeight());
 
         [fParentView setHidden:NO];
+    }
+
+    // The DSP side sends its current values (parameters, programs and state) here and now, through the property
+    // listeners of every view of the unit, this new one's included. Under the link's lock, as the setup on the unit
+    // is, and not at all once the unit is disposed. A dispose waits for this request anyway, as AudioToolbox waits
+    // for a call in flight, so the lock adds no wait on any UI or plugin code.
+    void requestPluginValues()
+    {
+        std::unique_lock<std::recursive_mutex> guard;
+        if (fLink != nullptr)
+            guard = std::unique_lock<std::recursive_mutex>(fLink->lock());
+
+        const AudioUnit component = fComponent.load();
+        if (component == nullptr)
+            return;
+
+        const uint16_t magic = 1337;
+        AudioUnitSetProperty(component, 'DPFi', kAudioUnitScope_Global, 0, &magic, sizeof(uint16_t));
+        const uint16_t cancel = 0;
+        AudioUnitSetProperty(component, 'DPFi', kAudioUnitScope_Global, 0, &cancel, sizeof(uint16_t));
     }
 
     // called by the parent view when its backing scale factor changes, see COCOA_VIEW_CLASS_NAME
@@ -212,7 +278,10 @@ public:
     }
 
 private:
-    const AudioUnit fComponent;
+    // the instance this UI was made for, nullptr once it is disposed: nothing is called on it after that
+    std::atomic<AudioUnit> fComponent;
+    // shared with the instance, see DafPluginAUUILink.hpp
+    AUUILink* fLink;
     NSView* const fParentView;
     CFRunLoopTimerRef fTimerRef;
 
@@ -280,6 +349,14 @@ private:
 
     void idleCallback()
     {
+        // under the link's lock: an instance disposed on another thread waits for this tick to end
+        std::unique_lock<std::recursive_mutex> guard;
+        if (fLink != nullptr)
+            guard = std::unique_lock<std::recursive_mutex>(fLink->lock());
+
+        if (fComponent.load() == nullptr)
+            return;
+
         fUI.idleFromNativeIdle();
     }
 
@@ -289,24 +366,46 @@ private:
     }
 
     // ----------------------------------------------------------------------------------------------------------------
+    // Instance disposed
+
+    // Called by the link, on the thread disposing the instance and under the link's lock, so no idle tick is running
+    // and the constructor's setup on the unit is done. The constructor calls it too, for a UI made detached.
+    // The view stays for as long as the host or AppKit keeps it: the idle timer stops, and the plugin and the handle
+    // are dropped, so that nothing of either is read or called again.
+    void unitDisposed()
+    {
+        fComponent.store(nullptr);
+        fUI.clearPluginInstancePointer();
+
+        // any thread: off every run loop it is on
+        if (fTimerRef != nullptr)
+            CFRunLoopTimerInvalidate(fTimerRef);
+    }
+
+    static void detachCallback(void* const ptr)
+    {
+        static_cast<DAF_UI_AU*>(ptr)->unitDisposed();
+    }
+
+    // ----------------------------------------------------------------------------------------------------------------
     // AU callbacks
 
-    void auSampleRateChanged(const AudioUnitScope scope)
+    void auSampleRateChanged(const AudioUnit component, const AudioUnitScope scope)
     {
         Float64 sampleRate = 0;
         UInt32 dataSize = sizeof(Float64);
-        if (AudioUnitGetProperty(fComponent, kAudioUnitProperty_SampleRate, scope, 0, &sampleRate, &dataSize) == noErr
+        if (AudioUnitGetProperty(component, kAudioUnitProperty_SampleRate, scope, 0, &sampleRate, &dataSize) == noErr
             && dataSize == sizeof(Float64))
         {
             fUI.setSampleRate(sampleRate, true);
         }
     }
 
-    void auParameterChanged(const AudioUnitElement elem)
+    void auParameterChanged(const AudioUnit component, const AudioUnitElement elem)
     {
         float value = 0;
         UInt32 dataSize = sizeof(float);
-        if (AudioUnitGetProperty(fComponent, 'DPFp', kAudioUnitScope_Global, elem, &value, &dataSize) == noErr
+        if (AudioUnitGetProperty(component, 'DPFp', kAudioUnitScope_Global, elem, &value, &dataSize) == noErr
             && dataSize == sizeof(float))
         {
             fUI.parameterChanged(elem, value);
@@ -314,11 +413,11 @@ private:
     }
 
    #if DAF_PLUGIN_WANT_PROGRAMS
-    void auProgramChanged()
+    void auProgramChanged(const AudioUnit component)
     {
         uint32_t program = 0;
         UInt32 dataSize = sizeof(uint32_t);
-        if (AudioUnitGetProperty(fComponent, 'DPFo', kAudioUnitScope_Global, 0, &program, &dataSize) == noErr
+        if (AudioUnitGetProperty(component, 'DPFo', kAudioUnitScope_Global, 0, &program, &dataSize) == noErr
             && dataSize == sizeof(uint32_t))
         {
             fUI.programLoaded(program);
@@ -327,13 +426,13 @@ private:
    #endif
 
    #if DAF_PLUGIN_WANT_STATE
-    void auStateChanged(const AudioUnitElement elem)
+    void auStateChanged(const AudioUnit component, const AudioUnitElement elem)
     {
         DAF_SAFE_ASSERT_RETURN(elem < fStateKeys.size(),);
 
         CFStringRef valueRef = nullptr;
         UInt32 dataSize = sizeof(valueRef);
-        if (AudioUnitGetProperty(fComponent, 'DPFs', kAudioUnitScope_Global, elem, &valueRef, &dataSize) == noErr
+        if (AudioUnitGetProperty(component, 'DPFs', kAudioUnitScope_Global, elem, &valueRef, &dataSize) == noErr
             && dataSize == sizeof(CFStringRef)
             && valueRef != nullptr
             && CFGetTypeID(valueRef) == CFStringGetTypeID())
@@ -360,28 +459,33 @@ private:
         DAF_UI_AU* const self = static_cast<DAF_UI_AU*>(userData);
 
         DAF_SAFE_ASSERT_RETURN(self != nullptr,);
-        DAF_SAFE_ASSERT_RETURN(self->fComponent == component,);
+
+        // detached: a notification on its way when the instance was disposed (listeners are told from a copy)
+        const AudioUnit unit = self->fComponent.load();
+        if (unit == nullptr)
+            return;
+        DAF_SAFE_ASSERT_RETURN(unit == component,);
 
         switch (prop)
         {
         case kAudioUnitProperty_SampleRate:
             DAF_SAFE_ASSERT_UINT_RETURN(scope == kAudioUnitScope_Input || scope == kAudioUnitScope_Output, scope,);
-            self->auSampleRateChanged(scope);
+            self->auSampleRateChanged(component, scope);
             break;
         case 'DPFp':
             DAF_SAFE_ASSERT_UINT_RETURN(scope == kAudioUnitScope_Global, scope,);
-            self->auParameterChanged(elem);
+            self->auParameterChanged(component, elem);
             break;
        #if DAF_PLUGIN_WANT_PROGRAMS
         case 'DPFo':
             DAF_SAFE_ASSERT_UINT_RETURN(scope == kAudioUnitScope_Global, scope,);
-            self->auProgramChanged();
+            self->auProgramChanged(component);
             break;
        #endif
        #if DAF_PLUGIN_WANT_STATE
         case 'DPFs':
             DAF_SAFE_ASSERT_UINT_RETURN(scope == kAudioUnitScope_Global, scope,);
-            self->auStateChanged(elem);
+            self->auStateChanged(component, elem);
             break;
        #endif
         }
@@ -392,13 +496,17 @@ private:
 
     void editParameter(const uint32_t rindex, const bool started) const
     {
+        const AudioUnit component = fComponent.load();
+        if (component == nullptr)
+            return;
+
         const uint8_t flag = started ? 1 : 2;
-        AudioUnitSetProperty(fComponent, 'DPFe', kAudioUnitScope_Global, rindex, &flag, sizeof(uint8_t));
+        AudioUnitSetProperty(component, 'DPFe', kAudioUnitScope_Global, rindex, &flag, sizeof(uint8_t));
 
         if (! started)
         {
             const uint8_t cancel = 0;
-            AudioUnitSetProperty(fComponent, 'DPFe', kAudioUnitScope_Global, rindex, &cancel, sizeof(uint8_t));
+            AudioUnitSetProperty(component, 'DPFe', kAudioUnitScope_Global, rindex, &cancel, sizeof(uint8_t));
         }
     }
 
@@ -411,7 +519,8 @@ private:
 
     void setParameter(const uint32_t rindex, const float value)
     {
-        AudioUnitSetProperty(fComponent, 'DPFp', kAudioUnitScope_Global, rindex, &value, sizeof(float));
+        if (const AudioUnit component = fComponent.load())
+            AudioUnitSetProperty(component, 'DPFp', kAudioUnitScope_Global, rindex, &value, sizeof(float));
     }
 
     static void setParameterCallback(void* const ptr, const uint32_t rindex, const float value)
@@ -424,6 +533,10 @@ private:
    #if DAF_PLUGIN_WANT_STATE
     void setState(const char* const key, const char* const value)
     {
+        const AudioUnit component = fComponent.load();
+        if (component == nullptr)
+            return;
+
         CFStringRef keyRef = CFStringCreateWithCString(nullptr, key, kCFStringEncodingASCII);
         CFStringRef valueRef = CFStringCreateWithCString(nullptr, value, kCFStringEncodingUTF8);
 
@@ -434,7 +547,7 @@ private:
                                                                &kCFTypeDictionaryKeyCallBacks,
                                                                &kCFTypeDictionaryValueCallBacks))
         {
-            AudioUnitSetProperty(fComponent, 'DPFs', kAudioUnitScope_Global, 0, &dictRef, sizeof(dictRef));
+            AudioUnitSetProperty(component, 'DPFs', kAudioUnitScope_Global, 0, &dictRef, sizeof(dictRef));
             CFRelease(dictRef);
         }
 
@@ -453,11 +566,15 @@ private:
    #if DAF_PLUGIN_WANT_MIDI_INPUT
     void sendNote(const uint8_t channel, const uint8_t note, const uint8_t velocity)
     {
+        const AudioUnit component = fComponent.load();
+        if (component == nullptr)
+            return;
+
         const uint8_t data[3] = { static_cast<uint8_t>((velocity != 0 ? 0x90 : 0x80) | channel), note, velocity };
-        AudioUnitSetProperty(fComponent, 'DPFn', kAudioUnitScope_Global, 0, data, sizeof(data));
+        AudioUnitSetProperty(component, 'DPFn', kAudioUnitScope_Global, 0, data, sizeof(data));
 
         const uint8_t cancel[3] = { 0, 0, 0 };
-        AudioUnitSetProperty(fComponent, 'DPFn', kAudioUnitScope_Global, 0, cancel, sizeof(cancel));
+        AudioUnitSetProperty(component, 'DPFn', kAudioUnitScope_Global, 0, cancel, sizeof(cancel));
     }
 
     static void sendNoteCallback(void* const ptr, const uint8_t channel, const uint8_t note, const uint8_t velocity)
@@ -611,20 +728,32 @@ using DAF_NAMESPACE::d_nextSampleRate;
     AudioUnitScope scope;
     UInt32 dataSize;
 
-    // fetch direct access pointer
-   #if DAF_PLUGIN_WANT_DIRECT_ACCESS
-    dataSize = sizeof(void*);
-    AudioUnitGetProperty(component, 'DPFa', kAudioUnitScope_Global, 0, &instancePointer, &dataSize);
-   #endif
+    // The tie to this instance first, before anything else is read of it (see DafPluginAUUILink.hpp): a reference of
+    // the UI's own, which the UI gives back. An instance destroyed from here on, during the plugin UI's construction
+    // included, is seen by the attach, whatever the handle has become since.
+    DAF_NAMESPACE::AUUILink* link = nullptr;
+    dataSize = sizeof(link);
+    if (AudioUnitGetProperty(component, 'DPFu', kAudioUnitScope_Global, 0, &link, &dataSize) != noErr
+        || dataSize != sizeof(link))
+        link = nullptr;
 
-    // fetch current sample rate
-   #if DAF_PLUGIN_NUM_INPUTS != 0
-    dataSize = sizeof(Float64);
-    AudioUnitGetProperty(component, kAudioUnitProperty_SampleRate, kAudioUnitScope_Input, 0, &sampleRate, &dataSize);
-   #elif DAF_PLUGIN_NUM_OUTPUTS != 0
-    dataSize = sizeof(Float64);
-    AudioUnitGetProperty(component, kAudioUnitProperty_SampleRate, kAudioUnitScope_Output, 0, &sampleRate, &dataSize);
-   #endif
+    if (link != nullptr)
+    {
+        // fetch direct access pointer
+       #if DAF_PLUGIN_WANT_DIRECT_ACCESS
+        dataSize = sizeof(void*);
+        AudioUnitGetProperty(component, 'DPFa', kAudioUnitScope_Global, 0, &instancePointer, &dataSize);
+       #endif
+
+        // fetch current sample rate
+       #if DAF_PLUGIN_NUM_INPUTS != 0
+        dataSize = sizeof(Float64);
+        AudioUnitGetProperty(component, kAudioUnitProperty_SampleRate, kAudioUnitScope_Input, 0, &sampleRate, &dataSize);
+       #elif DAF_PLUGIN_NUM_OUTPUTS != 0
+        dataSize = sizeof(Float64);
+        AudioUnitGetProperty(component, kAudioUnitProperty_SampleRate, kAudioUnitScope_Output, 0, &sampleRate, &dataSize);
+       #endif
+    }
 
    #if defined(DAF_UI_DEFAULT_WIDTH) && defined(DAF_UI_DEFAULT_HEIGHT)
     inPreferredSize = NSMakeSize(DAF_UI_DEFAULT_WIDTH, DAF_UI_DEFAULT_HEIGHT);
@@ -632,16 +761,9 @@ using DAF_NAMESPACE::d_nextSampleRate;
 
     // create view
     view = [[[COCOA_VIEW_CLASS_NAME alloc] initWithPreferredSize:inPreferredSize] autorelease];
-    view->ui = new DAF_UI_AU(component, view, sampleRate, instancePointer);
+    view->ui = new DAF_UI_AU(component, view, sampleRate, instancePointer, link);
     view->ui->postSetup();
-
-    // request data from DSP side
-    {
-        const uint16_t magic = 1337;
-        AudioUnitSetProperty(component, 'DPFi', kAudioUnitScope_Global, 0, &magic, sizeof(uint16_t));
-        const uint16_t cancel = 0;
-        AudioUnitSetProperty(component, 'DPFi', kAudioUnitScope_Global, 0, &cancel, sizeof(uint16_t));
-    }
+    view->ui->requestPluginValues();
 
     return view;
 

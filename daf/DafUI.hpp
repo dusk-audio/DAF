@@ -205,8 +205,25 @@ public:
     * Direct DSP access - DO NOT USE THIS UNLESS STRICTLY NECESSARY!! */
 
    /**
-      getPluginInstancePointer.
-      @TODO Document this.
+      The plugin instance, for a UI that reads the DSP directly in the same process, as meters do.
+
+      It is nullptr where the UI has no direct access, and it can turn nullptr while the UI lives: an AU host may
+      dispose of the unit and keep its view. So call it again in every callback that needs the plugin, check it for
+      nullptr each time, and never keep it past that callback: not in a member, and not for a thread, timer or block
+      of the UI's own.
+
+      A host that disposes of the unit on the main thread does so between the UI's callbacks, and one that does it
+      from another thread waits for an idle tick in progress to end: uiIdle() and the idle callbacks the tick runs,
+      those added with addIdleCallback() and no timer. It also waits for a call into the unit in progress, and
+      parameterChanged(), programLoaded() and stateChanged() run inside such calls: the host's own value and preset
+      changes, and the values request a new view makes right after its construction, which reaches every view of the
+      unit. Nothing waits for the UI's construction, a paint, an input event, a host resize or the UI's destruction
+      in progress, so a UI that reads the plugin there can still read a deleted one when a host disposes of the unit
+      from another thread right then. A UI whose plugin is destroyed before it attaches to the instance, during its
+      construction for one, starts detached and reads nullptr from its first callback on. As those waits can be a
+      host's, none of uiIdle(), such an idle callback, parameterChanged(), programLoaded() or stateChanged() may
+      resize the UI or otherwise reach the host through AppKit: a host that holds a lock across the dispose and takes
+      it in such a callback (its view frame observer, for a resize) would deadlock.
     */
     void* getPluginInstancePointer() const noexcept;
 #endif
