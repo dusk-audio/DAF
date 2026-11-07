@@ -2124,10 +2124,15 @@ public:
             DAF_SAFE_ASSERT_UINT_RETURN(elem == 0, elem, kAudioUnitErr_InvalidElement);
         }
 
-        // A reset deactivates and activates the plugin and clears render's MIDI and time state: a reconfiguration
-        // (fRenderGuard), which a host may make while the unit renders.
+        // A reset clears the plugin's processing state and render's MIDI and time state: a reconfiguration
+        // (fRenderGuard), which a host may make while the unit renders. A plugin with DAF_PLUGIN_WANT_RESET clears
+        // its own, and a reset designation is left alone (see Plugin::reset()). Without it a reset designation is
+        // pressed, or else the plugin is deactivated and activated.
         const ScopedReconfiguration reconfiguration(fRenderGuard);
 
+       #if DAF_PLUGIN_WANT_RESET
+        fPlugin.reset();
+       #else
         if (fResetParameterIndex != UINT32_MAX)
         {
             fPlugin.setParameterValue(fResetParameterIndex, 1.f);
@@ -2138,6 +2143,7 @@ public:
             fPlugin.deactivate();
             fPlugin.activate();
         }
+       #endif
 
        #if DAF_PLUGIN_WANT_MIDI_INPUT
         // The MIDI input queue belongs to the thread that fills it (auMIDIEvent): it empties the queue before it next
@@ -2567,7 +2573,9 @@ private:
 
     // A host may reconfigure an initialized unit while it renders: connect, disconnect or reformat an input (choosing
     // a sidechain source during playback), change the sample rate, or reset it. The plugin is then deactivated and
-    // activated again on the host's thread, and with DAF_PLUGIN_EXTRA_IO the layout render reads changes as well.
+    // activated again on the host's thread (a reset calls Plugin::reset() instead, with DAF_PLUGIN_WANT_RESET, and
+    // without it presses a reset-designated parameter if the plugin has one), and with DAF_PLUGIN_EXTRA_IO the layout
+    // render reads changes as well.
     // The two exclude each other through the thread that holds fRenderGuard (0: none): render try-locks it and plays
     // silence for a block that would otherwise run against a plugin in mid-change, and a reconfiguration waits out
     // the block in flight. The holder may re-enter: a property listener that sets a format from inside the

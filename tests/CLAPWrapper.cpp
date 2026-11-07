@@ -24,7 +24,10 @@
  * Output parameters are reported read-only, and parameter events outside the core event space change
  * nothing, whether they come through process() or clap_plugin_params::flush().
  *
- * The plugin descriptor carries the version string and the homepage, manual and support URLs. */
+ * The plugin descriptor carries the version string and the homepage, manual and support URLs.
+ *
+ * The plugin has neither DAF_PLUGIN_WANT_RESET nor a reset designation, so clap_plugin::reset asks the host for a
+ * restart and the wrapper neither deactivates nor activates it (CLAPReset has a plugin with the macro). */
 
 #define DAF_PLUGIN_TARGET_CLAP
 #define DAF_PLUGIN_HOMEPAGE "https://example.com/wrapper-test"
@@ -45,6 +48,7 @@
 
 static int gCallbackRequests = 0;
 static int gMarkDirtyCalls = 0;
+static int gRestartRequests = 0;
 
 static void CLAP_ABI host_mark_dirty(const clap_host_t*) { ++gMarkDirtyCalls; }
 static const clap_host_state_t gHostState = { host_mark_dirty };
@@ -57,6 +61,7 @@ static const void* CLAP_ABI host_get_extension(const clap_host_t*, const char* c
 }
 
 static void CLAP_ABI host_request(const clap_host_t*) {}
+static void CLAP_ABI host_request_restart(const clap_host_t*) { ++gRestartRequests; }
 static void CLAP_ABI host_request_callback(const clap_host_t*) { ++gCallbackRequests; }
 
 static int64_t CLAP_ABI ostream_write(const clap_ostream_t* const stream, const void* const buffer, const uint64_t size)
@@ -219,7 +224,7 @@ int main()
 
     const clap_host_t host = {
         CLAP_VERSION, nullptr, "DAF tests", "DAF", "", "1.0",
-        host_get_extension, host_request, host_request, host_request_callback
+        host_get_extension, host_request_restart, host_request, host_request_callback
     };
 
     DAF_ASSERT_EQUAL(clap_entry.init(""), true, "clap_entry.init must succeed");
@@ -474,6 +479,17 @@ int main()
         h.process(transport, &in);
         const double after = h.getValue(kParamLinearLow);
         DAF_ASSERT_EQUAL(d_isFinite(after) && after == 7.0, true, "process must ignore a non-finite value");
+    }
+
+    // Without DAF_PLUGIN_WANT_RESET or a reset designation, clap_plugin::reset asks the host for a restart, which is
+    // the host's to make: the wrapper neither deactivates nor activates the plugin itself.
+    {
+        const int restarts = gRestartRequests;
+        const uint32_t activations = gActivations, deactivations = gDeactivations;
+        h.plugin->reset(h.plugin);
+        DAF_ASSERT_EQUAL(gRestartRequests, restarts + 1, "clap reset must ask the host for a restart");
+        DAF_ASSERT_EQUAL(gActivations == activations && gDeactivations == deactivations, true,
+                         "clap reset must leave deactivating and activating the plugin to the host");
     }
 
     h.plugin->stop_processing(h.plugin);

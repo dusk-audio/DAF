@@ -54,6 +54,9 @@ START_NAMESPACE_DAF
    DAF_PLUGIN_WANT_STATE activates internal state features.@n
    When enabled you need to implement initState() and setState().
 
+   DAF_PLUGIN_WANT_RESET lets a CLAP or AU host reset clear the processing state in place.@n
+   When enabled you need to implement reset().
+
    The process function run() changes wherever DAF_PLUGIN_WANT_MIDI_INPUT is enabled or not.@n
    When enabled it provides midi input events.
  */
@@ -441,6 +444,35 @@ protected:
       Deactivate this plugin.
     */
     virtual void deactivate() {}
+
+#if DAF_PLUGIN_WANT_RESET
+   /**
+      Clear the processing state in place, for a host reset: delay lines, filter and envelope states, tails and
+      voices, so that the next run() starts from silence. Parameter values stay as they are. Reallocate nothing: the
+      sample rate and buffer size are those of the last activate(), and so is everything sized for them.@n
+      Called when a CLAP host resets the plugin (clap_plugin::reset) or an AU host resets the unit (AudioUnitReset),
+      only while the plugin is active, and never while run() is running:
+      - CLAP calls it on the audio thread, between two process calls.
+      - AU calls it on the thread the host resets the unit from, usually not the audio thread. Render does not run
+        the plugin meanwhile: the reset waits for a block in flight to end, and a block that starts during the reset
+        plays silence.
+
+      It must be realtime-safe and quick: no allocation, no lock, no I/O. Parameters and state may still be set from
+      other threads meanwhile, as during run().@n
+      AU also drops the host MIDI queued for the next run(), its pending MIDI output and its time position, as it
+      does without this function. CLAP holds no host MIDI between process calls, so there is none to drop. Notes the
+      plugin's UI sends (UI::sendNote()) still reach the next run() in both.@n
+      Without DAF_PLUGIN_WANT_RESET a host reset presses a parameter designated kParameterDesignationReset if the
+      plugin has one. If not, a CLAP reset asks the host to restart the plugin, which a host may put off or ignore,
+      and an AU reset deactivates and activates it; neither clears what the plugin's activate() keeps.@n
+      With DAF_PLUGIN_WANT_RESET a host reset calls this function and leaves a reset designation alone, which still
+      reaches setParameterValue() whenever it is set.
+      @note This function is only available, and must then be implemented, if DAF_PLUGIN_WANT_RESET is enabled;
+            overriding it without that does not compile. Formats other than CLAP and AU have no host reset and never
+            call it.
+    */
+    virtual void reset() = 0;
+#endif
 
 #if DAF_PLUGIN_WANT_MIDI_INPUT
    /**

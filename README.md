@@ -52,6 +52,10 @@ under permissive terms except LADSPA's and DSSI's, which are LGPL; see [LICENSIN
   delays and anything else whose output outlasts its input: VST3, AU and CLAP hosts are told, so a
   bounce or an idle suspend does not cut the decay short. `kTailInfinite` is for a tail that never
   ends.
+- **Host reset.** With `DAF_PLUGIN_WANT_RESET`, a CLAP or AU host reset calls `reset()`, which
+  clears the processing state in place: on the audio thread in CLAP, while render holds off in AU.
+  Without it a host reset presses the plugin's reset-designated parameter if it has one; if not, a
+  CLAP reset only asks the host for a restart, and an AU reset deactivates and activates the plugin.
 - **Audio ports**: port groups, sidechains, CV ports, and alternative main-bus layouts declared with
   `DAF_PLUGIN_EXTRA_IO`, which AU, CLAP and VST3 hosts can switch between and which reach the plugin
   through `ioChanged()`. With `DAF_PLUGIN_SIDECHAIN_ON_EXTRA_IO` an AU sidechain also runs narrower

@@ -112,13 +112,13 @@ jobs:
         make -C tests ../build/tests/FileDrop ../build/tests/FileDropCocoa USE_WEB_VIEW=false -j5
         ./build/tests/FileDrop
         ./build/tests/FileDropCocoa
-    - name: AU wrapper, sidechain-on-mono-main, latency-notification and reconfiguration-while-rendering regressions
+    - name: AU wrapper, sidechain-on-mono-main, latency-notification, reconfiguration-while-rendering and host-reset regressions
       if: ${{ runner.os == 'macOS' }}
       env:
         CFLAGS: -Werror
         CXXFLAGS: -Werror
       run: |
-        make -C tests ../build/tests/AUWrapper ../build/tests/AUSidechainLayout ../build/tests/AULatency ../build/tests/AULatencyWatch ../build/tests/AUIoRender ../build/tests/AUMidiSilent ../build/tests/AUMidiOnly USE_WEB_VIEW=false -j5
+        make -C tests ../build/tests/AUWrapper ../build/tests/AUSidechainLayout ../build/tests/AULatency ../build/tests/AULatencyWatch ../build/tests/AUIoRender ../build/tests/AUMidiSilent ../build/tests/AUMidiOnly ../build/tests/AUReset USE_WEB_VIEW=false -j5
         ./build/tests/AUWrapper
         ./build/tests/AUSidechainLayout
         ./build/tests/AULatency
@@ -126,6 +126,7 @@ jobs:
         ./build/tests/AUIoRender
         ./build/tests/AUMidiSilent
         ./build/tests/AUMidiOnly
+        ./build/tests/AUReset
     # A latency watch that reads a disposed unit passes the tests above and is a use after free here.
     - name: AU latency watch under AddressSanitizer
       if: ${{ runner.os == 'macOS' }}

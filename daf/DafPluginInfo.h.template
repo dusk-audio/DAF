@@ -89,6 +89,15 @@
 // #define DAF_PLUGIN_WANT_TAIL 0
 
 /**
+   Whether the plugin clears its processing state itself when a CLAP or AU host resets it.
+   When enabled the plugin must implement Plugin::reset(), which those resets call in place of
+   pressing a parameter designated kParameterDesignationReset, if the plugin has one, or else
+   asking the host to restart the plugin (CLAP) or deactivating and activating it (AU).
+   @see Plugin::reset()
+ */
+// #define DAF_PLUGIN_WANT_RESET 0
+
+/**
    Whether the plugin wants MIDI input.
    This is automatically enabled if @ref DAF_PLUGIN_IS_SYNTH is true.
  */

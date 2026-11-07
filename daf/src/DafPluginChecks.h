@@ -69,6 +69,10 @@
 # define DAF_PLUGIN_WANT_TAIL 0
 #endif
 
+#ifndef DAF_PLUGIN_WANT_RESET
+# define DAF_PLUGIN_WANT_RESET 0
+#endif
+
 #ifndef DAF_PLUGIN_WANT_MIDI_AS_MPE
 # define DAF_PLUGIN_WANT_MIDI_AS_MPE 0
 #endif

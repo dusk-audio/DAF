@@ -16,6 +16,7 @@
 
 // Compile the AU adapter into a native host test. Invalid inner dictionaries
 // must report failure before touching state; valid optional recalls still work.
+// A reset deactivates and activates a plugin without DAF_PLUGIN_WANT_RESET or a reset designation.
 #define DAF_PLUGIN_TARGET_AU
 #define DAF_TEST_NO_DGL
 #include "tests.hpp"
@@ -153,6 +154,18 @@ int main()
     DAF_ASSERT_EQUAL(value(optional), 9, "optional-state parameter-only recall must still apply");
     CFRelease(valid); CFRelease(saved);
     DAF_ASSERT_EQUAL(AudioComponentInstanceDispose(optional), noErr, "optional-state AU must dispose");
-    d_stdout("AU wrapper state tests passed");
+
+    // Without DAF_PLUGIN_WANT_RESET or a reset designation a reset deactivates and activates the plugin, once each
+    // (AUReset has a plugin with the macro).
+    AudioUnit resetting = nullptr;
+    DAF_ASSERT_EQUAL(AudioComponentInstanceNew(component, &resetting), noErr, "reset AU must instantiate");
+    DAF_ASSERT_EQUAL(AudioUnitInitialize(resetting), noErr, "reset AU must initialize");
+    const uint32_t activations = gActivations, deactivations = gDeactivations;
+    DAF_ASSERT_EQUAL(AudioUnitReset(resetting, kAudioUnitScope_Global, 0), noErr, "AU reset must succeed");
+    DAF_ASSERT_EQUAL(gDeactivations, deactivations + 1, "AU reset must deactivate the plugin once");
+    DAF_ASSERT_EQUAL(gActivations, activations + 1, "AU reset must activate the plugin once");
+    DAF_ASSERT_EQUAL(AudioUnitUninitialize(resetting), noErr, "reset AU must uninitialize");
+    DAF_ASSERT_EQUAL(AudioComponentInstanceDispose(resetting), noErr, "reset AU must dispose");
+    d_stdout("AU wrapper state and reset tests passed");
     return 0;
 }

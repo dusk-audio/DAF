@@ -51,6 +51,12 @@ BUILD_CHECKS  = StaticTarget
 
 # format wrappers compiled into the test, which then acts as the host (see plugin-wrappers/)
 WRAPPER_TESTS = CLAPWrapper LADSPAWrapper LV2Wrapper VST2Wrapper VST3Wrapper
+# Plugin::reset() from the CLAP wrapper's host reset, on a plugin with DAF_PLUGIN_WANT_RESET (see plugin-reset/)
+WRAPPER_TESTS += CLAPReset
+../build/tests/CLAPReset.cpp.o: BUILD_CXX_FLAGS += -Iplugin-reset -I../daf
+ifeq ($(LINUX),true)
+../build/tests/CLAPReset$(APP_EXT): LINK_FLAGS += -ldl
+endif
 ifeq ($(MACOS),true)
 WRAPPER_TESTS += AUWrapper
 ../build/tests/AUWrapper$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
@@ -77,6 +83,10 @@ WRAPPER_TESTS += AUMidiSilent AUMidiOnly
 WRAPPER_TESTS += AUIoRender
 ../build/tests/AUIoRender.cpp.o: BUILD_CXX_FLAGS += -Iau-sidechain -I../daf
 ../build/tests/AUIoRender$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
+# the same Plugin::reset() from the AU wrapper's host reset, also against render on another thread (see plugin-reset/)
+WRAPPER_TESTS += AUReset
+../build/tests/AUReset.cpp.o: BUILD_CXX_FLAGS += -Iplugin-reset -I../daf
+../build/tests/AUReset$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
 endif
 ../build/tests/%Wrapper.cpp.o: BUILD_CXX_FLAGS += -Iplugin-wrappers -I../daf
 ifeq ($(LINUX),true)

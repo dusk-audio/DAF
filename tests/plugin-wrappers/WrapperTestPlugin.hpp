@@ -66,6 +66,11 @@ static uint32_t gTriggerRunPresses = 0;
 // every time a wrapper handed the plugin a parameter value that is not finite, which it never may
 static uint32_t gNonFiniteParameterWrites = 0;
 
+// activate() and deactivate() calls. A host reset makes one of each in AU and has the host asked for them in CLAP,
+// since this plugin has neither DAF_PLUGIN_WANT_RESET nor a reset designation (plugin-reset/ has the macro).
+static uint32_t gActivations = 0;
+static uint32_t gDeactivations = 0;
+
 #if DAF_PLUGIN_WANT_STATE
 static constexpr const char* const kWrapperTestStateKey = "file";
 // Only dedicated complete-restore probes opt in; all other tests retain the
@@ -239,15 +244,22 @@ protected:
    #endif
    #endif
 
-   #ifdef DAF_WRAPPER_TEST_UPDATE_STATE
     void activate() override
     {
+        ++gActivations;
+
+       #ifdef DAF_WRAPPER_TEST_UPDATE_STATE
         char status[32];
         std::snprintf(status, sizeof(status), "active-%u", ++fActivations);
         gUpdateStateFromActivate = updateStateValue(kWrapperTestStatusKey, status);
         gUpdateStateUnknownKey = updateStateValue("unknown", status);
+       #endif
     }
-   #endif
+
+    void deactivate() override
+    {
+        ++gDeactivations;
+    }
 
     float getParameterValue(const uint32_t index) const override
     {
