@@ -1143,6 +1143,19 @@ public:
         }
     }
 
+   #if DAF_PLUGIN_WANT_RESET
+    // Plugin::reset() is for an active plugin only. A host reset of an inactive one (an AU unit that is not
+    // initialized, a CLAP host breaking the rule that it resets an active plugin) leaves it to its next activate(),
+    // and says nothing: CLAP resets on the audio thread.
+    void reset()
+    {
+        DAF_SAFE_ASSERT_RETURN(fPlugin != nullptr,);
+
+        if (fIsActive)
+            fPlugin->reset();
+    }
+   #endif
+
    #if DAF_PLUGIN_WANT_MIDI_INPUT
     void run(const float** const inputs, float** const outputs, const uint32_t frames,
              const MidiEvent* const midiEvents, const uint32_t midiEventCount)

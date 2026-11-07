@@ -1202,8 +1202,17 @@ public:
        #endif
     }
 
+    // clap_plugin::reset is [audio-thread & active], so it falls between two process calls. A plugin with
+    // DAF_PLUGIN_WANT_RESET clears its state right here, and a reset designation is left alone (see
+    // Plugin::reset()). Without it a reset designation is pressed, or else the host is asked for a restart, which
+    // it may put off or ignore.
+    // There is no MIDI to drop: only process() adds events, after zeroing fMidiEventCount. The designation path
+    // zeroes it all the same, to no effect; it is kept as it was, so that the code without the macro is unchanged.
     void reset()
     {
+       #if DAF_PLUGIN_WANT_RESET
+        fPlugin.reset();
+       #else
         if (fResetParameterIndex != UINT32_MAX)
         {
            #if DAF_PLUGIN_WANT_MIDI_INPUT
@@ -1216,6 +1225,7 @@ public:
         {
             fHost->request_restart(fHost);
         }
+       #endif
     }
 
    #if DAF_PLUGIN_HAS_UI
