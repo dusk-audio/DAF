@@ -17,6 +17,7 @@
 // Compile the AU adapter into a native host test. Invalid inner dictionaries
 // must report failure before touching state; valid optional recalls still work.
 // A reset deactivates and activates a plugin without DAF_PLUGIN_WANT_RESET or a reset designation.
+// Latency is answered (as none) for a plugin without DAF_PLUGIN_WANT_LATENCY.
 #define DAF_PLUGIN_TARGET_AU
 #define DAF_TEST_NO_DGL
 #include "tests.hpp"
@@ -166,6 +167,32 @@ int main()
     DAF_ASSERT_EQUAL(gActivations, activations + 1, "AU reset must activate the plugin once");
     DAF_ASSERT_EQUAL(AudioUnitUninitialize(resetting), noErr, "reset AU must uninitialize");
     DAF_ASSERT_EQUAL(AudioComponentInstanceDispose(resetting), noErr, "reset AU must dispose");
-    d_stdout("AU wrapper state and reset tests passed");
+
+    // A plugin without DAF_PLUGIN_WANT_LATENCY still answers kAudioUnitProperty_Latency, with no latency, as the
+    // AU SDK's AUBase does for every unit. REAPER kept rendering a unit whose latency query failed but mixed its
+    // track dry. Asked before and after initialization, as hosts ask (AULatency covers a plugin with the macro).
+    AudioUnit latency = nullptr;
+    DAF_ASSERT_EQUAL(AudioComponentInstanceNew(component, &latency), noErr, "latency AU must instantiate");
+    for (unsigned initialized = 0; initialized < 2; ++initialized)
+    {
+        if (initialized != 0)
+            DAF_ASSERT_EQUAL(AudioUnitInitialize(latency), noErr, "latency AU must initialize");
+        UInt32 latencySize = 0;
+        Boolean latencyWritable = true;
+        DAF_ASSERT_EQUAL(AudioUnitGetPropertyInfo(latency, kAudioUnitProperty_Latency, kAudioUnitScope_Global, 0,
+                                                  &latencySize, &latencyWritable), noErr,
+                         "AU must describe its latency without DAF_PLUGIN_WANT_LATENCY");
+        DAF_ASSERT_EQUAL(latencySize, static_cast<UInt32>(sizeof(Float64)), "AU latency must be a Float64");
+        DAF_ASSERT_EQUAL(latencyWritable, false, "AU latency must be read-only");
+        Float64 seconds = -1.0;
+        latencySize = sizeof(seconds);
+        DAF_ASSERT_EQUAL(AudioUnitGetProperty(latency, kAudioUnitProperty_Latency, kAudioUnitScope_Global, 0, &seconds,
+                                              &latencySize), noErr,
+                         "AU must answer its latency without DAF_PLUGIN_WANT_LATENCY");
+        DAF_ASSERT_EQUAL(seconds, 0.0, "AU without DAF_PLUGIN_WANT_LATENCY must report no latency");
+    }
+    DAF_ASSERT_EQUAL(AudioUnitUninitialize(latency), noErr, "latency AU must uninitialize");
+    DAF_ASSERT_EQUAL(AudioComponentInstanceDispose(latency), noErr, "latency AU must dispose");
+    d_stdout("AU wrapper state, reset and latency tests passed");
     return 0;
 }
