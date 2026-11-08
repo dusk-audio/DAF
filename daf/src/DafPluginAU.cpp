@@ -688,14 +688,15 @@ public:
 
         case kAudioUnitProperty_Latency:
             DAF_SAFE_ASSERT_UINT_RETURN(inElement == 0, inElement, kAudioUnitErr_InvalidElement);
-           #if DAF_PLUGIN_WANT_LATENCY
+            /* Every unit answers, as the AU SDK's AUBase does; without DAF_PLUGIN_WANT_LATENCY the latency is
+             * none. A unit that failed the query played dry in REAPER: it kept rendering the unit and mixed the
+             * track without its output. */
             if (inScope == kAudioUnitScope_Global)
             {
                 outDataSize = sizeof(Float64);
                 outWritable = false;
                 return noErr;
             }
-           #endif
             return kAudioUnitErr_InvalidProperty;
 
         case kAudioUnitProperty_TailTime:
@@ -1156,11 +1157,13 @@ public:
             }
             return noErr;
 
-       #if DAF_PLUGIN_WANT_LATENCY
         case kAudioUnitProperty_Latency:
+           #if DAF_PLUGIN_WANT_LATENCY
             *static_cast<Float64*>(outData) = static_cast<double>(fPlugin.getLatency()) / fPlugin.getSampleRate();
+           #else
+            *static_cast<Float64*>(outData) = 0.0;
+           #endif
             return noErr;
-       #endif
 
        #if DAF_PLUGIN_WANT_TAIL
         case kAudioUnitProperty_TailTime:
