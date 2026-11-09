@@ -45,6 +45,10 @@ struct Automation {
 
 static std::vector<Automation> gAutomations;
 
+// the transport the host reports, once a test has filled it in
+static DAF_NAMESPACE::VstTimeInfo gTimeInfo = {};
+static bool gTimeInfoValid = false;
+
 static intptr_t hostCallback(vst_effect*, const VST_HOST_OPCODE opcode, const int32_t index,
                              int64_t, void*, const float opt)
 {
@@ -55,6 +59,8 @@ static intptr_t hostCallback(vst_effect*, const VST_HOST_OPCODE opcode, const in
         return 0;
     case VST_HOST_OPCODE_01: // version
         return 2400;
+    case VST_HOST_OPCODE_07: // time info
+        return gTimeInfoValid ? reinterpret_cast<intptr_t>(&gTimeInfo) : 0;
     case VST_HOST_OPCODE_10: // sample rate
         return 48000;
     case VST_HOST_OPCODE_11: // buffer size
@@ -151,6 +157,27 @@ int main()
     DAF_ASSERT_EQUAL(gNonFiniteParameterWrites, 0u, "a saved value that is not finite must not reach the plugin");
     DAF_ASSERT_EQUAL(std::abs(effect->get_parameter(effect, kParamLinearLow) - 0.5f) < 1e-6f, true,
                      "a skipped value must leave its parameter as it was");
+
+    // Bar and beat from the host's position in quarter notes, as the VST3 test checks in full: a 7/8 bar is
+    // 3.5 quarter notes long, so bar 3 starts at 7. The bar length used to be truncated to 3.
+    gTimeInfo.sampleRate = 48000.0;
+    gTimeInfo.ppqPos = 7.0;
+    gTimeInfo.timeSigNumerator = 7;
+    gTimeInfo.timeSigDenominator = 8;
+    gTimeInfo.flags = 0x2200; // ppqPos and time signature valid
+    gTimeInfoValid = true;
+    effect->process_float(effect, inputs, outputs, 64);
+    {
+        const TimePosition::BarBeatTick& bbt(gLastTimePosition.bbt);
+        DAF_ASSERT_EQUAL(bbt.valid && bbt.bar == 3 && bbt.beat == 1 && std::abs(bbt.tick) < 1e-6, true,
+                         "7/8 at 7 quarter notes must be the start of bar 3");
+    }
+
+    // a numerator of 0 describes no bar: no position, rather than a division by zero
+    gTimeInfo.timeSigNumerator = 0;
+    effect->process_float(effect, inputs, outputs, 64);
+    DAF_ASSERT_EQUAL(gLastTimePosition.bbt.valid, false, "a time signature that is not positive gives no bar");
+    gTimeInfoValid = false;
 
     effect->control(effect, VST_EFFECT_OPCODE_SUSPEND, 0, 0, nullptr, 0.0f);
     effect->control(effect, VST_EFFECT_OPCODE_DESTROY, 0, 0, nullptr, 0.0f);

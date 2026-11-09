@@ -1081,28 +1081,10 @@ public:
             else
                 fTimePosition.bbt.beatsPerMinute = 120.0;
 
-            if ((vstTimeInfo->flags & 0x2200) == 0x2200)
-            {
-                const double ppqPos    = std::abs(vstTimeInfo->ppqPos);
-                const int    ppqPerBar = vstTimeInfo->timeSigNumerator * 4 / vstTimeInfo->timeSigDenominator;
-                const double barBeats  = (std::fmod(ppqPos, ppqPerBar) / ppqPerBar) * vstTimeInfo->timeSigNumerator;
-                const double rest      =  std::fmod(barBeats, 1.0);
-
-                fTimePosition.bbt.valid       = true;
-                fTimePosition.bbt.bar         = static_cast<int32_t>(ppqPos) / ppqPerBar + 1;
-                fTimePosition.bbt.beat        = static_cast<int32_t>(barBeats - rest + 0.5) + 1;
-                fTimePosition.bbt.tick        = rest * fTimePosition.bbt.ticksPerBeat;
-                fTimePosition.bbt.beatsPerBar = vstTimeInfo->timeSigNumerator;
-                fTimePosition.bbt.beatType    = vstTimeInfo->timeSigDenominator;
-
-                if (vstTimeInfo->ppqPos < 0.0)
-                {
-                    --fTimePosition.bbt.bar;
-                    fTimePosition.bbt.beat = vstTimeInfo->timeSigNumerator - fTimePosition.bbt.beat + 1;
-                    fTimePosition.bbt.tick = fTimePosition.bbt.ticksPerBeat - fTimePosition.bbt.tick - 1;
-                }
-            }
-            else
+            // ppqPos valid (0x200) and time signature valid (0x2000)
+            if ((vstTimeInfo->flags & 0x2200) != 0x2200
+                || ! fillBarBeatTickFromQuarters(fTimePosition.bbt, vstTimeInfo->ppqPos,
+                                                 vstTimeInfo->timeSigNumerator, vstTimeInfo->timeSigDenominator))
             {
                 fTimePosition.bbt.valid       = false;
                 fTimePosition.bbt.bar         = 1;

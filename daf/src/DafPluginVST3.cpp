@@ -1608,28 +1608,11 @@ public:
             else
                 fTimePosition.bbt.beatsPerMinute = 120.0;
 
-            if ((ctx->state & (V3_PROCESS_CTX_PROJECT_TIME_VALID|V3_PROCESS_CTX_TIME_SIG_VALID)) == (V3_PROCESS_CTX_PROJECT_TIME_VALID|V3_PROCESS_CTX_TIME_SIG_VALID))
-            {
-                const double ppqPos    = std::abs(ctx->project_time_quarters);
-                const int    ppqPerBar = ctx->time_sig_numerator * 4 / ctx->time_sig_denom;
-                const double barBeats  = (std::fmod(ppqPos, ppqPerBar) / ppqPerBar) * ctx->time_sig_numerator;
-                const double rest      =  std::fmod(barBeats, 1.0);
+            static constexpr const uint32_t kBarBeatTickFlags = V3_PROCESS_CTX_PROJECT_TIME_VALID|V3_PROCESS_CTX_TIME_SIG_VALID;
 
-                fTimePosition.bbt.valid       = true;
-                fTimePosition.bbt.bar         = static_cast<int32_t>(ppqPos) / ppqPerBar + 1;
-                fTimePosition.bbt.beat        = static_cast<int32_t>(barBeats - rest) + 1;
-                fTimePosition.bbt.tick        = rest * fTimePosition.bbt.ticksPerBeat;
-                fTimePosition.bbt.beatsPerBar = ctx->time_sig_numerator;
-                fTimePosition.bbt.beatType    = ctx->time_sig_denom;
-
-                if (ctx->project_time_quarters < 0.0)
-                {
-                    --fTimePosition.bbt.bar;
-                    fTimePosition.bbt.beat = ctx->time_sig_numerator - fTimePosition.bbt.beat + 1;
-                    fTimePosition.bbt.tick = fTimePosition.bbt.ticksPerBeat - fTimePosition.bbt.tick - 1;
-                }
-            }
-            else
+            if ((ctx->state & kBarBeatTickFlags) != kBarBeatTickFlags
+                || ! fillBarBeatTickFromQuarters(fTimePosition.bbt, ctx->project_time_quarters,
+                                                 ctx->time_sig_numerator, ctx->time_sig_denom))
             {
                 fTimePosition.bbt.valid       = false;
                 fTimePosition.bbt.bar         = 1;

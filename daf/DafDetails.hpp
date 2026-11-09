@@ -1001,8 +1001,8 @@ struct TimePosition {
 
        /**
           Current bar.@n
-          Should always be > 0.@n
-          The first bar is bar '1'.
+          The first bar is bar '1'.@n
+          Before it, in a host's pre-roll, the bar can be 0 or less: VST2 and VST3 count back from bar 1.
         */
         int32_t bar;
 

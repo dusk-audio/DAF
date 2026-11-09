@@ -175,6 +175,52 @@ void snprintf_u32(char* const dst, const uint32_t value, const size_t size)
 }
 
 // -----------------------------------------------------------------------
+// Bar, beat and tick from a host position in quarter notes and a time signature, the form VST2 and VST3
+// report it in. A beat is the time signature's denominator, so a 7/8 bar is 3.5 quarter notes long and has
+// seven beats. Before the song start the bar is 0 or less, counted back from bar 1 in whole bars, so a
+// pre-roll reads as the bars before the first one. bbt.ticksPerBeat must be set; barStartTick is left to
+// the caller. Returns false and leaves bbt alone for a position that is not finite, a time signature that is
+// not positive, or a bar outside int32_t.
+
+static inline
+bool fillBarBeatTickFromQuarters(TimePosition::BarBeatTick& bbt, const double quarters,
+                                 const int32_t numerator, const int32_t denominator) noexcept
+{
+    if (numerator <= 0 || denominator <= 0 || ! d_isFinite(quarters))
+        return false;
+
+    const double quartersPerBar = numerator * 4.0 / denominator;
+
+    // std::fmod is exact, so the position in the bar and the bar it is in always agree; flooring the
+    // quotient instead could round up across a bar line and put the last tick of a bar in the next one.
+    double inBar = std::fmod(quarters, quartersPerBar);
+    double bar = std::round((quarters - inBar) / quartersPerBar);
+    if (inBar < 0.0)
+    {
+        inBar += quartersPerBar;
+        bar -= 1.0;
+    }
+
+    double beats = inBar * denominator / 4.0;
+    if (! (beats < numerator)) // a remainder within rounding of a whole bar is the next bar's start
+    {
+        beats = 0.0;
+        bar += 1.0;
+    }
+    if (! (std::abs(bar) < 2147483646.0))
+        return false;
+
+    const double beat = std::floor(beats);
+    bbt.valid       = true;
+    bbt.bar         = static_cast<int32_t>(bar) + 1;
+    bbt.beat        = static_cast<int32_t>(beat) + 1;
+    bbt.tick        = (beats - beat) * bbt.ticksPerBeat;
+    bbt.beatsPerBar = static_cast<float>(numerator);
+    bbt.beatType    = static_cast<float>(denominator);
+    return true;
+}
+
+// -----------------------------------------------------------------------
 // Plugin private data
 
 struct Plugin::PrivateData {
