@@ -98,6 +98,15 @@
 // #define DAF_PLUGIN_WANT_RESET 0
 
 /**
+   Whether the plugin offers pages of parameters for a host's hardware controls.
+   When enabled the plugin must implement Plugin::initRemoteControlPage(), and a CLAP host that maps
+   controllers through the remote controls extension gets those pages, so the first page its knobs
+   land on is one the plugin chose rather than its first eight parameters.
+   @see Plugin::initRemoteControlPage(uint32_t, RemoteControlPage&)
+ */
+// #define DAF_PLUGIN_WANT_REMOTE_CONTROLS 0
+
+/**
    Whether the plugin wants MIDI input.
    This is automatically enabled if @ref DAF_PLUGIN_IS_SYNTH is true.
  */

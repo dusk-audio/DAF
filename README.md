@@ -56,6 +56,9 @@ under permissive terms except LADSPA's and DSSI's, which are LGPL; see [LICENSIN
   clears the processing state in place: on the audio thread in CLAP, while render holds off in AU.
   Without it a host reset presses the plugin's reset-designated parameter if it has one; if not, a
   CLAP reset only asks the host for a restart, and an AU reset deactivates and activates the plugin.
+- **Remote control pages.** With `DAF_PLUGIN_WANT_REMOTE_CONTROLS`, `initRemoteControlPage()` gives
+  CLAP hosts pages of up to eight parameters for their hardware controls, by section, so a
+  controller lands on controls the plugin chose rather than on its first eight parameters.
 - **Audio ports**: port groups, sidechains, CV ports, and alternative main-bus layouts declared with
   `DAF_PLUGIN_EXTRA_IO`, which AU, CLAP and VST3 hosts can switch between and which reach the plugin
   through `ioChanged()`. With `DAF_PLUGIN_SIDECHAIN_ON_EXTRA_IO` an AU sidechain also runs narrower

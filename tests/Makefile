@@ -57,6 +57,13 @@ WRAPPER_TESTS += CLAPReset
 ifeq ($(LINUX),true)
 ../build/tests/CLAPReset$(APP_EXT): LINK_FLAGS += -ldl
 endif
+# Plugin::initRemoteControlPage() through the CLAP wrapper's remote controls extension, on a plugin with
+# DAF_PLUGIN_WANT_REMOTE_CONTROLS (see plugin-remote-controls/)
+WRAPPER_TESTS += CLAPRemoteControls
+../build/tests/CLAPRemoteControls.cpp.o: BUILD_CXX_FLAGS += -Iplugin-remote-controls -I../daf
+ifeq ($(LINUX),true)
+../build/tests/CLAPRemoteControls$(APP_EXT): LINK_FLAGS += -ldl
+endif
 ifeq ($(MACOS),true)
 WRAPPER_TESTS += AUWrapper
 ../build/tests/AUWrapper$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation

@@ -570,6 +570,15 @@ START_NAMESPACE_DAF
 #define DAF_PLUGIN_WANT_RESET 1
 
 /**
+   Whether the plugin offers pages of parameters for a host's hardware controls.@n
+   When enabled the plugin must implement Plugin::initRemoteControlPage(), and a CLAP host that maps
+   controllers through the remote controls extension gets those pages, so the first page its knobs
+   land on is one the plugin chose rather than its first eight parameters.
+   @see Plugin::initRemoteControlPage(uint32_t, RemoteControlPage&)
+ */
+#define DAF_PLUGIN_WANT_REMOTE_CONTROLS 1
+
+/**
    Whether the plugin wants MPE for MIDI input and/or output.
    @note Only AU and CLAP formats implement this at the moment
 */

@@ -60,6 +60,10 @@
 #include "clap/ext/state.h"
 #include "clap/ext/timer-support.h"
 
+#if DAF_PLUGIN_WANT_REMOTE_CONTROLS
+# include "clap/ext/remote-controls.h"
+#endif
+
 #if defined(DAF_PLUGIN_EXTRA_IO) && ! DAF_PLUGIN_IS_SYNTH \
  && DAF_PLUGIN_NUM_INPUTS != 0 && DAF_PLUGIN_NUM_OUTPUTS != 0
 # define DAF_CLAP_HAS_AUDIO_PORTS_CONFIG 1
@@ -1227,6 +1231,39 @@ public:
         }
        #endif
     }
+
+   #if DAF_PLUGIN_WANT_REMOTE_CONTROLS
+    // ----------------------------------------------------------------------------------------------------------------
+    // remote controls
+
+    // The pages are fixed when the plugin is created (Plugin::initRemoteControlPage), so these only read them. A
+    // CLAP param id is the parameter index, and the page id is the page's index.
+    uint32_t getRemoteControlPageCount() const noexcept
+    {
+        return fPlugin.getRemoteControlPageCount();
+    }
+
+    bool getRemoteControlPage(const uint32_t index, clap_remote_controls_page_t* const page) const
+    {
+        DAF_SAFE_ASSERT_RETURN(page != nullptr, false);
+
+        if (index >= fPlugin.getRemoteControlPageCount())
+            return false;
+
+        const RemoteControlPage& rcPage(fPlugin.getRemoteControlPage(index));
+
+        std::memset(page, 0, sizeof(*page));
+        d_strncpy(page->section_name, rcPage.section, CLAP_NAME_SIZE);
+        page->page_id = index;
+        d_strncpy(page->page_name, rcPage.name, CLAP_NAME_SIZE);
+
+        for (uint32_t i = 0; i < CLAP_REMOTE_CONTROLS_COUNT; ++i)
+            page->param_ids[i] = rcPage.parameters[i] != kRemoteControlNone ? rcPage.parameters[i] : CLAP_INVALID_ID;
+
+        page->is_for_preset = false;
+        return true;
+    }
+   #endif
 
    #if DAF_PLUGIN_HAS_UI
     // Reached from process() and from clap_plugin_params::flush. A host that is not processing this
@@ -3470,6 +3507,33 @@ static const clap_plugin_tail_t clap_plugin_tail = {
 };
 #endif
 
+#if DAF_PLUGIN_WANT_REMOTE_CONTROLS
+// --------------------------------------------------------------------------------------------------------------------
+// plugin remote controls
+
+static_assert(kRemoteControlsPerPage == CLAP_REMOTE_CONTROLS_COUNT,
+              "a DAF remote control page must hold exactly a CLAP page's controls");
+
+static uint32_t CLAP_ABI clap_plugin_remote_controls_count(const clap_plugin_t* const plugin)
+{
+    const PluginCLAP* const instance = static_cast<const PluginCLAP*>(plugin->plugin_data);
+    return instance->getRemoteControlPageCount();
+}
+
+static bool CLAP_ABI clap_plugin_remote_controls_get(const clap_plugin_t* const plugin,
+                                                     const uint32_t pageIndex,
+                                                     clap_remote_controls_page_t* const page)
+{
+    const PluginCLAP* const instance = static_cast<const PluginCLAP*>(plugin->plugin_data);
+    return instance->getRemoteControlPage(pageIndex, page);
+}
+
+static const clap_plugin_remote_controls_t clap_plugin_remote_controls = {
+    clap_plugin_remote_controls_count,
+    clap_plugin_remote_controls_get
+};
+#endif
+
 // --------------------------------------------------------------------------------------------------------------------
 // plugin state
 
@@ -3580,6 +3644,11 @@ static const void* CLAP_ABI clap_plugin_get_extension(const clap_plugin_t* const
    #if DAF_PLUGIN_WANT_TAIL
     if (std::strcmp(id, CLAP_EXT_TAIL) == 0)
         return &clap_plugin_tail;
+   #endif
+   #if DAF_PLUGIN_WANT_REMOTE_CONTROLS
+    // The draft id is the same interface, for hosts that still ask for it.
+    if (std::strcmp(id, CLAP_EXT_REMOTE_CONTROLS) == 0 || std::strcmp(id, CLAP_EXT_REMOTE_CONTROLS_COMPAT) == 0)
+        return &clap_plugin_remote_controls;
    #endif
   #if DAF_PLUGIN_HAS_UI
     if (std::strcmp(id, CLAP_EXT_GUI) == 0)

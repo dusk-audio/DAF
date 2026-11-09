@@ -860,6 +860,58 @@ struct PortGroup {
 };
 
 /**
+   Number of controls on a remote control page.
+   @see RemoteControlPage
+ */
+static constexpr const uint32_t kRemoteControlsPerPage = 8;
+
+/**
+   An empty control on a remote control page.
+   @see RemoteControlPage::parameters
+ */
+static constexpr const uint32_t kRemoteControlNone = (uint32_t)-1;
+
+/**
+   Remote control page.
+
+   A page of up to kRemoteControlsPerPage parameters for a host's hardware controls: a controller's eight knobs
+   take its parameters in order. Hosts list pages by section, so a section groups the pages that belong together,
+   for example a "Filter" section with a page for the filter and one for its envelope.
+
+   @see Plugin::initRemoteControlPage(uint32_t, RemoteControlPage&)
+ */
+struct RemoteControlPage {
+   /**
+      The section this page belongs to.@n
+      Pages of the same section should be next to each other.
+    */
+    String section;
+
+   /**
+      The name of this page, which the host shows for it.
+    */
+    String name;
+
+   /**
+      The parameter index for each control, in the order a controller's knobs take them.@n
+      kRemoteControlNone leaves a control empty. An output parameter, or an index past the last parameter, is
+      treated as kRemoteControlNone.
+    */
+    uint32_t parameters[kRemoteControlsPerPage];
+
+   /**
+      Default constructor for an empty page.
+    */
+    RemoteControlPage() noexcept
+        : section(),
+          name()
+    {
+        for (uint32_t i = 0; i < kRemoteControlsPerPage; ++i)
+            parameters[i] = kRemoteControlNone;
+    }
+};
+
+/**
    State.
 
    In DAF states refer to key:value string pairs, used to store arbitrary non-parameter data.@n

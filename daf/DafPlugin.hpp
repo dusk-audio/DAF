@@ -57,6 +57,9 @@ START_NAMESPACE_DAF
    DAF_PLUGIN_WANT_RESET lets a CLAP or AU host reset clear the processing state in place.@n
    When enabled you need to implement reset().
 
+   DAF_PLUGIN_WANT_REMOTE_CONTROLS offers pages of parameters for a host's hardware controls.@n
+   When enabled you need to implement initRemoteControlPage().
+
    The process function run() changes wherever DAF_PLUGIN_WANT_MIDI_INPUT is enabled or not.@n
    When enabled it provides midi input events.
  */
@@ -346,6 +349,24 @@ protected:
 
     DAF_DEPRECATED_BY("initState(uint32_t,State&)")
     virtual bool isStateFile(uint32_t) { return false; }
+#endif
+
+#if DAF_PLUGIN_WANT_REMOTE_CONTROLS
+   /**
+      Initialize the remote control page @a index, or return false if the plugin has no page @a index.@n
+      Called for index 0, 1, 2 and up until it returns false, once each, shortly after the plugin is created and
+      all its parameters have been initialized. The pages are fixed from then on.@n
+      A page is up to eight parameters for a host's hardware controls, in the order its knobs take them, under a
+      page name and a section name (see RemoteControlPage). Page 0 is the one a controller lands on first, so it is
+      where the controls a player reaches for belong; leave out anything that should not move by accident, such as
+      a mode switch or an oversampling setting.@n
+      CLAP hosts get the pages through the remote controls extension. Without DAF_PLUGIN_WANT_REMOTE_CONTROLS a
+      host maps its controls by itself, and many simply take the first eight parameters.
+      @note This function is only available, and must then be implemented, if DAF_PLUGIN_WANT_REMOTE_CONTROLS is
+            enabled; overriding it without that does not compile. Formats other than CLAP have no such extension
+            and never call it.
+    */
+    virtual bool initRemoteControlPage(uint32_t index, RemoteControlPage& page) = 0;
 #endif
 
    /* --------------------------------------------------------------------------------------------------------
