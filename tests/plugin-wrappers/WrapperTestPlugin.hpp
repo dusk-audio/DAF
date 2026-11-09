@@ -54,6 +54,10 @@ enum WrapperTestParameters {
 #if DAF_PLUGIN_WANT_TIMEPOS
 // every time a wrapper set an output parameter, which only the plugin itself may do
 static uint32_t gOutputParameterWrites = 0;
+
+// the time position the last run() was given, for a test to read back exactly: the output parameters
+// below carry it through each format's parameter range, which has no negative bars
+static TimePosition gLastTimePosition;
 #endif
 
 // The two places a trigger parameter can be consumed: the setter, for a plugin that acts on the press
@@ -182,6 +186,7 @@ protected:
         case kParamOutBar:
             parameter.hints = kParameterIsOutput;
             parameter.name = parameter.symbol = "bar";
+            parameter.ranges.min = -1e6f; // before the song start the bar is 0 or less
             parameter.ranges.max = 1e6f;
             break;
         case kParamOutBeat:
@@ -197,6 +202,7 @@ protected:
         case kParamOutBarStartTick:
             parameter.hints = kParameterIsOutput;
             parameter.name = parameter.symbol = "barstarttick";
+            parameter.ranges.min = -1e9f; // and so is the bar start
             parameter.ranges.max = 1e9f;
             break;
        #endif
@@ -313,6 +319,7 @@ protected:
 
        #if DAF_PLUGIN_WANT_TIMEPOS
         const TimePosition& timePos(getTimePosition());
+        gLastTimePosition = timePos;
         fParameters[kParamOutFrame] = static_cast<float>(timePos.frame);
         fParameters[kParamOutBar] = static_cast<float>(timePos.bbt.bar);
         fParameters[kParamOutBeat] = static_cast<float>(timePos.bbt.beat);

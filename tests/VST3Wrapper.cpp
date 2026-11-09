@@ -261,9 +261,11 @@ static void initParamChangeObjects()
     gChangesVTable.changes.add_param_data = changes_add_param_data;
 }
 
-// one process() call of 16 frames through the single mono bus, with these parameter changes
+// one process() call of 16 frames through the single mono bus, with these parameter changes and, if given,
+// this transport context
 static v3_result processBlock(v3_audio_processor_cpp** const processor,
-                              TestParamChanges* const inputParams, TestParamChanges* const outputParams)
+                              TestParamChanges* const inputParams, TestParamChanges* const outputParams,
+                              v3_process_context* const context = nullptr)
 {
     float inBuf[16] = {}, outBuf[16] = {};
     float* inChannels[1] = { inBuf };
@@ -283,6 +285,7 @@ static v3_result processBlock(v3_audio_processor_cpp** const processor,
     data.outputs = &outputs;
     data.input_params = reinterpret_cast<v3_param_changes**>(inputParams);
     data.output_params = reinterpret_cast<v3_param_changes**>(outputParams);
+    data.ctx = context;
 
     return (*processor)->proc.process(processor, &data);
 }
@@ -558,6 +561,59 @@ int main()
             DAF_ASSERT_EQUAL(processBlock(processor, &changes, &output), V3_OK, "process must succeed");
             DAF_ASSERT_EQUAL(std::abs((*controller)->ctrl.get_parameter_normalised(controller, linearId) - 0.3) < 1e-6, true,
                              "a queue after one whose point cannot be read must still be applied");
+        }
+
+        // Bar, beat and tick from the host's position in quarter notes. A beat is the time signature's
+        // denominator, so a 7/8 bar is 3.5 quarter notes and a 3/16 bar 0.75; the bar length used to be
+        // truncated to whole quarter notes, which made 7/8 bars 3 long and 3/16 bars 0 (a division by zero).
+        // Before the song start the bars count back from bar 1.
+        {
+            struct Case { int32_t numerator, denominator; double quarters; int32_t bar, beat; double tick; const char* what; };
+            static const Case cases[] = {
+                { 4,  4,  5.5,  2, 2, 960.0, "4/4 at 5.5 quarter notes is bar 2, half way through beat 2" },
+                { 7,  8,  7.0,  3, 1,   0.0, "7/8 at 7 quarter notes is the start of bar 3" },
+                { 7,  8,  5.25, 2, 4, 960.0, "7/8 at 5.25 quarter notes is bar 2, half way through beat 4" },
+                { 3, 16,  1.75, 3, 2,   0.0, "3/16 at 1.75 quarter notes is bar 3, beat 2" },
+                { 4,  4, -1.0,  0, 4,   0.0, "a quarter note before the start is bar 0, beat 4" },
+                { 4,  4, -4.0,  0, 1,   0.0, "a bar before the start is bar 0, beat 1" },
+                { 4,  4, -5.0, -1, 4,   0.0, "five quarter notes before the start is bar -1, beat 4" },
+            };
+            TestParamChanges noInput = { &gChangesVTable, nullptr, 0 };
+            for (const Case& c : cases)
+            {
+                v3_process_context context = {};
+                context.state = V3_PROCESS_CTX_PROJECT_TIME_VALID | V3_PROCESS_CTX_TIME_SIG_VALID;
+                context.sample_rate = 48000.0;
+                context.project_time_quarters = c.quarters;
+                context.time_sig_numerator = c.numerator;
+                context.time_sig_denom = c.denominator;
+                DAF_ASSERT_EQUAL(processBlock(processor, &noInput, &output, &context), V3_OK, "process must succeed");
+
+                const TimePosition::BarBeatTick& bbt(gLastTimePosition.bbt);
+                const bool ok = bbt.valid && bbt.bar == c.bar && bbt.beat == c.beat && std::abs(bbt.tick - c.tick) < 1e-6
+                             && d_isEqual(bbt.beatsPerBar, static_cast<float>(c.numerator))
+                             && d_isEqual(bbt.beatType, static_cast<float>(c.denominator))
+                             && std::abs(bbt.barStartTick - 1920.0 * c.numerator * (c.bar - 1)) < 1e-6;
+                if (! ok)
+                    d_stderr2("got bar %d, beat %d, tick %g, bar start tick %g",
+                              bbt.bar, bbt.beat, bbt.tick, bbt.barStartTick);
+                DAF_ASSERT_EQUAL(ok, true, c.what);
+            }
+
+            // a time signature that is not positive describes no bar: no position, rather than a division by zero
+            static const int32_t badSignatures[][2] = { { 0, 4 }, { 4, 0 }, { -3, 4 } };
+            for (const auto& sig : badSignatures)
+            {
+                v3_process_context context = {};
+                context.state = V3_PROCESS_CTX_PROJECT_TIME_VALID | V3_PROCESS_CTX_TIME_SIG_VALID;
+                context.sample_rate = 48000.0;
+                context.project_time_quarters = 5.0;
+                context.time_sig_numerator = sig[0];
+                context.time_sig_denom = sig[1];
+                DAF_ASSERT_EQUAL(processBlock(processor, &noInput, &output, &context), V3_OK, "process must succeed");
+                DAF_ASSERT_EQUAL(gLastTimePosition.bbt.valid, false, "a time signature that is not positive gives no bar");
+                DAF_ASSERT_EQUAL(gLastTimePosition.bbt.bar, 1, "and the position falls back to bar 1");
+            }
         }
 
         DAF_ASSERT_EQUAL((*processor)->proc.set_processing(processor, false), V3_OK, "set_processing must succeed");
