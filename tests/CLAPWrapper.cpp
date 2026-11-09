@@ -27,7 +27,10 @@
  * The plugin descriptor carries the version string and the homepage, manual and support URLs.
  *
  * The plugin has neither DAF_PLUGIN_WANT_RESET nor a reset designation, so clap_plugin::reset asks the host for a
- * restart and the wrapper neither deactivates nor activates it (CLAPReset has a plugin with the macro). */
+ * restart and the wrapper neither deactivates nor activates it (CLAPReset has a plugin with the macro).
+ *
+ * Nor has it DAF_PLUGIN_WANT_REMOTE_CONTROLS, so it offers no remote controls extension under either of its ids
+ * (CLAPRemoteControls has a plugin with the macro). */
 
 #define DAF_PLUGIN_TARGET_CLAP
 #define DAF_PLUGIN_HOMEPAGE "https://example.com/wrapper-test"
@@ -318,6 +321,12 @@ int main()
 
     h.params = static_cast<const clap_plugin_params_t*>(h.plugin->get_extension(h.plugin, CLAP_EXT_PARAMS));
     DAF_ASSERT_NOT_EQUAL(h.params, nullptr, "the params extension must be available");
+
+    // the remote controls ids, spelled out: the wrapper includes their header only with the macro
+    DAF_ASSERT_EQUAL(h.plugin->get_extension(h.plugin, "clap.remote-controls/2") == nullptr, true,
+                     "without DAF_PLUGIN_WANT_REMOTE_CONTROLS there must be no remote controls extension");
+    DAF_ASSERT_EQUAL(h.plugin->get_extension(h.plugin, "clap.remote-controls.draft/2") == nullptr, true,
+                     "without DAF_PLUGIN_WANT_REMOTE_CONTROLS there must be no draft remote controls extension");
 
     // output parameters are read-only, inputs are not
     DAF_ASSERT_EQUAL(h.params->count(h.plugin), static_cast<uint32_t>(kParamCount), "every parameter must be exposed");

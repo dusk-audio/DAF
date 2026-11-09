@@ -36,6 +36,9 @@ const String                     PluginExporter::sFallbackString;
 const ParameterRanges            PluginExporter::sFallbackRanges;
 const ParameterEnumerationValues PluginExporter::sFallbackEnumValues;
 const PortGroupWithId            PluginExporter::sFallbackPortGroup;
+#if DAF_PLUGIN_WANT_REMOTE_CONTROLS
+const RemoteControlPage          PluginExporter::sFallbackRemoteControlPage;
+#endif
 
 /* ------------------------------------------------------------------------------------------------------------
  * Plugin */

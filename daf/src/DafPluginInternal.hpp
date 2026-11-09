@@ -30,6 +30,10 @@
 #include <cstring>
 #include <set>
 
+#if DAF_PLUGIN_WANT_REMOTE_CONTROLS
+# include <vector>
+#endif
+
 START_NAMESPACE_DAF
 
 // -----------------------------------------------------------------------
@@ -204,6 +208,12 @@ struct Plugin::PrivateData {
     State*   states;
 #endif
 
+#if DAF_PLUGIN_WANT_REMOTE_CONTROLS
+    // Filled once by the exporter from Plugin::initRemoteControlPage() and only read after that.
+    uint32_t           remoteControlPageCount;
+    RemoteControlPage* remoteControlPages;
+#endif
+
 #if DAF_PLUGIN_WANT_LATENCY
     // Written by setLatency() from wherever the plugin calls it (run() included) and read by wrappers on the main
     // thread (the AU wrapper's latency watch, a host reading the latency it was told of) as well as the audio
@@ -253,6 +263,10 @@ struct Plugin::PrivateData {
 #if DAF_PLUGIN_WANT_STATE
           stateCount(0),
           states(nullptr),
+#endif
+#if DAF_PLUGIN_WANT_REMOTE_CONTROLS
+          remoteControlPageCount(0),
+          remoteControlPages(nullptr),
 #endif
 #if DAF_PLUGIN_WANT_LATENCY
           latency(0),
@@ -327,6 +341,14 @@ struct Plugin::PrivateData {
         {
             delete[] states;
             states = nullptr;
+        }
+#endif
+
+#if DAF_PLUGIN_WANT_REMOTE_CONTROLS
+        if (remoteControlPages != nullptr)
+        {
+            delete[] remoteControlPages;
+            remoteControlPages = nullptr;
         }
 #endif
 
@@ -444,6 +466,10 @@ public:
 #if DAF_PLUGIN_WANT_STATE
         for (uint32_t i=0; i < fData->stateCount; ++i)
             fPlugin->initState(i, fData->states[i]);
+#endif
+
+#if DAF_PLUGIN_WANT_REMOTE_CONTROLS
+        initRemoteControlPages();
 #endif
 
 #if defined(DAF_RUNTIME_TESTING) && defined(__GNUC__) && !defined(__clang__)
@@ -908,6 +934,22 @@ public:
     }
     */
 
+#if DAF_PLUGIN_WANT_REMOTE_CONTROLS
+    uint32_t getRemoteControlPageCount() const noexcept
+    {
+        DAF_SAFE_ASSERT_RETURN(fData != nullptr, 0);
+
+        return fData->remoteControlPageCount;
+    }
+
+    const RemoteControlPage& getRemoteControlPage(const uint32_t index) const noexcept
+    {
+        DAF_SAFE_ASSERT_RETURN(fData != nullptr && index < fData->remoteControlPageCount, sFallbackRemoteControlPage);
+
+        return fData->remoteControlPages[index];
+    }
+#endif
+
     uint32_t getPortGroupCount() const noexcept
     {
         DAF_SAFE_ASSERT_RETURN(fData != nullptr, 0);
@@ -1275,6 +1317,61 @@ private:
     static const ParameterRanges            sFallbackRanges;
     static const ParameterEnumerationValues sFallbackEnumValues;
     static const PortGroupWithId            sFallbackPortGroup;
+#if DAF_PLUGIN_WANT_REMOTE_CONTROLS
+    static const RemoteControlPage          sFallbackRemoteControlPage;
+#endif
+
+#if DAF_PLUGIN_WANT_REMOTE_CONTROLS
+    // Asks the plugin for page 0, 1, 2 and up, once each, until it says there is no such page, and keeps them. A
+    // control that names an output parameter, or an index past the last parameter, is emptied: a host would offer a
+    // knob that moves nothing, or one that refers to no parameter at all.
+    void initRemoteControlPages()
+    {
+        // A bound on a plugin that never returns false; far past the pages anything could use.
+        static constexpr const uint32_t kMaxPages = 1024;
+
+        std::vector<RemoteControlPage> pages;
+
+        for (uint32_t index = 0;; ++index)
+        {
+            if (index == kMaxPages)
+            {
+                d_stderr2("DAF warning: initRemoteControlPage returned true for %u pages, keeping the first %u",
+                          kMaxPages, kMaxPages);
+                break;
+            }
+
+            RemoteControlPage page;
+            if (! fPlugin->initRemoteControlPage(index, page))
+                break;
+
+            for (uint32_t i = 0; i < kRemoteControlsPerPage; ++i)
+            {
+                const uint32_t param = page.parameters[i];
+                if (param == kRemoteControlNone)
+                    continue;
+                if (param >= fData->parameterCount || (fData->parameters[param].hints & kParameterIsOutput) != 0)
+                {
+                    d_stderr2("DAF warning: remote control page %u control %u names parameter %u, which is %s; "
+                              "it is left empty", index, i, param,
+                              param >= fData->parameterCount ? "past the last one" : "an output");
+                    page.parameters[i] = kRemoteControlNone;
+                }
+            }
+
+            pages.push_back(page);
+        }
+
+        if (pages.empty())
+            return;
+
+        fData->remoteControlPages = new RemoteControlPage[pages.size()];
+        fData->remoteControlPageCount = static_cast<uint32_t>(pages.size());
+
+        for (uint32_t i = 0; i < fData->remoteControlPageCount; ++i)
+            fData->remoteControlPages[i] = pages[i];
+    }
+#endif
 
     DAF_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginExporter)
 };
