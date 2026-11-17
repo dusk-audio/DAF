@@ -31,6 +31,14 @@
 #include <sched.h>
 
 #include "DafPluginAUBufferList.hpp"
+#if DAF_PLUGIN_WANT_MIDI_INPUT
+# include "DafPluginAUMidiInput.hpp"
+# include <mach/mach.h>
+# include <mach/thread_policy.h>
+#endif
+#if DAF_PLUGIN_WANT_MIDI_OUTPUT
+# include "DafPluginAUMidiOutput.hpp"
+#endif
 #if DAF_PLUGIN_HAS_UI
 # include "DafPluginAUUILink.hpp"
 #endif
@@ -219,9 +227,25 @@ static constexpr const uint32_t kWantedAudioFormat = 0
                                                    | kAudioFormatFlagsNativeFloatPacked
                                                    | kAudioFormatFlagIsNonInterleaved;
 
+// A plugin without audio (an aumi) still gets an output element: a host sets the unit's sample rate on an element,
+// and renders the unit through it (Apple's AUv3 bridge renders one either way, with no buffers when it has no
+// element). The element plays silence at whatever channel count the host sets (2 until it does); the plugin is given
+// no audio, as before.
+#define DAF_AU_SILENT_OUTPUT (DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS == 0)
+#define DAF_AU_OUTPUT_ELEMENT (DAF_PLUGIN_NUM_OUTPUTS != 0 || DAF_AU_SILENT_OUTPUT)
+
+#if DAF_AU_SILENT_OUTPUT
+static constexpr const uint16_t kSilentOutputDefaultChannels = 2;
+static constexpr const uint16_t kSilentOutputMaxChannels = 64;
+#endif
 
 static constexpr const AUChannelInfo kChannelInfo[] = {
+   #if DAF_AU_SILENT_OUTPUT
+    // any number of output channels, as kAudioUnitProperty_SupportedNumChannels writes it
+    { 0, -1 },
+   #else
     { DAF_PLUGIN_NUM_INPUTS, DAF_PLUGIN_NUM_OUTPUTS },
+   #endif
    #ifdef DAF_PLUGIN_EXTRA_IO
     DAF_PLUGIN_EXTRA_IO
    #endif
@@ -318,27 +342,111 @@ struct AUInputBus {
 typedef std::vector<PropertyListener> PropertyListeners;
 typedef std::vector<RenderListener> RenderListeners;
 
+#if DAF_PLUGIN_WANT_MIDI_INPUT || DAF_PLUGIN_WANT_MIDI_OUTPUT
+// What MIDI one render takes in is kMaxMidiEvents messages, and this many bytes for the sysex among them longer than
+// MidiEvent::kDataSize; the output list has room for all of it (kMidiOutputListSize).
+static constexpr const uint32_t kMidiInputSysExBytes = 16384;
+#endif
+
+#if DAF_PLUGIN_WANT_MIDI_INPUT
+// The threads MIDI calls come on (see AUMidiInputQueue). A real-time one is a time-constraint thread, as CoreAudio and
+// hosts render on. Asking the kernel costs a Mach call of about half a microsecond, so a thread asks once, the first
+// time one of its MIDI calls finds the queue's guard taken, and keeps the answer in a thread-specific slot; on macOS
+// that slot is part of the thread, so keeping the answer allocates nothing. Either way, a thread keeps its first
+// answer: one made time-constraint only after that waits as an ordinary thread, and one that was time-constraint then
+// and is later used as an ordinary thread (an offline render reusing the host's audio thread, say) still counts as
+// real-time, so its MIDI calls that find the guard taken give up after realTimeWaitMicros().
+class AUMidiCallThreads
+{
+public:
+    // On the main thread, when a unit is made, before any of its MIDI calls: the slot.
+    static void prepare() noexcept
+    {
+        static pthread_once_t once = PTHREAD_ONCE_INIT;
+        pthread_once(&once, createSlot);
+    }
+
+    // When the plugin is unloaded: the slot back, so that loading it again does not take another.
+    static void release() noexcept
+    {
+        if (sSlotReady.exchange(false, std::memory_order_acq_rel))
+            pthread_key_delete(sSlot);
+    }
+
+    static bool isRealTime() noexcept
+    {
+        if (! sSlotReady.load(std::memory_order_acquire))
+            return askKernel();
+        switch (reinterpret_cast<uintptr_t>(pthread_getspecific(sSlot)))
+        {
+        case kRealTime:
+            return true;
+        case kOther:
+            return false;
+        }
+        const bool realTime = askKernel();
+        pthread_setspecific(sSlot, reinterpret_cast<void*>(realTime ? kRealTime : kOther));
+        return realTime;
+    }
+
+    // Many times what one append holds the guard for (a 16384-byte sysex is copied in about a microsecond), and a
+    // small part of what a render may take. The MIDI calls of one render cycle together wait no longer.
+    static uint32_t realTimeWaitMicros() noexcept
+    {
+        return 50;
+    }
+
+private:
+    enum : uintptr_t { kRealTime = 1, kOther = 2 }; // a slot never set reads 0
+    static pthread_key_t sSlot;
+    static std::atomic<bool> sSlotReady;
+
+    static void createSlot()
+    {
+        sSlotReady.store(pthread_key_create(&sSlot, nullptr) == 0, std::memory_order_release);
+    }
+
+    static bool askKernel() noexcept
+    {
+        thread_time_constraint_policy_data_t policy;
+        mach_msg_type_number_t count = THREAD_TIME_CONSTRAINT_POLICY_COUNT;
+        boolean_t isDefault = false;
+        return thread_policy_get(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY,
+                                 reinterpret_cast<thread_policy_t>(&policy), &count, &isDefault) == KERN_SUCCESS
+            && ! isDefault;
+    }
+};
+pthread_key_t AUMidiCallThreads::sSlot;
+std::atomic<bool> AUMidiCallThreads::sSlotReady(false);
+static struct AUMidiCallThreadsUnload
+{
+    ~AUMidiCallThreadsUnload() noexcept { AUMidiCallThreads::release(); }
+} sAUMidiCallThreadsUnload;
+
+// A message with no room is dropped whole and the MIDI call returns an error (see AUMidiInputQueue, auMIDIEvent and
+// auSysEx); a sysex longer than kMidiInputSysExBytes never fits.
+typedef AUMidiInputQueue<kMaxMidiEvents, kMidiInputSysExBytes, AUMidiCallThreads> MidiInputQueue;
+#endif
+
 #if DAF_PLUGIN_WANT_MIDI_OUTPUT
-// useful definitions
-static constexpr const uint32_t kMIDIPacketNonDataSize = sizeof(MIDIPacket)
-                                                      #if __cplusplus >= 201103L
-                                                       - sizeof(MIDIPacket::data);
-                                                      #else
-                                                       - sizeof(static_cast<MIDIPacket*>(0)->data);
-                                                      #endif
-static constexpr const uint32_t kMIDIPacketListNonDataSize = sizeof(MIDIPacketList)
-                                                          #if __cplusplus >= 201103L
-                                                           - sizeof(MIDIPacketList::packet);
-                                                          #else
-                                                           - sizeof(static_cast<MIDIPacketList*>(0)->packet);
-                                                          #endif
+// Each output packet goes where MIDIPacketNext, the rule hosts read the list with, finds it (see AUMidiPacketList).
+struct CoreMIDIPacketNext
+{
+    static MIDIPacket* next(const MIDIPacket* const packet) noexcept
+    {
+        return MIDIPacketNext(packet);
+    }
+};
+typedef AUMidiPacketList<CoreMIDIPacketNext> MidiOutputList;
 
-// size of data used for midi events
-static constexpr const uint32_t kMIDIPacketListMaxDataSize = kMIDIPacketNonDataSize * kMaxMidiEvents
-                                                           + sizeof(Byte) * MidiEvent::kDataSize * kMaxMidiEvents;
-
-// size of midi list + data
-static constexpr const uint32_t kMIDIPacketListSize = kMIDIPacketListNonDataSize + kMIDIPacketListMaxDataSize;
+// Room to send on everything one render takes in, on every architecture: kMaxMidiEvents messages of up to
+// MidiEvent::kDataSize bytes, at ARM's stride (the wider), and kMidiInputSysExBytes more for the sysex among them, as a
+// long message takes no more than its bytes and the room of a short one. 24580 bytes, so the longest sysex one run
+// can send is 24566 bytes (less the list's 4-byte header and a packet's 10), as its first message. writeMidiEvent()
+// returns false for a message that does not fit and sends nothing of it.
+static constexpr const uint32_t kMidiOutputListSize = MidiOutputList::sizeFor(kMaxMidiEvents, MidiEvent::kDataSize)
+                                                    + kMidiInputSysExBytes;
+static_assert(kMidiOutputListSize <= 65536, "CoreMIDI's largest packet list is 65536 bytes");
 #endif
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -378,15 +486,16 @@ public:
           fNumInputs(DAF_PLUGIN_NUM_INPUTS),
          #endif
         #endif
-        #if DAF_PLUGIN_NUM_OUTPUTS != 0
+        #if DAF_AU_OUTPUT_ELEMENT
           fSampleRateForOutput(d_nextSampleRate),
          #ifdef DAF_PLUGIN_EXTRA_IO
           fNumOutputs(DAF_PLUGIN_NUM_OUTPUTS),
          #endif
-        #endif
-         #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS != 0
-          fAudioBufferList(),
+         #if DAF_AU_SILENT_OUTPUT
+          fSilentOutputChannels(kSilentOutputDefaultChannels),
          #endif
+        #endif
+          fAudioBufferList(),
           fChannelInfoCount(0),
           fUsingRenderListeners(false),
         #if DAF_PLUGIN_WANT_LATENCY
@@ -400,12 +509,8 @@ public:
           fLastParameterValues(nullptr),
           fBypassParameterIndex(UINT32_MAX),
           fResetParameterIndex(UINT32_MAX)
-       #if DAF_PLUGIN_WANT_MIDI_INPUT
-        , fMidiEventCount(0)
-        , fMidiInputResetRequested(false)
-       #endif
        #if DAF_PLUGIN_WANT_MIDI_OUTPUT
-        , fMidiOutputDataOffset(0)
+        , fMidiOutputList(kMidiOutputListSize)
        #endif
        #if DAF_PLUGIN_WANT_PROGRAMS
         , fCurrentProgram(-1)
@@ -447,13 +552,10 @@ public:
        #endif
 
        #if DAF_PLUGIN_WANT_MIDI_INPUT
-        std::memset(&fMidiEvents, 0, sizeof(fMidiEvents));
+        AUMidiCallThreads::prepare();
        #endif
 
        #if DAF_PLUGIN_WANT_MIDI_OUTPUT
-        if ((fMidiOutputPackets = static_cast<MIDIPacketList*>(std::malloc(kMIDIPacketListSize))) != nullptr)
-            std::memset(fMidiOutputPackets, 0, kMIDIPacketListSize);
-
         std::memset(&fMidiOutput, 0, sizeof(fMidiOutput));
        #endif
 
@@ -515,13 +617,7 @@ public:
         delete[] fLastParameterValues;
         CFRelease(fUserPresetData.presetName);
 
-       #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS != 0
         reallocAudioBufferList(false);
-       #endif
-
-       #if DAF_PLUGIN_WANT_MIDI_OUTPUT
-        std::free(fMidiOutputPackets);
-       #endif
 
        #if DAF_PLUGIN_WANT_PROGRAMS
         for (uint32_t i=0; i<fProgramCount; ++i)
@@ -537,17 +633,14 @@ public:
             return kAudioUnitErr_FormatNotSupported;
        #endif
 
-       #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS != 0
         if (! reallocAudioBufferList(true))
             return kAudio_ParamError;
-       #endif
 
        #if DAF_PLUGIN_WANT_MIDI_INPUT
-        fMidiEventCount = 0;
+        fMidiInput.clear();
        #endif
        #if DAF_PLUGIN_WANT_MIDI_OUTPUT
-        fMidiOutputDataOffset = 0;
-        fMidiOutputPackets->numPackets = 0;
+        fMidiOutputList.clear();
        #endif
        #if DAF_PLUGIN_WANT_TIMEPOS
         fTimePosition.clear();
@@ -571,9 +664,7 @@ public:
        #endif
         fPlugin.deactivateIfNeeded();
 
-       #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS != 0
         reallocAudioBufferList(false);
-       #endif
         return noErr;
     }
 
@@ -613,7 +704,7 @@ public:
                 return noErr;
             }
            #endif
-           #if DAF_PLUGIN_NUM_OUTPUTS != 0
+           #if DAF_AU_OUTPUT_ELEMENT
             if (inScope == kAudioUnitScope_Output)
             {
                 DAF_SAFE_ASSERT_UINT_RETURN(inElement == 0, inElement, kAudioUnitErr_InvalidElement);
@@ -669,7 +760,7 @@ public:
                 return noErr;
             }
            #endif
-           #if DAF_PLUGIN_NUM_OUTPUTS != 0
+           #if DAF_AU_OUTPUT_ELEMENT
             if (inScope == kAudioUnitScope_Output)
             {
                 DAF_SAFE_ASSERT_UINT_RETURN(inElement == 0, inElement, kAudioUnitErr_InvalidElement);
@@ -959,7 +1050,7 @@ public:
             }
             else
            #endif
-           #if DAF_PLUGIN_NUM_OUTPUTS != 0
+           #if DAF_AU_OUTPUT_ELEMENT
             if (inScope == kAudioUnitScope_Output)
             {
                 *static_cast<Float64*>(outData) = fSampleRateForOutput;
@@ -1108,14 +1199,16 @@ public:
                 }
                 else
                #endif
-               #if DAF_PLUGIN_NUM_OUTPUTS != 0
+               #if DAF_AU_OUTPUT_ELEMENT
                 if (inScope == kAudioUnitScope_Output)
                 {
                     if (inElement != 0)
                         return kAudioUnitErr_InvalidElement;
-                   #ifdef DAF_PLUGIN_EXTRA_IO
+                   #if DAF_AU_SILENT_OUTPUT
+                    desc->mChannelsPerFrame = fSilentOutputChannels;
+                   #elif defined(DAF_PLUGIN_EXTRA_IO)
                     desc->mChannelsPerFrame = fNumOutputs;
-                    #else
+                   #else
                     desc->mChannelsPerFrame = DAF_PLUGIN_NUM_OUTPUTS;
                    #endif
                     desc->mSampleRate = fSampleRateForOutput;
@@ -1149,7 +1242,7 @@ public:
                #endif
                 break;
             case kAudioUnitScope_Output:
-                *static_cast<UInt32*>(outData) = DAF_PLUGIN_NUM_OUTPUTS != 0 ? 1 : 0;
+                *static_cast<UInt32*>(outData) = DAF_AU_OUTPUT_ELEMENT ? 1 : 0;
                 break;
             default:
                 *static_cast<UInt32*>(outData) = 0;
@@ -1507,16 +1600,14 @@ private:
         case kAudioUnitProperty_SampleRate:
            #if DAF_PLUGIN_NUM_INPUTS != 0 && DAF_PLUGIN_NUM_OUTPUTS != 0
             DAF_SAFE_ASSERT_UINT_RETURN(inScope == kAudioUnitScope_Input || inScope == kAudioUnitScope_Output, inScope, kAudioUnitErr_InvalidScope);
-           #elif DAF_PLUGIN_NUM_OUTPUTS != 0
+           #elif DAF_AU_OUTPUT_ELEMENT
             DAF_SAFE_ASSERT_UINT_RETURN(inScope == kAudioUnitScope_Output, inScope, kAudioUnitErr_InvalidScope);
            #else
             DAF_SAFE_ASSERT_UINT_RETURN(inScope == kAudioUnitScope_Input, inScope, kAudioUnitErr_InvalidScope);
            #endif
             DAF_SAFE_ASSERT_UINT_RETURN(inDataSize == sizeof(Float64), inDataSize, kAudioUnitErr_InvalidPropertyValue);
             {
-               #if DAF_PLUGIN_NUM_INPUTS != 0 || DAF_PLUGIN_NUM_OUTPUTS != 0
                 const Float64 sampleRate = *static_cast<const Float64*>(inData);
-               #endif
 
                #if DAF_PLUGIN_NUM_INPUTS != 0
                 if (inScope == kAudioUnitScope_Input)
@@ -1542,7 +1633,7 @@ private:
                 }
                #endif
 
-               #if DAF_PLUGIN_NUM_OUTPUTS != 0
+               #if DAF_AU_OUTPUT_ELEMENT
                 if (inScope == kAudioUnitScope_Output)
                 {
                     DAF_SAFE_ASSERT_UINT_RETURN(inElement == 0, inElement, kAudioUnitErr_InvalidElement);
@@ -1569,7 +1660,7 @@ private:
         case kAudioUnitProperty_StreamFormat:
            #if DAF_PLUGIN_NUM_INPUTS != 0 && DAF_PLUGIN_NUM_OUTPUTS != 0
             DAF_SAFE_ASSERT_UINT_RETURN(inScope == kAudioUnitScope_Input || inScope == kAudioUnitScope_Output, inScope, kAudioUnitErr_InvalidScope);
-           #elif DAF_PLUGIN_NUM_OUTPUTS != 0
+           #elif DAF_AU_OUTPUT_ELEMENT
             DAF_SAFE_ASSERT_UINT_RETURN(inScope == kAudioUnitScope_Output, inScope, kAudioUnitErr_InvalidScope);
            #else
             DAF_SAFE_ASSERT_UINT_RETURN(inScope == kAudioUnitScope_Input, inScope, kAudioUnitErr_InvalidScope);
@@ -1591,7 +1682,10 @@ private:
                 if (desc->mFormatFlags != kWantedAudioFormat)
                     return kAudioUnitErr_FormatNotSupported;
 
-               #ifndef DAF_PLUGIN_EXTRA_IO
+               #if DAF_AU_SILENT_OUTPUT
+                if (desc->mChannelsPerFrame == 0 || desc->mChannelsPerFrame > kSilentOutputMaxChannels)
+                    return kAudioUnitErr_FormatNotSupported;
+               #elif ! defined(DAF_PLUGIN_EXTRA_IO)
                 if (desc->mChannelsPerFrame != (inScope == kAudioUnitScope_Input ? DAF_PLUGIN_NUM_INPUTS
                                                                                  : DAF_PLUGIN_NUM_OUTPUTS))
                     return kAudioUnitErr_FormatNotSupported;
@@ -1639,11 +1733,23 @@ private:
                 }
                #endif
 
-               #if DAF_PLUGIN_NUM_OUTPUTS != 0
+               #if DAF_AU_OUTPUT_ELEMENT
                 if (inScope == kAudioUnitScope_Output)
                 {
                     DAF_SAFE_ASSERT_UINT_RETURN(inElement == 0, inElement, kAudioUnitErr_InvalidElement);
                     bool changed = false;
+
+                   #if DAF_AU_SILENT_OUTPUT
+                    if (fSilentOutputChannels != desc->mChannelsPerFrame)
+                    {
+                        // The unit's own buffers, for a host that leaves them to the unit, are sized at Initialize.
+                        if (fPlugin.isActive())
+                            return kAudioUnitErr_Initialized;
+
+                        changed = true;
+                        fSilentOutputChannels = static_cast<uint16_t>(desc->mChannelsPerFrame);
+                    }
+                   #endif
 
                    #ifdef DAF_PLUGIN_EXTRA_IO
                     if (! isOutputNumChannelsValid(desc->mChannelsPerFrame))
@@ -1695,13 +1801,11 @@ private:
             {
                 const UInt32 bufferSize = *static_cast<const UInt32*>(inData);
 
-               #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS != 0
                 /* The buffer lists are sized from this in auInitialize and are not resized again
                  * while the unit is initialized, so accepting a bigger value here would leave the
                  * render path writing past them. Uninitialize first, as the API requires. */
                 if (fPlugin.isActive() && bufferSize != fPlugin.getBufferSize())
                     return kAudioUnitErr_Initialized;
-               #endif
 
                 if (fPlugin.setBufferSize(bufferSize, true))
                     notifyPropertyListeners(inProp, inScope, inElement);
@@ -2181,13 +2285,11 @@ public:
        #endif
 
        #if DAF_PLUGIN_WANT_MIDI_INPUT
-        // The MIDI input queue belongs to the thread that fills it (auMIDIEvent): it empties the queue before it next
-        // touches it.
-        fMidiInputResetRequested.store(true, std::memory_order_release);
+        // The events queued before the reset are dropped by whoever touches the queue next (MidiInputQueue).
+        fMidiInput.requestReset();
        #endif
        #if DAF_PLUGIN_WANT_MIDI_OUTPUT
-        fMidiOutputDataOffset = 0;
-        fMidiOutputPackets->numPackets = 0;
+        fMidiOutputList.clear();
        #endif
        #if DAF_PLUGIN_WANT_TIMEPOS
         fTimePosition.clear();
@@ -2196,15 +2298,10 @@ public:
         return noErr;
     }
 
-    // The block render plays while a reconfiguration holds fRenderGuard: silence in every buffer the host gave, and
-    // in the unit's own for a buffer it left for the unit to provide (allocated at Initialize; a reconfiguration
-    // leaves them alone). Too many frames for those is an error whatever the render flags say. The host's render
-    // listeners hear of the block as of any other. Its MIDI events wait for the next block that runs.
-    OSStatus renderSilence(const AudioUnitRenderActionFlags actionFlags,
-                           const AudioTimeStamp* const inTimeStamp,
-                           const UInt32 inBusNumber,
-                           const UInt32 frames,
-                           AudioBufferList* const ioData)
+    // Silence in every buffer the host gave, and in the unit's own for a buffer it left for the unit to provide
+    // (allocated at Initialize; a reconfiguration leaves them alone). Too many frames for those is an error whatever
+    // the render flags say.
+    OSStatus fillSilence(const UInt32 frames, AudioBufferList* const ioData)
     {
         if (frames > fPlugin.getBufferSize())
             return kAudioUnitErr_TooManyFramesToProcess;
@@ -2216,28 +2313,37 @@ public:
                 std::memset(buffer.mData, 0, std::min<size_t>(buffer.mDataByteSize, sizeof(float) * frames));
                 continue;
             }
-           #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS != 0
             if (i < static_cast<UInt32>(fAudioBufferList.getNumBuffers()))
                 buffer.mData = fAudioBufferList.getChannelBuffer(i);
-           #endif
             if (buffer.mData == nullptr)
                 return kAudio_ParamError;
             std::memset(buffer.mData, 0, sizeof(float) * frames);
         }
+        return noErr;
+    }
+
+    // The block render plays while a reconfiguration holds fRenderGuard: silence (fillSilence()). The host's render
+    // listeners hear of the block as of any other. Its MIDI events wait for the next block that runs.
+    OSStatus renderSilence(const AudioUnitRenderActionFlags actionFlags,
+                           const AudioTimeStamp* const inTimeStamp,
+                           const UInt32 inBusNumber,
+                           const UInt32 frames,
+                           AudioBufferList* const ioData)
+    {
+        const OSStatus status = fillSilence(frames, ioData);
+        if (status != noErr)
+            return status;
         if (fUsingRenderListeners)
         {
             AudioUnitRenderActionFlags flags = actionFlags | kAudioUnitRenderAction_PreRender;
             notifyRenderListeners(&flags, inTimeStamp, inBusNumber, frames, ioData);
         }
        #if DAF_PLUGIN_WANT_MIDI_INPUT
-        // Where a block that runs consumes the queue, between its render notifications: the events this block would
+        // Where a block that runs takes the queue, between its render notifications: the events this block would
         // have run open the next block that runs, in their order (dropped, a note-off would hang its note), since
         // their frames counted from this block's start. Events sent from the post-render notification are already the
-        // next block's, and keep their frames. Render thread, as the queue is (takeMidiInputReset: a reset asked for
-        // meanwhile drops them first).
-        takeMidiInputReset();
-        for (uint32_t i = 0; i < fMidiEventCount; ++i)
-            fMidiEvents[i].frame = 0;
+        // next block's, and keep their frames.
+        fMidiInput.openNextBlock();
        #endif
         if (fUsingRenderListeners)
         {
@@ -2291,9 +2397,8 @@ public:
             DAF_SAFE_ASSERT_UINT_RETURN(ioData->mNumberBuffers
                                             == static_cast<UInt32>(fAudioBufferList.getNumBuffers()),
                                             ioData->mNumberBuffers, kAudio_ParamError);
-           #else
-            DAF_SAFE_ASSERT_UINT_RETURN(ioData->mNumberBuffers == 0, ioData->mNumberBuffers, kAudio_ParamError);
            #endif
+            // A unit without audio takes any buffer list, or none (see below).
 
             if (inFramesToProcess > fPlugin.getBufferSize())
             {
@@ -2301,7 +2406,7 @@ public:
                 return kAudioUnitErr_TooManyFramesToProcess;
             }
 
-           #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS != 0
+           #if ! DAF_AU_SILENT_OUTPUT
             for (uint16_t i = 0; i < ioData->mNumberBuffers; ++i)
             {
                 if (ioData->mBuffers[i].mDataByteSize != sizeof(float) * inFramesToProcess)
@@ -2312,6 +2417,20 @@ public:
             }
            #endif
         }
+
+       #if DAF_AU_SILENT_OUTPUT
+        // The plugin has no audio: the output element plays silence in whatever buffers the host renders it with.
+        // Apple's AUv3 bridge renders a unit with its output element's buffers, and with none when it has no element.
+        if (ioData != nullptr)
+        {
+            const OSStatus status = fillSilence(inFramesToProcess, ioData);
+            if (status != noErr)
+            {
+                setLastRenderError(status);
+                return status;
+            }
+        }
+       #endif
 
       #if DAF_PLUGIN_NUM_INPUTS != 0
         const float* inputs[DAF_PLUGIN_NUM_INPUTS] = {};
@@ -2449,20 +2568,17 @@ public:
     }
 
    #if DAF_PLUGIN_WANT_MIDI_INPUT
+    // An event waits for the next render, which runs it at inOffsetSampleFrame: the offset into the unit's next render
+    // that MusicDeviceMIDIEvent defines. A plugin without audio is no exception. The host renders it like any other
+    // unit (Apple's AUv3 bridge renders one every cycle, after handing it that cycle's events), and only render can
+    // give its MIDI output to the host: kAudioUnitProperty_MIDIOutputCallback takes the output with the AudioTimeStamp
+    // of the render in progress, and its packets' sample offsets count from it.
     OSStatus auMIDIEvent(const UInt32 inStatus,
                          const UInt32 inData1,
                          const UInt32 inData2,
                          const UInt32 inOffsetSampleFrame)
     {
-        takeMidiInputReset();
-        if (fMidiEventCount >= kMaxMidiEvents)
-            return noErr;
-
-        MidiEvent& midiEvent(fMidiEvents[fMidiEventCount++]);
-        midiEvent.frame   = inOffsetSampleFrame;
-        midiEvent.data[0] = inStatus;
-        midiEvent.data[1] = inData1;
-        midiEvent.data[2] = inData2;
+        uint32_t size = 0;
 
         switch (inStatus & 0xF0)
         {
@@ -2471,94 +2587,63 @@ public:
         case 0xA0:
         case 0xB0:
         case 0xE0:
-            midiEvent.size = 3;
+            size = 3;
             break;
         case 0xC0:
         case 0xD0:
-            midiEvent.size = 2;
+            size = 2;
             break;
         case 0xF0:
             switch (inStatus & 0x0F)
             {
-            case 0x0:
-            case 0x4:
-            case 0x5:
-            case 0x7:
-            case 0x9:
-            case 0xD:
+            case 0x0: // sysex, which MusicDeviceSysEx carries
+            case 0x4: // undefined
+            case 0x5: // undefined
+            case 0x7: // the end of a sysex, alone
                 // unsupported
                 return kAudioUnitErr_InvalidPropertyValue;
-            case 0x1:
-            case 0x2:
-            case 0x3:
-            case 0xE:
-                midiEvent.size = 3;
+            case 0x2: // song position pointer
+                size = 3;
                 break;
-            case 0x6:
-            case 0x8:
-            case 0xA:
-            case 0xB:
-            case 0xC:
-            case 0xF:
-                midiEvent.size = 1;
+            case 0x1: // MIDI time code quarter frame
+            case 0x3: // song select
+                size = 2;
+                break;
+            default: // tune request (F6), and real time (F8 to FF)
+                size = 1;
                 break;
             }
             break;
         default:
             // invalid
-            d_debug("auMIDIEvent received invalid event %u %u %u %u @ %u",
-                    inStatus, inData1, inData2, inOffsetSampleFrame, fMidiEventCount);
+            d_debug("auMIDIEvent received invalid event %u %u %u %u", inStatus, inData1, inData2, inOffsetSampleFrame);
             return kAudioUnitErr_InvalidPropertyValue;
         }
 
-       #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS == 0
-        // handle case of plugin having no working audio, simulate audio-side processing
-        runWithoutAudio(std::max(1u, inOffsetSampleFrame));
-       #endif
-
+        // An event the queue cannot take now is dropped (MidiInputQueue): it is full, or the call is on a real-time
+        // thread and another thread's call held the queue past what such a call waits. The host is told with
+        // kAudioUnitErr_CannotDoInCurrentContext, which Apple returns "when an audio unit is in a state where it can't
+        // perform the requested action now - but it could later".
+        const uint8_t data[3] = {
+            static_cast<uint8_t>(inStatus), static_cast<uint8_t>(inData1), static_cast<uint8_t>(inData2)
+        };
+        if (! fMidiInput.add(inOffsetSampleFrame, data, size))
+            return kAudioUnitErr_CannotDoInCurrentContext;
         return noErr;
     }
 
-   #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS == 0
-    // A plugin without audio runs from its MIDI input, outside render, and so not inside a reconfiguration either
-    // (fRenderGuard): the events stay queued for its next run.
-    void runWithoutAudio(const uint32_t frames)
-    {
-        uintptr_t idle = 0;
-        if (! fRenderGuard.compare_exchange_strong(idle, currentThreadId(), std::memory_order_acquire,
-                                                   std::memory_order_relaxed))
-            return;
-        run(nullptr, nullptr, frames, nullptr);
-        fRenderGuard.store(0, std::memory_order_release);
-    }
-   #endif
-
+    // The sysex is copied into the queue: the host's buffer is its own again once this returns. One that finds no room
+    // is dropped whole, and the host told: kAudio_ParamError for one longer than all the storage a render has for
+    // sysex, a length the unit never takes, as for no bytes at all; kAudioUnitErr_CannotDoInCurrentContext, as for an
+    // event, for one the queue cannot take now (this render's storage or event slots are used up, or, as auMIDIEvent
+    // says, a call on another thread held the queue too long).
     OSStatus auSysEx(const UInt8* const inData, const UInt32 inLength)
     {
-        takeMidiInputReset();
-        if (fMidiEventCount >= kMaxMidiEvents)
-            return noErr;
+        if (inData == nullptr || inLength == 0 || inLength > kMidiInputSysExBytes)
+            return kAudio_ParamError;
 
-        MidiEvent& midiEvent(fMidiEvents[fMidiEventCount++]);
-        midiEvent.frame = fMidiEventCount != 1 ? fMidiEvents[fMidiEventCount - 1].frame : 0;
-        midiEvent.size  = inLength;
-
-        // FIXME who owns inData ??
-        if (inLength > MidiEvent::kDataSize)
-        {
-            std::memset(midiEvent.data, 0, MidiEvent::kDataSize);
-            midiEvent.dataExt = inData;
-        }
-        else
-        {
-            std::memcpy(midiEvent.data, inData, inLength);
-        }
-
-       #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS == 0
-        // handle case of plugin having no working audio, simulate audio-side processing
-        runWithoutAudio(1);
-       #endif
-
+        if (! fMidiInput.addSysEx(inData, inLength))
+            return kAudioUnitErr_CannotDoInCurrentContext;
         return noErr;
     }
    #endif
@@ -2588,15 +2673,16 @@ private:
     uint32_t fNumInputs;
    #endif
   #endif
-  #if DAF_PLUGIN_NUM_OUTPUTS != 0
+  #if DAF_AU_OUTPUT_ELEMENT
     Float64 fSampleRateForOutput;
    #ifdef DAF_PLUGIN_EXTRA_IO
     uint32_t fNumOutputs;
    #endif
-  #endif
-   #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS != 0
-    AUBufferList fAudioBufferList;
+   #if DAF_AU_SILENT_OUTPUT
+    uint16_t fSilentOutputChannels;
    #endif
+  #endif
+    AUBufferList fAudioBufferList;
     AUChannelInfo fChannelInfo[ARRAY_SIZE(kChannelInfo)];
     uint16_t fChannelInfoCount;
     bool fUsingRenderListeners;
@@ -2678,23 +2764,14 @@ private:
     uint32_t fResetParameterIndex;
 
    #if DAF_PLUGIN_WANT_MIDI_INPUT
-    uint32_t fMidiEventCount;
-    MidiEvent fMidiEvents[kMaxMidiEvents];
+    // What the host's MIDI calls queue for the next render, from any thread (MidiInputQueue), and the notes the UI
+    // sends, which a render that runs adds to what it takes.
+    MidiInputQueue fMidiInput;
     SmallStackRingBuffer fNotesRingBuffer;
-    // Set by a reset on its thread; the queue's own thread empties the queue (takeMidiInputReset).
-    std::atomic<bool> fMidiInputResetRequested;
-
-    void takeMidiInputReset() noexcept
-    {
-        if (fMidiInputResetRequested.load(std::memory_order_relaxed)
-            && fMidiInputResetRequested.exchange(false, std::memory_order_acquire))
-            fMidiEventCount = 0;
-    }
    #endif
 
    #if DAF_PLUGIN_WANT_MIDI_OUTPUT
-    uint32_t fMidiOutputDataOffset;
-    MIDIPacketList* fMidiOutputPackets;
+    MidiOutputList fMidiOutputList;
     AUMIDIOutputCallbackStruct fMidiOutput;
    #endif
 
@@ -3155,31 +3232,35 @@ private:
     void run(const float** inputs, float** outputs, const uint32_t frames, const AudioTimeStamp* const inTimeStamp)
     {
        #if DAF_PLUGIN_WANT_MIDI_INPUT
-        takeMidiInputReset();
-        if (fMidiEventCount != kMaxMidiEvents && fNotesRingBuffer.isDataAvailableForReading())
+        // This run's events: the queue's (none when a MIDI call on another thread holds it at this moment; they then
+        // wait for the next run), then the UI's notes. A run without frames leaves both for the next one: a plugin
+        // returns early on no frames, and would drop them.
+        MidiInputQueue::Set* const midi = frames != 0 ? fMidiInput.take() : nullptr;
+        if (midi != nullptr && midi->count != kMaxMidiEvents && fNotesRingBuffer.isDataAvailableForReading())
         {
             uint8_t midiData[3];
-            const uint32_t frame = fMidiEventCount != 0 ? fMidiEvents[fMidiEventCount - 1].frame : 0;
+            const uint32_t frame = midi->count != 0 ? midi->events[midi->count - 1].frame : 0;
 
             while (fNotesRingBuffer.isDataAvailableForReading())
             {
                 if (! fNotesRingBuffer.readCustomData(midiData, 3))
                     break;
 
-                MidiEvent& midiEvent(fMidiEvents[fMidiEventCount++]);
+                MidiEvent& midiEvent(midi->events[midi->count++]);
                 midiEvent.frame = frame;
                 midiEvent.size  = 3;
                 std::memcpy(midiEvent.data, midiData, 3);
+                midiEvent.data[3] = 0;
+                midiEvent.dataExt = nullptr;
 
-                if (fMidiEventCount == kMaxMidiEvents)
+                if (midi->count == kMaxMidiEvents)
                     break;
             }
         }
        #endif
 
        #if DAF_PLUGIN_WANT_MIDI_OUTPUT
-        fMidiOutputDataOffset = 0;
-        fMidiOutputPackets->numPackets = 0;
+        fMidiOutputList.clear();
        #endif
 
        #if DAF_PLUGIN_WANT_TIMEPOS
@@ -3252,8 +3333,15 @@ private:
        #endif
 
        #if DAF_PLUGIN_WANT_MIDI_INPUT
-        fPlugin.run(inputs, outputs, frames, fMidiEvents, fMidiEventCount);
-        fMidiEventCount = 0;
+        if (midi != nullptr)
+        {
+            fPlugin.run(inputs, outputs, frames, midi->events, midi->count);
+            fMidiInput.release(midi);
+        }
+        else
+        {
+            fPlugin.run(inputs, outputs, frames, nullptr, 0);
+        }
        #else
         fPlugin.run(inputs, outputs, frames);
        #endif
@@ -3263,12 +3351,8 @@ private:
        #endif
 
        #if DAF_PLUGIN_WANT_MIDI_OUTPUT
-        if (fMidiOutputPackets != nullptr &&
-            fMidiOutputPackets->numPackets != 0 &&
-            fMidiOutput.midiOutputCallback != nullptr)
-        {
-            fMidiOutput.midiOutputCallback(fMidiOutput.userData, inTimeStamp, 0, fMidiOutputPackets);
-        }
+        if (! fMidiOutputList.isEmpty() && fMidiOutput.midiOutputCallback != nullptr)
+            fMidiOutput.midiOutputCallback(fMidiOutput.userData, inTimeStamp, 0, fMidiOutputList.list());
        #else
         // unused
         (void)inTimeStamp;
@@ -3311,7 +3395,6 @@ private:
 
     // ----------------------------------------------------------------------------------------------------------------
 
-   #if DAF_PLUGIN_NUM_INPUTS + DAF_PLUGIN_NUM_OUTPUTS != 0
     /* Release, and optionally allocate again, every buffer list this unit owns.
      *
      * Each AUBufferList frees itself by the shape it was allocated with, so this stays correct
@@ -3330,7 +3413,9 @@ private:
         if (! alloc)
             return true;
 
-       #if DAF_PLUGIN_NUM_OUTPUTS != 0
+       #if DAF_AU_SILENT_OUTPUT
+        const uint16_t numBuffers = fSilentOutputChannels;
+       #elif DAF_PLUGIN_NUM_OUTPUTS != 0
         #ifdef DAF_PLUGIN_EXTRA_IO
         const uint16_t numBuffers = fNumOutputs;
         #else
@@ -3358,7 +3443,6 @@ private:
 
         return true;
     }
-   #endif
 
     // ----------------------------------------------------------------------------------------------------------------
 
@@ -3688,25 +3772,15 @@ private:
     // DAF callbacks
 
    #if DAF_PLUGIN_WANT_MIDI_OUTPUT
+    // One packet per message, at the sample offset in the block that run() sends the list with (MidiOutputList).
     bool writeMidi(const MidiEvent& midiEvent)
     {
         DAF_CUSTOM_SAFE_ASSERT_ONCE_RETURN("MIDI output unsupported", fMidiOutput.midiOutputCallback != nullptr, false);
-        DAF_CUSTOM_SAFE_ASSERT_ONCE_RETURN("Out of memory", fMidiOutputPackets != nullptr, false);
+        DAF_CUSTOM_SAFE_ASSERT_ONCE_RETURN("Out of memory", fMidiOutputList.list() != nullptr, false);
 
-        if (fMidiOutputDataOffset + kMIDIPacketNonDataSize + midiEvent.size >= kMIDIPacketListMaxDataSize)
-            return false;
-
-        const uint8_t* const midiData = midiEvent.size > MidiEvent::kDataSize ? midiEvent.dataExt : midiEvent.data;
-        MIDIPacket* const packet = reinterpret_cast<MIDIPacket*>(
-             reinterpret_cast<uint8_t*>(fMidiOutputPackets->packet) + fMidiOutputDataOffset);
-
-        packet->timeStamp = midiEvent.frame;
-        packet->length = midiEvent.size;
-        std::memcpy(packet->data, midiData, midiEvent.size);
-
-        ++fMidiOutputPackets->numPackets;
-        fMidiOutputDataOffset += kMIDIPacketNonDataSize + midiEvent.size;
-        return true;
+        return fMidiOutputList.add(midiEvent.frame,
+                                   midiEvent.size > MidiEvent::kDataSize ? midiEvent.dataExt : midiEvent.data,
+                                   midiEvent.size);
     }
 
     static bool writeMidiCallback(void* const ptr, const MidiEvent& midiEvent)
