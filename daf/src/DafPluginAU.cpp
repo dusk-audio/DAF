@@ -350,12 +350,13 @@ static constexpr const uint32_t kMidiInputSysExBytes = 16384;
 
 #if DAF_PLUGIN_WANT_MIDI_INPUT
 // The threads MIDI calls come on (see AUMidiInputQueue). A real-time one is a time-constraint thread, as CoreAudio and
-// hosts render on. Asking the kernel costs a Mach call of about half a microsecond, so a thread asks once, the first
-// time one of its MIDI calls finds the queue's guard taken, and keeps the answer in a thread-specific slot; on macOS
-// that slot is part of the thread, so keeping the answer allocates nothing. Either way, a thread keeps its first
-// answer: one made time-constraint only after that waits as an ordinary thread, and one that was time-constraint then
-// and is later used as an ordinary thread (an offline render reusing the host's audio thread, say) still counts as
-// real-time, so its MIDI calls that find the guard taken give up after realTimeWaitMicros().
+// hosts render on. A thread asks the kernel, a Mach call of about half a microsecond, when one of its MIDI calls finds
+// the queue's guard taken. Only a thread found real-time keeps the answer, in a thread-specific slot (on macOS part of
+// the thread, so keeping it allocates nothing): a render thread asks once, and still counts as real-time when later
+// used as an ordinary thread (an offline render reusing the host's audio thread, say), so its MIDI calls that find the
+// guard taken give up after realTimeWaitMicros(). A thread found ordinary keeps nothing and asks again at its next such
+// call, as it may have been made time-constraint since and must not then wait without bound, as an ordinary thread
+// does. Asking again costs it nothing that matters: it asks while it waits for the guard, not while it holds it.
 class AUMidiCallThreads
 {
 public:
@@ -377,15 +378,11 @@ public:
     {
         if (! sSlotReady.load(std::memory_order_acquire))
             return askKernel();
-        switch (reinterpret_cast<uintptr_t>(pthread_getspecific(sSlot)))
-        {
-        case kRealTime:
+        if (reinterpret_cast<uintptr_t>(pthread_getspecific(sSlot)) == kRealTime)
             return true;
-        case kOther:
-            return false;
-        }
         const bool realTime = askKernel();
-        pthread_setspecific(sSlot, reinterpret_cast<void*>(realTime ? kRealTime : kOther));
+        if (realTime)
+            pthread_setspecific(sSlot, reinterpret_cast<void*>(kRealTime));
         return realTime;
     }
 
@@ -397,7 +394,7 @@ public:
     }
 
 private:
-    enum : uintptr_t { kRealTime = 1, kOther = 2 }; // a slot never set reads 0
+    enum : uintptr_t { kRealTime = 1 }; // a slot never set reads 0
     static pthread_key_t sSlot;
     static std::atomic<bool> sSlotReady;
 
@@ -2330,9 +2327,17 @@ public:
                            const UInt32 frames,
                            AudioBufferList* const ioData)
     {
-        const OSStatus status = fillSilence(frames, ioData);
-        if (status != noErr)
-            return status;
+       #if DAF_AU_SILENT_OUTPUT
+        // A unit without audio has nothing for buffers to carry, and a host may render it with no buffer list at all:
+        // Render() lets a null one through under DoNotCheckRenderArgs, and the block that runs then fills nothing (see
+        // auRender()). Nor does this one. A unit with audio must be given its buffers, on either path.
+        if (ioData != nullptr)
+       #endif
+        {
+            const OSStatus status = fillSilence(frames, ioData);
+            if (status != noErr)
+                return status;
+        }
         if (fUsingRenderListeners)
         {
             AudioUnitRenderActionFlags flags = actionFlags | kAudioUnitRenderAction_PreRender;

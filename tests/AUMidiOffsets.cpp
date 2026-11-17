@@ -26,8 +26,9 @@
 // place after the event sent before it. Every status byte the call can carry must arrive as a message of the length
 // MIDI gives it, with nothing past that length; the others, and an event a full queue has no room for, must be
 // refused with an error. Everything one render takes in must fit what the plugin sends back. And the wrapper must
-// tell a real-time thread, which its MIDI calls do not let wait long, from any other, and let such a call wait out a
-// guard held briefly but give up on one held long.
+// tell a real-time thread, which its MIDI calls do not let wait long, from any other (a thread made time-constraint
+// after it asked as an ordinary one is real-time from then on), and let such a call wait out a guard held briefly but
+// give up on one held long.
 #define DAF_PLUGIN_TARGET_AU
 #define DAF_TEST_NO_DGL
 #include "tests.hpp"
@@ -539,7 +540,9 @@ int main()
     }
 
     // The wrapper's own answer to whether a MIDI call is on a real-time thread: yes on a time-constraint thread, as
-    // CoreAudio renders on, and no on any other; asked twice, as the second answer is the one each thread kept.
+    // CoreAudio renders on, and no on any other; asked twice, as the second answer is the one a time-constraint
+    // thread kept. An ordinary thread keeps none: made time-constraint after it asked, it counts as real-time, rather
+    // than wait for the guard without bound as an ordinary thread.
     bool policySet = false, onTimeConstraint = false, onOrdinary = true;
     std::thread timeConstraint([&] {
         policySet = makeTimeConstraint();
@@ -548,9 +551,18 @@ int main()
     timeConstraint.join();
     std::thread ordinary([&] { onOrdinary = AUMidiCallThreads::isRealTime() || AUMidiCallThreads::isRealTime(); });
     ordinary.join();
+    bool beforePolicy = true, promoted = false, afterPolicy = false;
+    std::thread madeTimeConstraint([&] {
+        beforePolicy = AUMidiCallThreads::isRealTime();
+        promoted = makeTimeConstraint();
+        afterPolicy = AUMidiCallThreads::isRealTime();
+    });
+    madeTimeConstraint.join();
     DAF_ASSERT_EQUAL(policySet && onTimeConstraint, true, "a time-constraint thread must count as real-time");
     DAF_ASSERT_EQUAL(onOrdinary || AUMidiCallThreads::isRealTime() || AUMidiCallThreads::isRealTime(), false,
                      "an ordinary thread must not");
+    DAF_ASSERT_EQUAL(! beforePolicy && promoted && afterPolicy, true,
+                     "a thread made time-constraint after it asked as an ordinary one must then count as real-time");
 
     // And the wrapper's own limit for such a call, through a queue of its own type: a guard held 15 us past the moment
     // a call on a time-constraint thread starts waiting is waited out, and the message queued; one held 2 ms is given
