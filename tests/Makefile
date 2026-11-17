@@ -30,6 +30,8 @@ endif
 
 MANUAL_TESTS  =
 UNIT_TESTS    = AudioUnitBufferList Color FileDrop HostKeyFilter IdleCallbacks ImGuiKnobs Point StateParser Utils
+# the AU wrapper's MIDI input queue and output packet list, which need nothing from CoreAudio or CoreMIDI
+UNIT_TESTS   += AUMidiInputQueue AUMidiPacketList
 
 ifeq ($(MACOS),true)
 UNIT_TESTS   += CocoaRetiredView FileDragCocoa FileDropCocoa
@@ -80,12 +82,33 @@ WRAPPER_TESTS += AULatencyWatch
 ../build/tests/AULatencyWatch.cpp.o: BUILD_CXX_FLAGS += -Iau-latency -I../daf
 ../build/tests/AULatencyWatch$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
 # MIDI against the AU wrapper's reconfigurations: a block that plays silence (see au-midi/), and a plugin without
-# audio, which runs from its MIDI input (see au-midi-only/)
+# audio, which runs from the host's renders (see au-midi-only/)
 WRAPPER_TESTS += AUMidiSilent AUMidiOnly
 ../build/tests/AUMidiSilent.cpp.o: BUILD_CXX_FLAGS += -Iau-midi -I../daf
 ../build/tests/AUMidiSilent$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
 ../build/tests/AUMidiOnly.cpp.o: BUILD_CXX_FLAGS += -Iau-midi-only -I../daf
 ../build/tests/AUMidiOnly$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
+# MIDI events at every offset into the render they are for, on the plugin without audio (see au-midi-only/), and the
+# MIDI output packet list as hosts read it (MIDIPacketNext), on the effect (see au-midi/)
+WRAPPER_TESTS += AUMidiOffsets AUMidiOutput
+../build/tests/AUMidiOffsets.cpp.o: BUILD_CXX_FLAGS += -Iau-midi-only -I../daf
+../build/tests/AUMidiOffsets$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
+../build/tests/AUMidiOutput.cpp.o: BUILD_CXX_FLAGS += -Iau-midi -I../daf
+../build/tests/AUMidiOutput$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
+# the output element of a plugin without audio: its sample rate, channel counts and renders (see au-midi-only/)
+WRAPPER_TESTS += AUSilentOutput
+../build/tests/AUSilentOutput.cpp.o: BUILD_CXX_FLAGS += -Iau-midi-only -I../daf
+../build/tests/AUSilentOutput$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
+# sysex from a host buffer that is freed or reused once the call returns, built for the plugin without audio
+# (AUSysEx, au-midi-only/) and from the same source for the effect (AUSysExEffect, au-midi/)
+WRAPPER_TESTS += AUSysEx AUSysExEffect
+../build/tests/AUSysEx.cpp.o: BUILD_CXX_FLAGS += -Iau-midi-only -I../daf
+../build/tests/AUSysEx$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
+../build/tests/AUSysExEffect.cpp.o: AUSysEx.cpp
+	-@mkdir -p ../build/tests
+	@echo "Compiling $< (effect)"
+	$(SILENT)$(CXX) $< $(BUILD_CXX_FLAGS) -Iau-midi -I../daf -c -o $@
+../build/tests/AUSysExEffect$(APP_EXT): LINK_FLAGS += -framework AudioToolbox -framework CoreFoundation
 # the AU wrapper's reconfigurations against render, on the same sidechain layout (see au-sidechain/)
 WRAPPER_TESTS += AUIoRender
 ../build/tests/AUIoRender.cpp.o: BUILD_CXX_FLAGS += -Iau-sidechain -I../daf

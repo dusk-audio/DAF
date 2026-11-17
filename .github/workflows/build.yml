@@ -27,7 +27,7 @@ jobs:
   # Whether this push has to build and test at all, which every other job waits for: see
   # .github/code-changed.sh.
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     outputs:
       code: ${{ steps.check.outputs.code }}
     steps:
@@ -112,13 +112,13 @@ jobs:
         make -C tests ../build/tests/FileDrop ../build/tests/FileDropCocoa USE_WEB_VIEW=false -j5
         ./build/tests/FileDrop
         ./build/tests/FileDropCocoa
-    - name: AU wrapper, sidechain-on-mono-main, latency-notification, reconfiguration-while-rendering and host-reset regressions
+    - name: AU wrapper, sidechain-on-mono-main, latency-notification, reconfiguration-while-rendering, host-reset and MIDI regressions
       if: ${{ runner.os == 'macOS' }}
       env:
         CFLAGS: -Werror
         CXXFLAGS: -Werror
       run: |
-        make -C tests ../build/tests/AUWrapper ../build/tests/AUSidechainLayout ../build/tests/AULatency ../build/tests/AULatencyWatch ../build/tests/AUIoRender ../build/tests/AUMidiSilent ../build/tests/AUMidiOnly ../build/tests/AUReset USE_WEB_VIEW=false -j5
+        make -C tests ../build/tests/AUWrapper ../build/tests/AUSidechainLayout ../build/tests/AULatency ../build/tests/AULatencyWatch ../build/tests/AUIoRender ../build/tests/AUMidiSilent ../build/tests/AUMidiOnly ../build/tests/AUReset ../build/tests/AUMidiOffsets ../build/tests/AUMidiOutput ../build/tests/AUSilentOutput ../build/tests/AUSysEx ../build/tests/AUSysExEffect ../build/tests/AUMidiInputQueue ../build/tests/AUMidiPacketList USE_WEB_VIEW=false -j5
         ./build/tests/AUWrapper
         ./build/tests/AUSidechainLayout
         ./build/tests/AULatency
@@ -127,6 +127,33 @@ jobs:
         ./build/tests/AUMidiSilent
         ./build/tests/AUMidiOnly
         ./build/tests/AUReset
+        ./build/tests/AUMidiOffsets
+        ./build/tests/AUMidiOutput
+        ./build/tests/AUSilentOutput
+        ./build/tests/AUSysEx
+        ./build/tests/AUSysExEffect
+        ./build/tests/AUMidiInputQueue
+        ./build/tests/AUMidiPacketList
+    # The MIDI output list fills a fixed buffer to its last byte, and a sysex whose host buffer is freed once the call
+    # returns must never be read again: a packet placed past the list's end or a sysex read from the freed buffer
+    # passes the tests above and is a memory error here.
+    - name: AU MIDI under AddressSanitizer
+      if: ${{ runner.os == 'macOS' }}
+      env:
+        CFLAGS: -Werror -fsanitize=address -fno-omit-frame-pointer
+        CXXFLAGS: -Werror -fsanitize=address -fno-omit-frame-pointer
+        LDFLAGS: -fsanitize=address
+      run: |
+        for test in AUMidiOutput AUMidiOffsets AUSysEx AUSysExEffect AUMidiInputQueue AUMidiPacketList; do
+          rm -f build/tests/$test build/tests/$test.cpp.o
+        done
+        make -C tests ../build/tests/AUMidiOutput ../build/tests/AUMidiOffsets ../build/tests/AUSysEx ../build/tests/AUSysExEffect ../build/tests/AUMidiInputQueue ../build/tests/AUMidiPacketList USE_WEB_VIEW=false -j5
+        ./build/tests/AUMidiOutput
+        ./build/tests/AUMidiOffsets
+        ./build/tests/AUSysEx
+        ./build/tests/AUSysExEffect
+        ./build/tests/AUMidiInputQueue
+        ./build/tests/AUMidiPacketList
     # A latency watch that reads a disposed unit passes the tests above and is a use after free here.
     - name: AU latency watch under AddressSanitizer
       if: ${{ runner.os == 'macOS' }}
@@ -275,7 +302,7 @@ jobs:
     # Reports also when a job above failed or the run was cancelled, rather than being skipped: a
     # required check counts a skipped job as passing.
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
     - name: Check the result of every job above
       env:

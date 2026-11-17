@@ -12,6 +12,19 @@
 # a Wayland window to follow.
 set -eu
 
+# Weston 9, which Ubuntu 22.04 ships, names the backend headless-backend.so and takes --use-pixman; the
+# Weston 13 of 24.04 names it headless and takes --renderer=pixman (--use-pixman is a deprecated alias
+# there). Its --help lists both, so ask this Weston which it takes.
+weston_help=$(weston --help 2>&1 || true)
+case "$weston_help" in
+    *headless-backend.so*) headless=(--backend=headless-backend.so) ;;
+    *) headless=(--backend=headless) ;;
+esac
+case "$weston_help" in
+    *--renderer=*) headless+=(--renderer=pixman) ;;
+    *) headless+=(--use-pixman) ;;
+esac
+
 runtime=$(mktemp -d)
 chmod 700 "$runtime"
 weston_pid=
@@ -26,7 +39,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-XDG_RUNTIME_DIR=$runtime weston --backend=headless --renderer=pixman --socket=daf-headless \
+XDG_RUNTIME_DIR=$runtime weston "${headless[@]}" --socket=daf-headless \
     --width=1280 --height=720 --idle-time=0 ${DAF_TEST_WAYLAND_SCALE:+--scale="$DAF_TEST_WAYLAND_SCALE"} \
     > "$runtime/weston.log" 2>&1 &
 weston_pid=$!

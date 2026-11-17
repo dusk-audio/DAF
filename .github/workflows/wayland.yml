@@ -46,7 +46,7 @@ jobs:
   # Whether this push has to build and test at all, which every other job waits for: see
   # .github/code-changed.sh.
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     outputs:
       code: ${{ steps.check.outputs.code }}
     steps:
@@ -64,16 +64,31 @@ jobs:
   # -------------------------------------------------------------------------------------------------------------------
   # Build with the Wayland development files present and the X11 development files absent.
   #
-  # A plain runner image cannot be used for this: ubuntu-latest ships libx11-dev, and it cannot simply be
+  # A plain runner image cannot be used for this: the runner images ship libx11-dev, and it cannot simply be
   # apt-removed because half the desktop -dev stack depends on it. A bare container is the only way to get a
   # machine where `pkg-config --exists x11` genuinely fails.
 
   wayland-only:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    container: ubuntu:24.04
+    runs-on: ubuntu-22.04
+    container: ubuntu:22.04
+    # Run steps default to sh in a container.
+    defaults:
+      run:
+        shell: bash
     steps:
+    # A bare container fetches from archive.ubuntu.com, which is slow from GitHub's runners; the runner images use
+    # the Azure mirror next to them. Before anything runs apt-get update.
+    - name: Use the Azure Ubuntu mirror
+      run: |
+        for sources in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+          if [ -f "$sources" ]; then
+            sed -i -e 's|//archive\.ubuntu\.com/|//azure.archive.ubuntu.com/|g' \
+                   -e 's|//security\.ubuntu\.com/|//azure.archive.ubuntu.com/|g' \
+                   -e 's|//ports\.ubuntu\.com/|//azure.ports.ubuntu.com/|g' "$sources"
+          fi
+        done
     # Package list matches exactly what Makefile.base.mk probes for the Wayland arm:
     #   wayland-client, wayland-egl, wayland-cursor -> libwayland-dev  (all three .pc files live there)
     #   xkbcommon                                   -> libxkbcommon-dev
@@ -220,7 +235,7 @@ jobs:
   wayland-x11-regression:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v4
       with:
@@ -290,7 +305,7 @@ jobs:
   runtime-backend:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     # read by every make below, the recursive ones included
     env:
       DGL_BACKEND: both
@@ -484,13 +499,23 @@ jobs:
   runtime-backend-without-wayland:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    container: ubuntu:24.04
+    runs-on: ubuntu-22.04
+    container: ubuntu:22.04
     # Run steps default to sh in a container, and the test steps below need bash for pipefail.
     defaults:
       run:
         shell: bash
     steps:
+    # As in wayland-only: the Azure mirror, before anything runs apt-get update.
+    - name: Use the Azure Ubuntu mirror
+      run: |
+        for sources in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+          if [ -f "$sources" ]; then
+            sed -i -e 's|//archive\.ubuntu\.com/|//azure.archive.ubuntu.com/|g' \
+                   -e 's|//security\.ubuntu\.com/|//azure.archive.ubuntu.com/|g' \
+                   -e 's|//ports\.ubuntu\.com/|//azure.ports.ubuntu.com/|g' "$sources"
+          fi
+        done
     - name: Set up dependencies
       env:
         DEBIAN_FRONTEND: noninteractive
@@ -579,7 +604,7 @@ jobs:
   clap-validation:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     env:
       # 0.4.1 is newer but its asset name embeds a git-describe suffix and its test set has not been
       # baselined here. Bump both the version and KNOWN_FAILURES together.
@@ -945,7 +970,7 @@ jobs:
     # Reports also when a job above failed or the run was cancelled, rather than being skipped: a
     # required check counts a skipped job as passing.
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
     - name: Check the result of every job above
       env:

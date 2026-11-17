@@ -18,7 +18,7 @@
 #ifndef DAF_PLUGIN_INFO_H_INCLUDED
 #define DAF_PLUGIN_INFO_H_INCLUDED
 
-// The plugin AUMidiSilent links into itself: a mono effect with MIDI input.
+// The plugins AUMidiSilent, AUMidiOutput and AUSysExEffect link into themselves: a mono effect with MIDI in and out.
 
 #define DAF_PLUGIN_BRAND     "DAF"
 #define DAF_PLUGIN_NAME      "MidiSilentTest"
@@ -32,5 +32,6 @@
 #define DAF_PLUGIN_NUM_INPUTS      1
 #define DAF_PLUGIN_NUM_OUTPUTS     1
 #define DAF_PLUGIN_WANT_MIDI_INPUT 1
+#define DAF_PLUGIN_WANT_MIDI_OUTPUT 1
 
 #endif // DAF_PLUGIN_INFO_H_INCLUDED

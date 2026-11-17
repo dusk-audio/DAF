@@ -18,7 +18,9 @@
 #ifndef DAF_PLUGIN_INFO_H_INCLUDED
 #define DAF_PLUGIN_INFO_H_INCLUDED
 
-// The plugin AUMidiOnly links into itself: no audio, MIDI input only, so it runs from its MIDI events.
+// The plugins AUMidiOnly, AUMidiOffsets, AUSilentOutput and AUSysEx link into themselves: no audio, MIDI in and out (an
+// aumi). The wrapper gives such a unit an output element that carries silence, and a host renders it through that
+// element, with buffers or with none.
 
 #define DAF_PLUGIN_BRAND     "DAF"
 #define DAF_PLUGIN_NAME      "MidiOnlyTest"
@@ -32,5 +34,6 @@
 #define DAF_PLUGIN_NUM_INPUTS      0
 #define DAF_PLUGIN_NUM_OUTPUTS     0
 #define DAF_PLUGIN_WANT_MIDI_INPUT 1
+#define DAF_PLUGIN_WANT_MIDI_OUTPUT 1
 
 #endif // DAF_PLUGIN_INFO_H_INCLUDED
