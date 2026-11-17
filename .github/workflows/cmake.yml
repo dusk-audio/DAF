@@ -29,7 +29,7 @@ jobs:
   # Whether this push has to build and test at all, which every other job waits for: see
   # .github/code-changed.sh.
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     outputs:
       code: ${{ steps.check.outputs.code }}
     steps:
@@ -303,7 +303,7 @@ jobs:
     # Reports also when a job above failed or the run was cancelled, rather than being skipped: a
     # required check counts a skipped job as passing.
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
     - name: Check the result of every job above
       env:
