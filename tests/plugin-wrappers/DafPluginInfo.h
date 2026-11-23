@@ -50,9 +50,11 @@
 # define DAF_WRAPPER_TEST_UPDATE_STATE 1
 #endif
 
-// VST3 class IDs are tested as they are with the cross-platform layout
+// VST3 class IDs are tested as they are with the cross-platform layout, and with the other layout's
+// class ID declared an older ID of the same plugin
 #if defined(DAF_PLUGIN_TARGET_VST3)
 # define DAF_VST3_CROSS_PLATFORM_UID
+# define DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT
 #endif
 
 #endif // DAF_PLUGIN_INFO_H_INCLUDED

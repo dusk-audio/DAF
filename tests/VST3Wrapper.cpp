@@ -18,6 +18,11 @@
  * DAF_VST3_CROSS_PLATFORM_UID: the class ID string must be the one Linux and macOS have always shown,
  * on every platform, and the factory and component must accept and return those same IDs.
  *
+ * Built with DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT too: the factory must list a compatibility class that
+ * names the class ID of the other layout (the string Windows shows without the cross-platform layout) as
+ * an older ID of the component class, must create the component for that ID, and must hand back a null
+ * pointer for an ID it does not know.
+ *
  * Plugin::updateStateValue() from activate() must be in the state the component saves, and, as this plugin
  * has no UI, mark the project modified through IComponentHandler2 from setActive.
  *
@@ -86,6 +91,16 @@ static std::string expectedClassIdString(const uint32_t kind)
         }
 
     return str;
+}
+
+// the string Windows shows for the component class without DAF_VST3_CROSS_PLATFORM_UID: the first two
+// words read as the fields of a COM GUID, the other two as little-endian bytes
+static std::string windowsNativeClassIdString(const uint32_t kind)
+{
+    char buf[24];
+    std::snprintf(buf, sizeof(buf), "%08X%04X%04X", static_cast<unsigned>(d_cconst('D', 'P', 'F', ' ')),
+                  static_cast<unsigned>(kind & 0xffff), static_cast<unsigned>(kind >> 16));
+    return buf + expectedClassIdString(kind).substr(16);
 }
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -405,6 +420,75 @@ int main()
                      V3_OK, "create_instance must accept the listed class ID");
     DAF_ASSERT_NOT_EQUAL(component, nullptr, "create_instance must return the component");
 
+    // DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT: the last class the factory lists declares the other layout's ID an
+    // older ID of the component class, in the strings a host holds for the two
+    {
+        // the component class ID under the other layout: its GUID fields byte-swapped
+        v3_tuid other;
+        std::memcpy(other, info.class_id, sizeof(v3_tuid));
+        std::swap(other[0], other[3]);
+        std::swap(other[1], other[2]);
+        std::swap(other[4], other[5]);
+        std::swap(other[6], other[7]);
+        DAF_ASSERT_EQUAL(sdkClassIdString(other), windowsNativeClassIdString(d_cconst('c', 'l', 'a', 's')),
+                         "the other layout's class ID string must be the one Windows shows by default");
+
+        v3_class_info compatInfo = {};
+        DAF_ASSERT_EQUAL((*factory)->v1.get_class_info(factory, numClasses - 1, &compatInfo), V3_OK,
+                         "get_class_info must succeed for the last class");
+        DAF_ASSERT_EQUAL(std::string(compatInfo.category), std::string(V3_PLUGIN_COMPATIBILITY_CLASS),
+                         "the last class must be the compatibility class");
+        DAF_ASSERT_NOT_EQUAL(std::memcmp(compatInfo.class_id, info.class_id, sizeof(v3_tuid)), 0,
+                             "the compatibility class must have an ID of its own");
+
+        v3_class_info_2 compatInfo2 = {};
+        DAF_ASSERT_EQUAL((*factory)->v2.get_class_info_2(factory, numClasses - 1, &compatInfo2), V3_OK,
+                         "get_class_info_2 must succeed for the last class");
+        DAF_ASSERT_EQUAL(std::memcmp(compatInfo2.class_id, compatInfo.class_id, sizeof(v3_tuid)), 0,
+                         "get_class_info_2 must list the same compatibility class");
+
+        v3_class_info pastEnd = {};
+        DAF_ASSERT_EQUAL((*factory)->v1.get_class_info(factory, numClasses, &pastEnd), V3_INVALID_ARG,
+                         "get_class_info must refuse an index past the listed classes");
+
+        v3_plugin_compatibility_cpp** compatibility = nullptr;
+        DAF_ASSERT_EQUAL((*factory)->v1.create_instance(factory, compatInfo.class_id, v3_plugin_compatibility_iid,
+                                                        (void**)&compatibility),
+                         V3_OK, "create_instance must create the compatibility class");
+        DAF_ASSERT_NOT_EQUAL(compatibility, nullptr, "create_instance must return the compatibility object");
+
+        initTestObjects();
+        gStreamData.clear();
+        DAF_ASSERT_EQUAL((*compatibility)->compat.get_compatibility_json(compatibility, (v3_bstream**)&gStreamPtr), V3_OK,
+                         "get_compatibility_json must succeed");
+        DAF_ASSERT_EQUAL(gStreamData, "[{\"New\":\"" + sdkClassIdString(info.class_id) + "\",\"Old\":[\""
+                                          + windowsNativeClassIdString(d_cconst('c', 'l', 'a', 's')) + "\"]}]",
+                         "the compatibility JSON must name the other layout's ID as an old ID of the component class");
+        gStreamData.clear();
+        DAF_ASSERT_EQUAL((*compatibility)->unref(compatibility), 0u, "the compatibility object must go with its last reference");
+
+        void* wrongInterface = &info;
+        DAF_ASSERT_EQUAL((*factory)->v1.create_instance(factory, compatInfo.class_id, v3_component_iid, &wrongInterface),
+                         V3_NO_INTERFACE, "the compatibility class must not be created as a component");
+        DAF_ASSERT_EQUAL(wrongInterface, static_cast<void*>(nullptr), "and the instance pointer must be cleared");
+
+        // a host that asks by the old ID gets the same component
+        v3_component_cpp** aliased = nullptr;
+        DAF_ASSERT_EQUAL((*factory)->v1.create_instance(factory, other, v3_component_iid, (void**)&aliased), V3_OK,
+                         "create_instance must accept the other layout's class ID");
+        DAF_ASSERT_NOT_EQUAL(aliased, nullptr, "and return the component for it");
+        DAF_ASSERT_EQUAL(v3_cpp_obj_initialize(aliased, nullptr), V3_OK, "the component created by the old ID must initialize");
+        v3_cpp_obj_terminate(aliased);
+        v3_cpp_obj_unref(aliased);
+
+        // an ID the factory does not know leaves nothing in the host's pointer
+        const v3_tuid unknown = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
+        void* instance = &info;
+        DAF_ASSERT_EQUAL((*factory)->v1.create_instance(factory, unknown, v3_component_iid, &instance), V3_NO_INTERFACE,
+                         "create_instance must refuse an unknown class ID");
+        DAF_ASSERT_EQUAL(instance, static_cast<void*>(nullptr), "and must clear the instance pointer");
+    }
+
     // and the controller ID the component names is the one the factory lists
     v3_tuid controllerId = {};
     DAF_ASSERT_EQUAL((*component)->comp.get_controller_class_id(component, controllerId), V3_OK,
@@ -412,10 +496,11 @@ int main()
     DAF_ASSERT_EQUAL(sdkClassIdString(controllerId), expectedClassIdString(d_cconst('c', 't', 'r', 'l')),
                      "the controller class ID string must match Linux and macOS");
 
-    if (numClasses > 1)
+    // a controller that is a class of its own is listed second; the compatibility class is not one
+    v3_class_info ctrlInfo = {};
+    if (numClasses > 1 && (*factory)->v1.get_class_info(factory, 1, &ctrlInfo) == V3_OK
+        && std::string(ctrlInfo.category) == "Component Controller Class")
     {
-        v3_class_info ctrlInfo = {};
-        DAF_ASSERT_EQUAL((*factory)->v1.get_class_info(factory, 1, &ctrlInfo), V3_OK, "get_class_info must succeed");
         DAF_ASSERT_EQUAL(std::memcmp(ctrlInfo.class_id, controllerId, sizeof(v3_tuid)), 0,
                          "the factory must list the controller ID the component names");
     }
