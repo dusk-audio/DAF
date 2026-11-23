@@ -976,6 +976,20 @@ START_NAMESPACE_DAF
 #define DAF_VST3_CROSS_PLATFORM_UID
 
 /**
+   Keep a VST3 plugin loading from sessions that hold its class ID in the other layout.@n
+   The class ID under @ref DAF_VST3_CROSS_PLATFORM_UID and the default one are each other's byte swap, so a
+   session saved by a Windows build with the other setting, or moved between Windows and Linux or macOS
+   without the cross-platform layout, names a class ID this build does not list.
+   Defining this adds a compatibility class to the factory (the VST3 SDK's IPluginCompatibility) that
+   declares the other layout's class ID an older ID of the plugin, and lets the factory create the plugin
+   for that ID. The class ID the plugin lists does not change.
+   @note Hosts replace the old ID only if they support IPluginCompatibility; in other hosts a session that
+         holds the other layout's ID still reports the plugin as missing.
+         Use it for a plugin that was released on Windows with both layouts.
+ */
+#define DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT
+
+/**
    Disable resource files, like internally used fonts.@n
    Must be set as compiler macro when building DGL. (e.g. `CXXFLAGS="-DDGL_NO_SHARED_RESOURCES"`)
  */

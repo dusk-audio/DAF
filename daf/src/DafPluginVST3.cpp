@@ -55,6 +55,7 @@
 #include "travesty/edit_controller.h"
 #include "travesty/factory.h"
 #include "travesty/host.h"
+#include "travesty/plugin_compatibility.h"
 
 #include <map>
 #include <atomic>
@@ -187,6 +188,9 @@ static constexpr const uint32_t daf_id_comp  = d_cconst('c', 'o', 'm', 'p');
 static constexpr const uint32_t daf_id_ctrl  = d_cconst('c', 't', 'r', 'l');
 static constexpr const uint32_t daf_id_proc  = d_cconst('p', 'r', 'o', 'c');
 static constexpr const uint32_t daf_id_view  = d_cconst('v', 'i', 'e', 'w');
+#ifdef DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT
+static constexpr const uint32_t daf_id_cmpt  = d_cconst('c', 'm', 'p', 't');
+#endif
 
 // --------------------------------------------------------------------------------------------------------------------
 // plugin specific uids (values are filled in during plugin init)
@@ -202,7 +206,14 @@ static constexpr const uint32_t daf_id_brand = 0;
 // little-endian fields), so by default the same plugin shows a different class id string on Windows
 // than elsewhere. DAF_VST3_CROSS_PLATFORM_UID swaps those fields on Windows so the string matches the
 // one on Linux and macOS. Off by default: it changes the Windows ids of already-shipped plugins.
-#if defined(DAF_VST3_CROSS_PLATFORM_UID) && V3_COM_COMPAT
+//
+// The two layouts are each other's swap, on every platform: a class id saved under one of them reads
+// as the swapped bytes under the other. DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT keeps a plugin that has
+// been released on Windows with both settings loading from sessions saved with either, and from
+// sessions moved between Windows and the other platforms: see daf_tuid_class_other.
+#define DAF_TUID_NATIVE(kind) { daf_id_entry, kind, 0, daf_id_brand }
+
+#if (defined(DAF_VST3_CROSS_PLATFORM_UID) && V3_COM_COMPAT) || defined(DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT)
 static inline constexpr
 uint32_t daf_tuid_guid_data1(const uint32_t v) noexcept
 {
@@ -215,9 +226,15 @@ uint32_t daf_tuid_guid_data23(const uint32_t v) noexcept
     return ((v & 0x00ff00ffU) << 8) | ((v & 0xff00ff00U) >> 8);
 }
 
-# define DAF_TUID(kind) { daf_tuid_guid_data1(daf_id_entry), daf_tuid_guid_data23(kind), 0, daf_id_brand }
+# define DAF_TUID_SWAPPED(kind) { daf_tuid_guid_data1(daf_id_entry), daf_tuid_guid_data23(kind), 0, daf_id_brand }
+#endif
+
+#if defined(DAF_VST3_CROSS_PLATFORM_UID) && V3_COM_COMPAT
+# define DAF_TUID(kind) DAF_TUID_SWAPPED(kind)
+# define DAF_TUID_OTHER_LAYOUT(kind) DAF_TUID_NATIVE(kind)
 #else
-# define DAF_TUID(kind) { daf_id_entry, kind, 0, daf_id_brand }
+# define DAF_TUID(kind) DAF_TUID_NATIVE(kind)
+# define DAF_TUID_OTHER_LAYOUT(kind) DAF_TUID_SWAPPED(kind)
 #endif
 
 static daf_tuid daf_tuid_class = DAF_TUID(daf_id_clas);
@@ -226,7 +243,20 @@ static daf_tuid daf_tuid_controller = DAF_TUID(daf_id_ctrl);
 static daf_tuid daf_tuid_processor = DAF_TUID(daf_id_proc);
 static daf_tuid daf_tuid_view = DAF_TUID(daf_id_view);
 
+#ifdef DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT
+// The audio module class under the other layout: the id sessions hold that were saved by a build with
+// the other setting of DAF_VST3_CROSS_PLATFORM_UID, or on a platform where the SDK reads the bytes the
+// other way. The factory declares it an older id of daf_tuid_class (IPluginCompatibility) and creates
+// the same component for it.
+static daf_tuid daf_tuid_class_other = DAF_TUID_OTHER_LAYOUT(daf_id_clas);
+// the class that makes the declaration
+static daf_tuid daf_tuid_compatibility = DAF_TUID(daf_id_cmpt);
+#endif
+
 #undef DAF_TUID
+#undef DAF_TUID_NATIVE
+#undef DAF_TUID_SWAPPED
+#undef DAF_TUID_OTHER_LAYOUT
 
 // --------------------------------------------------------------------------------------------------------------------
 // Utility functions
@@ -355,6 +385,14 @@ const char* tuid2str(const v3_tuid iid)
         return "{daf_tuid_processor}";
     if (std::memcmp(iid, daf_tuid_view, sizeof(daf_tuid)) == 0)
         return "{daf_tuid_view}";
+   #ifdef DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT
+    if (v3_tuid_match(iid, v3_plugin_compatibility_iid))
+        return "{v3_plugin_compatibility}";
+    if (std::memcmp(iid, daf_tuid_class_other, sizeof(daf_tuid)) == 0)
+        return "{daf_tuid_class_other}";
+    if (std::memcmp(iid, daf_tuid_compatibility, sizeof(daf_tuid)) == 0)
+        return "{daf_tuid_compatibility}";
+   #endif
 
     for (size_t i=0; i<ARRAY_SIZE(extra_known_iids); ++i)
     {
@@ -5242,6 +5280,93 @@ static const char* getPluginVersion()
 }
 
 // --------------------------------------------------------------------------------------------------------------------
+// daf_plugin_compatibility
+
+#ifdef DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT
+// A class id as the 32 hex digits the VST3 SDK prints for it on this platform (FUID::toString), which is
+// how the compatibility JSON and a host's session name it: COM GUID fields on Windows, plain bytes elsewhere.
+static void daf_tuid_sdk_string(const daf_tuid tuid, char str[33])
+{
+    const uint8_t* const bytes = reinterpret_cast<const uint8_t*>(tuid);
+
+   #if V3_COM_COMPAT
+    static constexpr const uint8_t order[16] = { 3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15 };
+   #else
+    static constexpr const uint8_t order[16] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+   #endif
+
+    for (int i = 0; i < 16; ++i)
+        std::snprintf(str + i * 2, 3, "%02X", bytes[order[i]]);
+}
+
+// Tells the host that the audio module class replaces its id under the other layout, so a session that
+// holds that id loads this plugin. Hosts ask once, while they scan the module.
+struct daf_plugin_compatibility : v3_plugin_compatibility_cpp {
+    std::atomic_int refcounter;
+
+    daf_plugin_compatibility()
+        : refcounter(1)
+    {
+        query_interface = query_interface_compatibility;
+        ref = ref_compatibility;
+        unref = unref_compatibility;
+        compat.get_compatibility_json = get_compatibility_json;
+    }
+
+    static v3_result V3_API query_interface_compatibility(void* const self, const v3_tuid iid, void** const iface)
+    {
+        daf_plugin_compatibility* const compatibility = *static_cast<daf_plugin_compatibility**>(self);
+
+        if (v3_tuid_match(iid, v3_funknown_iid) || v3_tuid_match(iid, v3_plugin_compatibility_iid))
+        {
+            ++compatibility->refcounter;
+            *iface = self;
+            return V3_OK;
+        }
+
+        *iface = nullptr;
+        return V3_NO_INTERFACE;
+    }
+
+    static uint32_t V3_API ref_compatibility(void* const self)
+    {
+        return ++(*static_cast<daf_plugin_compatibility**>(self))->refcounter;
+    }
+
+    static uint32_t V3_API unref_compatibility(void* const self)
+    {
+        daf_plugin_compatibility** const compatibilityptr = static_cast<daf_plugin_compatibility**>(self);
+        daf_plugin_compatibility* const compatibility = *compatibilityptr;
+
+        if (const int refcount = --compatibility->refcounter)
+            return refcount;
+
+        delete compatibility;
+        delete compatibilityptr;
+        return 0;
+    }
+
+    static v3_result V3_API get_compatibility_json(void*, v3_bstream** const stream)
+    {
+        d_debug("daf_plugin_compatibility::get_compatibility_json => %p", stream);
+        DAF_SAFE_ASSERT_RETURN(stream != nullptr, V3_INVALID_ARG);
+
+        char current[33], other[33];
+        daf_tuid_sdk_string(daf_tuid_class, current);
+        daf_tuid_sdk_string(daf_tuid_class_other, other);
+
+        char json[128];
+        const int size = std::snprintf(json, sizeof(json), "[{\"New\":\"%s\",\"Old\":[\"%s\"]}]", current, other);
+        DAF_SAFE_ASSERT_RETURN(size > 0 && size < static_cast<int>(sizeof(json)), V3_INTERNAL_ERR);
+
+        int32_t written = 0;
+        const v3_result res = v3_cpp_obj(stream)->write(stream, json, size, &written);
+        return res == V3_OK && written == size ? V3_OK : V3_INTERNAL_ERR;
+    }
+};
+#endif // DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT
+
+// --------------------------------------------------------------------------------------------------------------------
 // daf_factory
 
 struct daf_factory : v3_plugin_factory_cpp {
@@ -5379,35 +5504,66 @@ struct daf_factory : v3_plugin_factory_cpp {
         return V3_OK;
     }
 
+    // The classes in the order the factory lists them: the component, the edit-controller when it is a
+    // class of its own (otherwise it is cast from the component), then the compatibility declaration.
+    enum {
+        kClassComponent = 0,
+       #if DAF_VST3_USES_SEPARATE_CONTROLLER
+        kClassController,
+       #endif
+       #ifdef DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT
+        kClassCompatibility,
+       #endif
+        kClassCount
+    };
+
+    // The id and category of a listed class. False for an index the factory does not list.
+    static bool fillClassIdentity(const int32_t idx, v3_tuid class_id, char category[32])
+    {
+        const daf_tuid* tuid;
+        const char* name;
+
+        switch (idx)
+        {
+        case kClassComponent:
+            tuid = &daf_tuid_class;
+            name = "Audio Module Class";
+            break;
+       #if DAF_VST3_USES_SEPARATE_CONTROLLER
+        case kClassController:
+            tuid = &daf_tuid_controller;
+            name = "Component Controller Class";
+            break;
+       #endif
+       #ifdef DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT
+        case kClassCompatibility:
+            tuid = &daf_tuid_compatibility;
+            name = V3_PLUGIN_COMPATIBILITY_CLASS;
+            break;
+       #endif
+        default:
+            return false;
+        }
+
+        std::memcpy(class_id, *tuid, sizeof(v3_tuid));
+        d_strncpy(category, name, 32);
+        return true;
+    }
+
     static int32_t V3_API num_classes(void*)
     {
         d_debug("daf_factory::num_classes");
-       #if DAF_VST3_USES_SEPARATE_CONTROLLER
-        return 2; // factory can create component and edit-controller
-       #else
-        return 1; // factory can only create component, edit-controller must be casted
-       #endif
+        return kClassCount;
     }
 
     static v3_result V3_API get_class_info(void*, const int32_t idx, v3_class_info* const info)
     {
         d_debug("daf_factory::get_class_info => %i %p", idx, info);
         std::memset(info, 0, sizeof(*info));
-        DAF_SAFE_ASSERT_RETURN(idx <= 2, V3_INVALID_ARG);
+        DAF_SAFE_ASSERT_RETURN(fillClassIdentity(idx, info->class_id, info->category), V3_INVALID_ARG);
 
         info->cardinality = 0x7FFFFFFF;
         d_strncpy(info->name, sPlugin->getName(), ARRAY_SIZE(info->name));
-
-        if (idx == 0)
-        {
-            std::memcpy(info->class_id, daf_tuid_class, sizeof(v3_tuid));
-            d_strncpy(info->category, "Audio Module Class", ARRAY_SIZE(info->category));
-        }
-        else
-        {
-            std::memcpy(info->class_id, daf_tuid_controller, sizeof(v3_tuid));
-            d_strncpy(info->category, "Component Controller Class", ARRAY_SIZE(info->category));
-        }
 
         return V3_OK;
     }
@@ -5415,16 +5571,39 @@ struct daf_factory : v3_plugin_factory_cpp {
     static v3_result V3_API create_instance(void* self, const v3_tuid class_id, const v3_tuid iid, void** const instance)
     {
         d_debug("daf_factory::create_instance => %p %s %s %p", self, tuid2str(class_id), tuid2str(iid), instance);
+        DAF_SAFE_ASSERT_RETURN(instance != nullptr, V3_INVALID_ARG);
         daf_factory* const factory = *static_cast<daf_factory**>(self);
+
+        // a host that tests the pointer and not the result must not find what it left there
+        *instance = nullptr;
+
+       #ifdef DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT
+        // the compatibility declaration needs nothing from the host
+        if (v3_tuid_match(class_id, *(const v3_tuid*)&daf_tuid_compatibility))
+        {
+            if (! v3_tuid_match(iid, v3_plugin_compatibility_iid) && ! v3_tuid_match(iid, v3_funknown_iid))
+                return V3_NO_INTERFACE;
+
+            daf_plugin_compatibility** const compatibilityptr = new daf_plugin_compatibility*;
+            *compatibilityptr = new daf_plugin_compatibility();
+            *instance = static_cast<void*>(compatibilityptr);
+            return V3_OK;
+        }
+       #endif
 
         // query for host application
         v3_host_application** hostApplication = nullptr;
         if (factory->hostContext != nullptr)
             v3_cpp_obj_query_interface(factory->hostContext, v3_host_application_iid, &hostApplication);
 
-        // create component
-        if (v3_tuid_match(class_id, *(const v3_tuid*)&daf_tuid_class) && (v3_tuid_match(iid, v3_component_iid) ||
-                                                                          v3_tuid_match(iid, v3_funknown_iid)))
+        // create component, also for a host that asks by the id a session saved under the other layout
+        const bool isComponentClass = v3_tuid_match(class_id, *(const v3_tuid*)&daf_tuid_class)
+           #ifdef DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT
+            || v3_tuid_match(class_id, *(const v3_tuid*)&daf_tuid_class_other)
+           #endif
+            ;
+
+        if (isComponentClass && (v3_tuid_match(iid, v3_component_iid) || v3_tuid_match(iid, v3_funknown_iid)))
         {
             daf_component** const componentptr = new daf_component*;
             *componentptr = new daf_component(hostApplication);
@@ -5458,7 +5637,7 @@ struct daf_factory : v3_plugin_factory_cpp {
     {
         d_debug("daf_factory::get_class_info_2 => %i %p", idx, info);
         std::memset(info, 0, sizeof(*info));
-        DAF_SAFE_ASSERT_RETURN(idx <= 2, V3_INVALID_ARG);
+        DAF_SAFE_ASSERT_RETURN(fillClassIdentity(idx, info->class_id, info->category), V3_INVALID_ARG);
 
         info->cardinality = 0x7FFFFFFF;
        #if DAF_VST3_USES_SEPARATE_CONTROLLER || !DAF_PLUGIN_HAS_UI
@@ -5470,17 +5649,6 @@ struct daf_factory : v3_plugin_factory_cpp {
         d_strncpy(info->version, getPluginVersion(), ARRAY_SIZE(info->version));
         d_strncpy(info->sdk_version, "VST 3.7.4", ARRAY_SIZE(info->sdk_version));
 
-        if (idx == 0)
-        {
-            std::memcpy(info->class_id, daf_tuid_class, sizeof(v3_tuid));
-            d_strncpy(info->category, "Audio Module Class", ARRAY_SIZE(info->category));
-        }
-        else
-        {
-            std::memcpy(info->class_id, daf_tuid_controller, sizeof(v3_tuid));
-            d_strncpy(info->category, "Component Controller Class", ARRAY_SIZE(info->category));
-        }
-
         return V3_OK;
     }
 
@@ -5491,7 +5659,7 @@ struct daf_factory : v3_plugin_factory_cpp {
     {
         d_debug("daf_factory::get_class_info_utf16 => %i %p", idx, info);
         std::memset(info, 0, sizeof(*info));
-        DAF_SAFE_ASSERT_RETURN(idx <= 2, V3_INVALID_ARG);
+        DAF_SAFE_ASSERT_RETURN(fillClassIdentity(idx, info->class_id, info->category), V3_INVALID_ARG);
 
         info->cardinality = 0x7FFFFFFF;
        #if DAF_VST3_USES_SEPARATE_CONTROLLER || !DAF_PLUGIN_HAS_UI
@@ -5502,17 +5670,6 @@ struct daf_factory : v3_plugin_factory_cpp {
         DAF_NAMESPACE::strncpy_utf16(info->vendor, sPlugin->getMaker(), ARRAY_SIZE(info->vendor));
         DAF_NAMESPACE::strncpy_utf16(info->version, getPluginVersion(), ARRAY_SIZE(info->version));
         DAF_NAMESPACE::strncpy_utf16(info->sdk_version, "VST 3.7.4", ARRAY_SIZE(info->sdk_version));
-
-        if (idx == 0)
-        {
-            std::memcpy(info->class_id, daf_tuid_class, sizeof(v3_tuid));
-            d_strncpy(info->category, "Audio Module Class", ARRAY_SIZE(info->category));
-        }
-        else
-        {
-            std::memcpy(info->class_id, daf_tuid_controller, sizeof(v3_tuid));
-            d_strncpy(info->category, "Component Controller Class", ARRAY_SIZE(info->category));
-        }
 
         return V3_OK;
     }
@@ -5618,6 +5775,9 @@ bool ENTRYFNNAME(ENTRYFNNAMEARGS)
         // word 2 lies outside the GUID fields, so DAF_VST3_CROSS_PLATFORM_UID leaves it as is
         daf_tuid_class[2] = daf_tuid_component[2] = daf_tuid_controller[2]
             = daf_tuid_processor[2] = daf_tuid_view[2] = sPlugin->getUniqueId();
+       #ifdef DAF_VST3_COMPATIBLE_OTHER_UID_LAYOUT
+        daf_tuid_class_other[2] = daf_tuid_compatibility[2] = sPlugin->getUniqueId();
+       #endif
     }
 
     return true;
